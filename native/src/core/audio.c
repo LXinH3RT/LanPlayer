@@ -128,7 +128,12 @@ static int audio_flush_graph(LpPlayer *p)
     if (!out) {
         return LP_ERR_NOMEM;
     }
-    av_buffersrc_add_frame(p->audio.filt_src, NULL);
+    /* 传 NULL 给 buffersrc 表示 EOF。av_buffersrc_add_frame 带
+     * av_warn_unused_result（GCC 下等价于 warn_unused_result），单纯写
+     * (void)函数调用 在 GCC 上压不住警告，必须先落到变量里再 (void)。
+     * flush 路径上失败也没有可补救的动作，所以是故意忽略返回值。 */
+    int flush_rc = av_buffersrc_add_frame(p->audio.filt_src, NULL);
+    (void)flush_rc;
     double cursor = -1;
     while (av_buffersink_get_frame(p->audio.filt_sink, out) >= 0) {
         double start = cursor >= 0 ? cursor : 0;

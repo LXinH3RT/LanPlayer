@@ -48,7 +48,7 @@ static int64_t cmtime_to_us(CMTime t)
 /* ------------------------------------------------------- format description --- */
 
 /* Copies the parameter sets for one NAL type out of an avcC / Annex-B blob. */
-static int h264_param_sets(const uint8_t *ed, int size, const uint8_t **sets, int *set_sizes,
+static int h264_param_sets(const uint8_t *ed, int size, const uint8_t **sets, size_t *set_sizes,
                            int max)
 {
     int n = 0;
@@ -118,7 +118,7 @@ static int h264_param_sets(const uint8_t *ed, int size, const uint8_t **sets, in
     return n;
 }
 
-static int hevc_param_sets(const uint8_t *ed, int size, const uint8_t **sets, int *set_sizes,
+static int hevc_param_sets(const uint8_t *ed, int size, const uint8_t **sets, size_t *set_sizes,
                            int max)
 {
     int n = 0;
@@ -153,7 +153,7 @@ static int build_format_description(LpVideoDecoder *d, const LpVideoDecoderConfi
                                     size_t errlen)
 {
     const uint8_t *sets[16];
-    int sizes[16];
+    size_t sizes[16];
     int n = 0;
     if (cfg->codec_id == AV_CODEC_ID_H264) {
         n = h264_param_sets(cfg->par->extradata, cfg->par->extradata_size, sets, sizes, 16);
@@ -251,9 +251,11 @@ int lp_hw_decoder_init(LpVideoDecoder *d, const LpVideoDecoderConfig *cfg, char 
     CFDictionarySetValue(attrs, kCVPixelBufferIOSurfacePropertiesKey, iosurf);
     CFRelease(iosurf);
 
-    VTDecompressionOutputCallbackRecord cb;
-    memset(&cb, 0, sizeof(cb));
-    OSStatus st = VTDecompressionSessionCreate(kCFAllocatorDefault, d->fmt, NULL, attrs, NULL, NULL,
+    /* 6 个参数：allocator, format, decoderSpec, destinationAttrs, outputCallback,
+     * sessionOut。之前多传了一个 NULL，Xcode 15 起是硬错误（expected 6, have 7）。
+     * 回调改用下面的 VTDecompressionSessionDecodeFrameWithOutputHandler（按帧传
+     * block），所以这里 outputCallback 传 NULL。 */
+    OSStatus st = VTDecompressionSessionCreate(kCFAllocatorDefault, d->fmt, NULL, attrs, NULL,
                                                &d->session);
     CFRelease(attrs);
     if (st != noErr || !d->session) {
