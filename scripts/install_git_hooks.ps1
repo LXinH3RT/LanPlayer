@@ -41,9 +41,17 @@ if [ -z "$remote" ]; then
 fi
 
 # Never block on a credential prompt from a hook (there is no terminal).
-GIT_TERMINAL_PROMPT=0 git push origin HEAD >/dev/null 2>&1
-if [ $? -eq 0 ]; then
+# Two-step push: this clone may be driven by the git that ships inside the
+# Flutter SDK (mingit). That one has no Windows credential-manager helper, and
+# its bundled CA store does not validate github.com, so it fails with
+# "SSL certificate problem: unable to get local issuer certificate". The
+# machine-wide Git for Windows install has both, so retry with it.
+export GIT_TERMINAL_PROMPT=0
+if git push origin HEAD >/dev/null 2>&1; then
     echo "[auto-push] pushed $(git rev-parse --short HEAD) to $remote"
+elif [ -x "/c/Program Files/Git/cmd/git.exe" ] && \
+     "/c/Program Files/Git/cmd/git.exe" push origin HEAD >/dev/null 2>&1; then
+    echo "[auto-push] pushed $(git rev-parse --short HEAD) to $remote (Git for Windows)"
 else
     echo "[auto-push] push failed; run scripts/sync_github.ps1 manually"
 fi
