@@ -316,6 +316,25 @@ flutter build ipa --release           # 打包（需要签名）
 iPad 与 iPhone 是同一个 iOS 包；`TARGETED_DEVICE_FAMILY = "1,2"` 已包含 iPad。
 模拟器不能测 SMB 的真实吞吐，但能测 UI、字幕、界面交互。
 
+### 4.7 macOS 上首次构建会遇到的错误（按出现顺序）
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `zsh: permission denied: ./scripts/build_apple_deps.sh` | 仓库里的 `.sh` 是 `100644` | `chmod +x scripts/*.sh`（每次新克隆一次） |
+| `cmake: command not found` | macOS 不带 cmake | `brew install cmake` |
+| `Compatibility with CMake < 3.5 has been removed` | libsmb2 要求 3.2，CMake 4.x 不支持 | 脚本已传 `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`，更新仓库即可 |
+| `krb5-wrapper.c: unknown type name 'gss_const_OID'` 等 18 个 error | macOS 有 GSSAPI 头但缺 MIT/Heimdal 扩展 | 脚本已传 `-DCMAKE_DISABLE_FIND_PACKAGE_GSSAPI=TRUE`，更新仓库即可 |
+| `You don't have write permissions for /Library/Ruby/Gems/2.6.0` | 系统 ruby 的 gem 目录只读 | 不要 `sudo gem install`，用 `brew install cocoapods` |
+| `xcodebuild: error: ... requires Xcode, but active developer directory ... is a command line tools instance` | 只装了 Command Line Tools | 装完整 Xcode 后 `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer` |
+| `library not found for -llanplayer` | 4.2 没成功（`native/third_party/lanplayer/apple/lib` 不存在） | 重跑 `SLICES=macosx ./scripts/build_apple_deps.sh` |
+| `building for macOS 11.0, but linking in object file built for macOS 14.0` | 依赖用了更高的部署目标 | `MIN_MACOS=11.0` 重编，或把 `app/macos/Podfile` 与工程目标一起调高 |
+| App 能开但连不上 SMB | macOS 沙盒拦 445 出站 | 确认 `Runner/*.entitlements` 里有 `com.apple.security.network.client` |
+
+`pod install` 的顺序不要搞反：**先 `build_apple_deps.sh` 产出静态库，再 `flutter pub get`，
+最后 `flutter build macos`**。`flutter build` 内部会自动跑 `pod install`；
+单独手跑 `pod install` 必须先在 `app/` 下执行过一次 `flutter pub get`，
+否则会报 `Flutter/Flutter-Generated.xcconfig must exist`。
+
 ## 5\. Flutter Windows 桌面端
 
 桌面端由三块组成：Flutter 的 runner（`app/windows/`）、我方插件（`packages/lanplayer_video/`）、
