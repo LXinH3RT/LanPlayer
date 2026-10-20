@@ -199,8 +199,25 @@ brew install cmake
 cmake --version                 # 4.x，脚本已用 CMAKE_POLICY_VERSION_MINIMUM 兼容
 
 # 5) Flutter：3.27.x（Apple 侧只需要 flutter 命令与 Dart SDK）
-flutter --version
+#    注意：装 Xcode / Homebrew / CocoaPods 都【不会】顺带装 Flutter。
+#    没装时 `cd app && flutter build macos` 只会得到 `zsh: command not found: flutter`。
+brew install --cask flutter      # Homebrew 装的是 stable，含 Dart SDK
+#    或者手动下载（想锁版本时用这个）：
+#    https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/flutter_macos_3.27.4-stable.zip
+#    unzip 到 ~/development 后把 bin 加进 PATH：
+#    echo 'export PATH="$HOME/development/flutter/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+
+flutter --version                # 必须能在任意目录打印版本，再去 app/ 里构建
+
+# 6) 用 flutter doctor 一次性确认 Xcode / CocoaPods / Flutter 三者都认到了
+flutter doctor -v
+#    要看到 [✓] Flutter、[✓] Xcode (含 CocoaPods installed)、[✓] Connected device
+#    出现 [!] Xcode ... CocoaPods not installed 就是第 3 步没生效；
+#    出现 [!] Xcode ... requires Xcode 就是还停在 Command Line Tools。
 ```
+
+> Homebrew 的 `flutter` cask 会自动装好 Dart SDK，但**不会**帮你跑 `flutter doctor --android-licenses`
+> 之类的东西；Apple 侧用不到 Android 那部分，忽略 doctor 里的 Android 那一行即可。
 
 仓库克隆（GitHub 已关掉 HTTPS 密码认证，用 SSH）：
 
@@ -321,6 +338,7 @@ iPad 与 iPhone 是同一个 iOS 包；`TARGETED_DEVICE_FAMILY = "1,2"` 已包�
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
 | `zsh: permission denied: ./scripts/build_apple_deps.sh` | 仓库里的 `.sh` 是 `100644` | `chmod +x scripts/*.sh`（每次新克隆一次） |
+| `zsh: command not found: flutter` | 装 Xcode / Homebrew / CocoaPods 都不会顺手装 Flutter | `brew install --cask flutter`，再确认新终端里 `flutter --version` 可用（见 4.1 第 5 步） |
 | `cmake: command not found` | macOS 不带 cmake | `brew install cmake` |
 | `Compatibility with CMake < 3.5 has been removed` | libsmb2 要求 3.2，CMake 4.x 不支持 | 脚本已传 `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`，更新仓库即可 |
 | `krb5-wrapper.c: unknown type name 'gss_const_OID'` 等 18 个 error | macOS 有 GSSAPI 头但缺 MIT/Heimdal 扩展 | 脚本已传 `-DCMAKE_DISABLE_FIND_PACKAGE_GSSAPI=TRUE`，更新仓库即可 |

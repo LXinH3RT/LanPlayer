@@ -328,6 +328,8 @@ ANDROID_NDK_HOME=~/android-ndk-r26 ./scripts/build_android_deps.sh
 ./scripts/build_apple_deps.sh          # 三切片：iphoneos / iphonesimulator / macosx
 
 # 2) 在 Mac 上装依赖并运行（iOS / macOS 都不需要手工改 Xcode 工程）
+#    前置：完整 Xcode + CocoaPods + cmake + Flutter，缺 Flutter 时
+#    这里会直接报 `zsh: command not found: flutter`（见 docs/build.md 4.1）
 cd app
 flutter pub get
 flutter build macos --release          # 或 flutter run -d macos
@@ -352,6 +354,11 @@ Apple 端的工程接线已经写在仓库里，`docs/build.md` 第 4 节有完�
   编 `krb5-wrapper.c` 并失败 18 个 error；脚本已用
   `-DCMAKE_DISABLE_FIND_PACKAGE_GSSAPI/OpenSSL=TRUE` 关掉（我们只用 NTLM）。
 - 仓库里的 `scripts/*.sh` 是 `100644`，克隆后先 `chmod +x scripts/*.sh`。
+- **Flutter 要单独装**：装 Xcode、Homebrew、CocoaPods 都不会顺带装 Flutter，没装时
+  `cd app && flutter build macos` 只会得到 `zsh: command not found: flutter`。
+  用 `brew install --cask flutter`（或从
+  `flutter_infra_release` 下 `macos/flutter_macos_3.27.4-stable.zip` 解压后把 `bin` 加进 `PATH`），
+  装完先在任意目录 `flutter --version` 确认可用，再 `flutter doctor -v` 看 Xcode / CocoaPods 那两行是不是 `[✓]`。
 
 ## 已验证 / 未验证
 
