@@ -218,8 +218,10 @@ echo 'export PUB_HOSTED_URL=https://pub.flutter-io.cn' >> ~/.zshrc
 echo 'export FLUTTER_STORAGE_BASE_URL=https://storage.flutter-io.cn' >> ~/.zshrc
 source ~/.zshrc
 
-flutter --version                # 必须能在任意目录打印版本，再去 app/ 里构建
-flutter precache --macos         # 预先从镜像拉 macOS 引擎产物，后面 build 就不必边编边下
+#    下面这条第一次会打印 "Building flutter tool..." 并编 ~3 分钟（只此一次）。
+#    期间终端没有任何输出是正常的，不是卡死；判断卡死的方法见本节末尾的"卡住时怎么排查"。
+flutter --version --no-version-check
+flutter precache --macos         # 从镜像拉 macOS 引擎产物（含 Dart SDK，约 450 MB，走镜像约 1~3 分钟）
 
 # 6) 用 flutter doctor 一次性确认 Xcode / CocoaPods / Flutter 三者都认到了
 flutter doctor -v
@@ -242,6 +244,44 @@ flutter doctor -v
 > `FLUTTER_STORAGE_BASE_URL=https://mirror.sjtu.edu.cn`；清华 TUNA
 > `PUB_HOSTED_URL=https://mirrors.tuna.tsinghua.edu.cn/dart-pub` +
 > `FLUTTER_STORAGE_BASE_URL=https://mirrors.tuna.tsinghua.edu.cn/flutter`。
+
+#### 卡住时怎么排查
+
+`flutter` 会先跑 `bin/flutter` → `bin/internal/shared.sh`，判断 `bin/cache/flutter_tools.snapshot`
+是否与 SDK 版本匹配；不匹配就**编一遍 flutter tool**。这一步要 `pub upgrade`，
+终端会一直停在 `Building flutter tool...` 上、**没有任何进度输出**，看起来和卡死一样。
+在本机（Windows，`--version` 全程）实测：冷启动 179 s（约 3 分钟），其中 `pub upgrade`
+只占十几秒；之后有缓存时是 0.45 s。
+
+另外两条同样会"像卡死"的路径（35 s 左右，看起来像死了）：
+
+- `--version` 默认会做**版本检查**（每 3 天一次）：`git fetch` Flutter 官方仓库 + 访问
+  `storage.googleapis.com`，国内很可能 35 s 超时。加 `--no-version-check` 直接跳过，
+  或者 `export FLUTTER_SUPPRESS_ANALYTICS=true` 减少网络调用。
+- `flutter precache` 从 `FLUTTER_STORAGE_BASE_URL` 下载引擎产物；没设镜像变量时连的是
+  `storage.googleapis.com`，超时报 `Can not install platforms and resources: signal timed out`。
+
+逐条排查：
+
+```bash
+# 1) 确认不是在编 tool：另开一个终端看有没有这些进程
+ps aux | grep -E 'dart|gen_snapshot' | grep -v grep
+#    有 -> 正在编，等到出现版本号即可；确实想重来就先 Ctrl-C，再
+rm -rf ~/development/flutter/bin/cache/flutter_tools.snapshot   # 下次自动重编
+
+# 2) 确认两个镜像变量在当前 shell 里真的生效了
+echo $PUB_HOSTED_URL          # https://pub.flutter-io.cn
+echo $FLUTTER_STORAGE_BASE_URL # https://storage.flutter-io.cn
+
+# 3) 绕开版本检查，看能不能直接打印版本
+flutter --version --no-version-check
+
+# 4) 镜像是否真的通（必须 200，且不是 HTML 错误页）
+curl -sI https://storage.flutter-io.cn/flutter_infra_release/releases/releases_macos.json | head -1
+
+# 5) 再 precache；还报 timed out 就换备用镜像重试
+flutter precache --macos
+```
 
 仓库克隆（GitHub 已关掉 HTTPS 密码认证，用 SSH）：
 
@@ -362,7 +402,11 @@ iPad 与 iPhone 是同一个 iOS 包；`TARGETED_DEVICE_FAMILY = "1,2"` 已包�
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
 | `zsh: permission denied: ./scripts/build_apple_deps.sh` | 仓库里的 `.sh` 是 `100644` | `chmod +x scripts/*.sh`（每次新克隆一次） |
-| `zsh: command not found: flutter` | 装 Xcode / Homebrew / CocoaPods 都不会顺手装 Flutter | `brew install --cask flutter`，再确认新终端里 `flutter --version` 可用（见 4.1 第 5 步） |
+| `zsh: command not found: flutter` | 装 Xcode / Homebrew / CocoaPods 都不会顺手装 Flutter | 按 4.1 第 5 步从镜像装，再确认新终端里 `flutter --version` 可用 |
+| `flutter --version` 停在 `Building flutter tool...` 不动 | 首次运行要编 flutter tool（`pub upgrade` + 编快照），这期间没有任何进度输出 | 正常，本机实测 179 s；另开终端 `ps aux \| grep dart` 能看到进程就是在干活 |
+| `flutter --version` 卡 30 s 以上才回 | 默认每 3 天做一次版本检查（`git fetch` 官方仓库 + 访问 `storage.googleapis.com`），国内常 35 s 超时 | `flutter --version --no-version-check`，或 export `FLUTTER_SUPPRESS_ANALYTICS=true` |
+| `flutter precache` 卡住，最后报 `Can not install platforms and resources: signal timed out` | 没有走镜像，直连 `storage.googleapis.com` | 先 `echo $FLUTTER_STORAGE_BASE_URL`，应为 `https://storage.flutter-io.cn`；再 `flutter precache -v --macos` 看它实际在拉哪个 URL |
+| `flutter build macos` 报 `Unable to find a device matching { platform:macOS, arch:arm64 }` | Flutter 3.27 在 macOS 26 / Xcode 26 上认不出 macOS 设备（[flutter#183353](https://github.com/flutter/flutter/issues/183353)） | 换成 Xcode 版本识别的老写法：`flutter build macos --release` 走不到这里时，改用 `flutter run -d macos` 先确认；必要时把 Flutter 升到能识别该 Xcode 的版本 |
 | `cmake: command not found` | macOS 不带 cmake | `brew install cmake` |
 | `Compatibility with CMake < 3.5 has been removed` | libsmb2 要求 3.2，CMake 4.x 不支持 | 脚本已传 `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`，更新仓库即可 |
 | `krb5-wrapper.c: unknown type name 'gss_const_OID'` 等 18 个 error | macOS 有 GSSAPI 头但缺 MIT/Heimdal 扩展 | 脚本已传 `-DCMAKE_DISABLE_FIND_PACKAGE_GSSAPI=TRUE`，更新仓库即可 |
