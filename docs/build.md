@@ -201,13 +201,25 @@ cmake --version                 # 4.x，脚本已用 CMAKE_POLICY_VERSION_MINIMU
 # 5) Flutter：3.27.x（Apple 侧只需要 flutter 命令与 Dart SDK）
 #    注意：装 Xcode / Homebrew / CocoaPods 都【不会】顺带装 Flutter。
 #    没装时 `cd app && flutter build macos` 只会得到 `zsh: command not found: flutter`。
-brew install --cask flutter      # Homebrew 装的是 stable，含 Dart SDK
-#    或者手动下载（想锁版本时用这个）：
-#    https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/flutter_macos_3.27.4-stable.zip
-#    unzip 到 ~/development 后把 bin 加进 PATH：
-#    echo 'export PATH="$HOME/development/flutter/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+#
+#    国内网络强烈建议【不要】用 `brew install --cask flutter`：
+#    cask 只是去 storage.googleapis.com 下一个 1.3 GB 的 zip，Homebrew 本身不走镜像，
+#    实测经常只有几十 KB/s。改成手动从 CFUG 镜像下载同一个包，再处理"隔离属性"：
+export PUB_HOSTED_URL=https://pub.flutter-io.cn
+export FLUTTER_STORAGE_BASE_URL=https://storage.flutter-io.cn
+mkdir -p ~/development && cd ~/development
+#    Apple Silicon 用 arm64 包（1.49 GB），Intel 用不带 arm64 的那个（1.49 GB）：
+curl -L -o flutter.zip \
+  https://storage.flutter-io.cn/flutter_infra_release/releases/stable/macos/flutter_macos_arm64_3.27.4-stable.zip
+unzip -q flutter.zip && rm flutter.zip
+xattr -dr com.apple.quarantine ~/development/flutter   # 否则首次运行会被 Gatekeeper 拦
+echo 'export PATH="$HOME/development/flutter/bin:$PATH"' >> ~/.zshrc
+echo 'export PUB_HOSTED_URL=https://pub.flutter-io.cn' >> ~/.zshrc
+echo 'export FLUTTER_STORAGE_BASE_URL=https://storage.flutter-io.cn' >> ~/.zshrc
+source ~/.zshrc
 
 flutter --version                # 必须能在任意目录打印版本，再去 app/ 里构建
+flutter precache --macos         # 预先从镜像拉 macOS 引擎产物，后面 build 就不必边编边下
 
 # 6) 用 flutter doctor 一次性确认 Xcode / CocoaPods / Flutter 三者都认到了
 flutter doctor -v
@@ -216,8 +228,20 @@ flutter doctor -v
 #    出现 [!] Xcode ... requires Xcode 就是还停在 Command Line Tools。
 ```
 
-> Homebrew 的 `flutter` cask 会自动装好 Dart SDK，但**不会**帮你跑 `flutter doctor --android-licenses`
-> 之类的东西；Apple 侧用不到 Android 那部分，忽略 doctor 里的 Android 那一行即可。
+> 手动解压的 SDK 自带 Dart SDK，不需要另装 Dart。Apple 侧用不到 Android 那部分，
+> 忽略 `flutter doctor` 里 Android 那一行即可。
+>
+> 镜像只影响**下载**，不影响代码：`flutter/generated_*.dart`、`pubspec.lock` 里的内容
+> 与用官方源装出来的完全一样（`flutter-io.cn` 是按原样镜像 `storage.googleapis.com` 的）。
+> 想验证镜像对不对，比对一下 zip 的 sha256：3.27.4 arm64 包的官方值见
+> <https://storage.googleapis.com/flutter_infra_release/releases/releases_macos.json>，
+> 走镜像下载的应当与之一致（不一致说明下载损坏，删掉重下）。
+>
+> 如果镜像也慢，还有两个备用源（变量值不同，用法一样）：
+> 上海交大 `PUB_HOSTED_URL=https://mirror.sjtu.edu.cn/dart-pub` +
+> `FLUTTER_STORAGE_BASE_URL=https://mirror.sjtu.edu.cn`；清华 TUNA
+> `PUB_HOSTED_URL=https://mirrors.tuna.tsinghua.edu.cn/dart-pub` +
+> `FLUTTER_STORAGE_BASE_URL=https://mirrors.tuna.tsinghua.edu.cn/flutter`。
 
 仓库克隆（GitHub 已关掉 HTTPS 密码认证，用 SSH）：
 
@@ -346,6 +370,9 @@ iPad 与 iPhone 是同一个 iOS 包；`TARGETED_DEVICE_FAMILY = "1,2"` 已包�
 | `xcodebuild: error: ... requires Xcode, but active developer directory ... is a command line tools instance` | 只装了 Command Line Tools | 装完整 Xcode 后 `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer` |
 | `library not found for -llanplayer` | 4.2 没成功（`native/third_party/lanplayer/apple/lib` 不存在） | 重跑 `SLICES=macosx ./scripts/build_apple_deps.sh` |
 | `building for macOS 11.0, but linking in object file built for macOS 14.0` | 依赖用了更高的部署目标 | `MIN_MACOS=11.0` 重编，或把 `app/macos/Podfile` 与工程目标一起调高 |
+| `brew install --cask flutter` 慢到只有几十 KB/s | cask 直接去 `storage.googleapis.com` 拉 1.3 GB，Homebrew 本身不走国内镜像 | 按 4.1 第 5 步手动从 `storage.flutter-io.cn` 下载并 `xattr -dr com.apple.quarantine` |
+| `"flutter" 已损坏，无法打开` / Gatekeeper 拦截 | 手动解压的 SDK 带 quarantine 属性 | `xattr -dr com.apple.quarantine ~/development/flutter` |
+| `flutter pub get` 卡在 pub.dev | 没设 `PUB_HOSTED_URL` | `export PUB_HOSTED_URL=https://pub.flutter-io.cn`（写进 `~/.zshrc` 一次性解决） |
 | App 能开但连不上 SMB | macOS 沙盒拦 445 出站 | 确认 `Runner/*.entitlements` 里有 `com.apple.security.network.client` |
 
 `pod install` 的顺序不要搞反：**先 `build_apple_deps.sh` 产出静态库，再 `flutter pub get`，
