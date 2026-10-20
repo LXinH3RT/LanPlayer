@@ -92,7 +92,7 @@
 | `native/platform/` | 8 | 第三方库在 Windows 上的编译补丁 |
 | `native/platform/win32/smb2/` | 8 | libsmb2 在 mingw 下缺的头（`poll.h`、`sys/socket.h`、`netdb.h` 等） |
 | `native/tests/` | 4 | 四个测试可执行文件：冒烟、纹理/颜色、D3D11VA 端到端、硬解能力探针 |
-| `scripts/` | 16 | 所有构建与验证脚本（见下方脚本表） |
+| `scripts/` | 18 | 所有构建与验证脚本（见下方脚本表） |
 | `tool/` | 8 | 静态检查与依赖下载（见下方工具表） |
 | `docs/` | 15 | 6 篇文档 + 9 张验证截图 |
 | `docs/images/` | 9 | 界面与硬解验证截图，README 与 `verification.md` 引用 |
@@ -127,7 +127,7 @@ LanPlayer/
 └─ docs/                    架构、构建、协议、安全、路线图、验证记录
 ```
 
-### 脚本（`scripts/`，16 个）
+### 脚本（`scripts/`，18 个）
 
 | 脚本 | 作用 |
 |-|-|
@@ -147,6 +147,8 @@ LanPlayer/
 | `capture_playback_ui.ps1` | 起播放页、先把光标停进窗口让控制栏出现，再整屏抓取并按客户区裁剪，同时统计四个区域的亮像素 |
 | `hover_probe.ps1` | 断言「鼠标移动显示控件、静止 2 秒收起」：真实移动系统光标，看 `LanPlayer controls:` 日志序列 |
 | `send_keys.ps1` | 向真实窗口投递按键，验证快捷键/全屏 |
+| `sync_github.ps1` | 一条命令把工作区推到 GitHub：`git add -A` → 有变化才 commit → `git push`；无变化时是空操作 |
+| `install_git_hooks.ps1` | 安装 `.git/hooks/post-commit`（每次 commit 后自动 push）；钩子不在版本库里，新克隆要跑一次 |
 
 ### 工具（`tool/`，8 个）
 
@@ -265,15 +267,24 @@ MSBuild），在不打补丁的机器上也能用，产物在 `app\windows\out\b
 
 ### 关于版本管理
 
-这个目录**已经不再是 git 仓库**（`.git` 已按要求删除），没有远端、没有同步、
-也不会有任何提交推到 GitHub。需要版本管理时，在这里重新 `git init` 即可。
+仓库已经推到 GitHub：<https://github.com/LXinH3RT/LanPlayer>（`origin`，分支 `main`）。
 
-`.gitignore` 仍然保留，它同时是一份"哪些目录是生成物"的清单：
+每次改完代码都会自动推送，靠两层：
+
+```powershell
+# 钩子失效时的手动兜底（add + commit + push 一条命令）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sync_github.ps1 -Message "fix: 说明改了什么"
+
+# 新克隆的机器装一次钩子（之后每次 git commit 都会自动 push）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_git_hooks.ps1
+```
+
+`.gitignore` 同时是一份"哪些目录是生成物"的清单：
 `build/`、`.tools/`、`app/windows/out/`、`app/windows/flutter/ephemeral/` 都是几百 MB 级的
-构建产物（单是 `avcodec-63.dll` 就有 **114 MB**，超过多数平台 100 MB 的单文件上限），
-重新启用 git 时不要把它们加进来。
+构建产物（单是 `avcodec-63.dll` 就有 **114 MB**，超过 GitHub 100 MB 的单文件上限）。
+按 `.gitignore` 过滤后，实际上传的只有约 **232 个文件 / 3.7 MB**。
 
-工具链（`.tools/`，含 Flutter SDK）同理不入库，`python tool\fetch_deps.py` 可以重新拉回。
+工具链（`.tools/`，含 Flutter SDK）不入库，`python tool\fetch_deps.py` 可以重新拉回。
 
 ## 构建
 
