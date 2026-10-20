@@ -8,6 +8,7 @@
  */
 #if defined(__APPLE__)
 
+#include <CoreFoundation/CoreFoundation.h>
 #include <CoreVideo/CoreVideo.h>
 
 #include <stdlib.h>
