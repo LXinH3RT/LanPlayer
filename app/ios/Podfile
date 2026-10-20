@@ -1,0 +1,55 @@
+# LanPlayer 的 iOS / iPadOS Podfile。
+#
+# 与 `flutter create` 生成的模板基本一致，只有两处改动：
+#   1. 打开 platform 行并写成 13.0 —— native/third_party 里的 FFmpeg / libsmb2
+#      是 scripts/build_apple_deps.sh 用 MIN_IOS=13.0 编的，工程目标低于它
+#      链接时会报 "building for iOS 12.0, but linking in object file built for iOS 13.0"。
+#   2. 末尾 post_install 里不再强制 BITCODE（Flutter 3.27 已默认关闭，留着只会刷警告）。
+#
+# lanplayer_core 这个 pod（C 内核 + FFmpeg + libsmb2）不需要在这里手写 pod 行：
+# 它在 app/pubspec.yaml 里是 dart:ffi 插件，flutter_install_all_ios_pods 会读
+# .flutter-plugins-dependencies，自动 `pod 'lanplayer_core', :path => ...`。
+
+platform :ios, '13.0'
+
+# CocoaPods 的统计上报会同步阻塞，明显拖慢 flutter build。
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
+end
+
+require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+flutter_ios_podfile_setup
+
+target 'Runner' do
+  use_frameworks!
+  use_modular_headers!
+
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+  target 'RunnerTests' do
+    inherit! :search_paths
+  end
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)
+  end
+end

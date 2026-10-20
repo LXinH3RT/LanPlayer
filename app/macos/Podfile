@@ -1,0 +1,53 @@
+# LanPlayer 的 macOS Podfile。
+#
+# 与 `flutter create` 生成的模板基本一致，只有一处改动：
+#   platform 写成 11.0 —— native/third_party 里的 FFmpeg / libsmb2 是
+#   scripts/build_apple_deps.sh 用 MIN_MACOS=11.0 编的，工程目标低于它会在链接时
+#   报 "building for macOS 10.14, but linking in object file built for macOS 11.0"。
+#
+# lanplayer_core（C 内核 + FFmpeg + libsmb2）同样不需要手写 pod 行：
+# 它是 app/pubspec.yaml 里的 dart:ffi 插件，flutter_install_all_macos_pods
+# 会自动装上。
+
+platform :osx, '11.0'
+
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'ephemeral', 'Flutter-Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure \"flutter pub get\" is executed first"
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Flutter-Generated.xcconfig, then run \"flutter pub get\""
+end
+
+require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+flutter_macos_podfile_setup
+
+target 'Runner' do
+  use_frameworks!
+  use_modular_headers!
+
+  flutter_install_all_macos_pods File.dirname(File.realpath(__FILE__))
+  target 'RunnerTests' do
+    inherit! :search_paths
+  end
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_macos_build_settings(target)
+  end
+end

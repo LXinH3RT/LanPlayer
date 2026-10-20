@@ -1,0 +1,4 @@
+# Symbols exported by liblanplayer on Apple platforms.
+# ld accepts shell-style wildcards here, so the whole lp_* surface is exported
+# while FFmpeg's own symbols stay hidden inside the static link.
+_lp_*

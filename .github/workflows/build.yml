@@ -1,0 +1,160 @@
+# Builds every platform we support.  The native dependencies are fetched and
+# compiled here, which is exactly the part that cannot be verified offline.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FFMPEG_VERSION: "6.1.1"
+  LIBSMB2_VERSION: "v4.0.0"
+
+jobs:
+  native-desktop:
+    name: native core (Linux, stub platform)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build nasm pkg-config \
+            libsmbclient-dev libssl-dev
+      - name: build ffmpeg (shared)
+        run: |
+          curl -fsSL https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz -o ffmpeg.tar.xz
+          tar xf ffmpeg.tar.xz
+          cd ffmpeg-$FFMPEG_VERSION
+          ./configure --prefix=$PWD/../ff-out --enable-shared --disable-static \
+            --disable-programs --disable-doc --enable-gpl \
+            --enable-filter=atempo,yadif,scale,format,aresample
+          make -j$(nproc) && make install
+      - name: configure
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/ff-out/lib
+        run: |
+          cmake -B build -G Ninja \
+            -DLP_FFMPEG_ROOT=${{ github.workspace }}/ff-out \
+            -DLP_NO_TESTS=OFF
+      - name: build
+        run: cmake --build build
+      - name: smoke test (ABI + load)
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/ff-out/lib
+        run: ./build/lp_smoke_test
+      - name: static checks
+        run: |
+          python3 tool/check_symbols.py
+          python3 tool/check_c_syntax.py
+
+  android:
+    name: android (arm64-v8a)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.27.x"
+          channel: stable
+      - name: build ffmpeg + libsmb2 for Android
+        run: ./scripts/build_android_deps.sh
+      - name: analyze + test
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+      - name: build apk
+        working-directory: app
+        run: flutter build apk --release --target-platform android-arm64
+
+  apple:
+    name: apple (iOS build only)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.27.x"
+          channel: stable
+      - name: build ffmpeg + libsmb2 for Apple
+        run: ./scripts/build_apple_deps.sh
+      - name: analyze + test
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+      - name: build ios (no codesign)
+        working-directory: app
+        run: flutter build ios --release --no-codesign
+
+  windows-native:
+    name: windows x64 native core (zig toolchain)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: fetch toolchain and dependencies
+        run: python tool/fetch_deps.py zig ffmpeg libsmb2 dart crypto typed_data collection
+      - name: build (dll + smoke test, SMB included)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 -Clean
+      - name: test media + runtime check
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make_test_media.ps1
+          build\win-x64\lp_smoke_test.exe
+          build\win-x64\lp_smoke_test.exe --list .
+          build\win-x64\lp_smoke_test.exe build\media\clip.mp4 6
+          build\win-x64\lp_smoke_test.exe build\media\subbed.mkv 6
+      - name: static + dart + key suite
+        run: python tool/check_all.py
+
+  windows-app:
+    name: windows desktop app (flutter + MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.27.4"
+          channel: stable
+      - name: native core (DLL with the win32 adapter)
+        run: |
+          python tool/fetch_deps.py zig ffmpeg libsmb2
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 -Clean
+      - name: fetch the rest of the analysis/desktop deps
+        run: python tool/fetch_deps.py dart ffi path_provider
+      - name: analyze + unit tests
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+      - name: build the desktop app
+        working-directory: app
+        run: flutter build windows --release
+      - name: deploy the core next to the app
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 `
+            -DeployTo app\build\windows\x64\runner\Release
+      - name: texture path preflight (loads lanplayer.dll)
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make_test_media.ps1
+          build\win-x64\lp_win32_texture_test.exe build\media\clip.mp4 build\win-x64
+      - name: hardware decode preflight (d3d11va when the runner has a GPU)
+        run: |
+          build\win-x64\lp_hw_decode_test.exe build\media\colortest\red.mp4 --expect-red --allow-software
+
+

@@ -1,0 +1,12 @@
+{
+  global:
+    lp_abi_version;
+    lp_player_*;
+    lp_source_*;
+    lp_url_normalize;
+    lp_string_free;
+    lp_log_*;
+    Java_dev_lanplayer_app_VideoTextureBridge_*;
+  local:
+    *;
+};

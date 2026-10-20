@@ -1,0 +1,26 @@
+name: lanplayer_core
+description: LanPlayer 的 C 内核（FFmpeg + libsmb2），以 Flutter FFI 插件形式打包给 iOS / iPadOS / macOS。
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+  flutter: '>=3.22.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+# 这个包没有 Dart 插件类，只有 C 代码：
+#   ios/lanplayer_core.podspec   -> CocoaPods 编成静态库链进 Runner
+#   macos/lanplayer_core.podspec -> 同上（macOS）
+# 只写 ffiPlugin: true 就够：Flutter 见到它就会去对应平台目录找同名 podspec，
+# 不需要（也不能）写 pluginClass —— 一旦写了，Flutter 会去找
+# ios/Classes/<Class>.swift 之类的注册类，找不到就报错。
+flutter:
+  plugin:
+    platforms:
+      ios:
+        ffiPlugin: true
+      macos:
+        ffiPlugin: true

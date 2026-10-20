@@ -1,0 +1,22 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  language:
+    strict-casts: true
+    strict-raw-types: true
+  errors:
+    # The FFI layer intentionally uses `Pointer<Void>` and dynamic JSON maps.
+    avoid_dynamic_calls: ignore
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+    - macos/**
+    - windows/**
+
+linter:
+  rules:
+    - prefer_final_locals
+    - prefer_const_constructors
+    - avoid_print
+    - unawaited_futures

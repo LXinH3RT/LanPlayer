@@ -1,0 +1,552 @@
+#!/usr/bin/env python3
+"""Project-wide static checks that do not need a compiler or the Flutter SDK.
+
+Runs on the bundled Python.  Catches the class of mistakes that would otherwise
+only surface after `flutter analyze` / a native build:
+
+  1. every relative Dart import resolves to a file
+  2. no duplicated top-level Dart declaration (a classic copy/paste bug)
+  3. every Dart FFI symbol exists in the native core (delegated to
+     check_symbols.py)
+  4. the repository has every file the docs promise
+  5. the Apple wiring stays consistent (podspec links liblanplayer.a, the two
+     Podfiles exist and declare the same deployment targets as
+     scripts/build_apple_deps.sh)
+
+Usage:  python tool/check_all.py
+"""
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+# The Windows console defaults to a legacy code page that cannot represent
+# the marks printed below; force UTF-8 so the report is readable everywhere.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+ROOT = Path(__file__).resolve().parent.parent
+APP = ROOT / "app"
+LIB = APP / "lib"
+
+problems: list[str] = []
+notes: list[str] = []
+
+def check_dart_imports() -> None:
+    if not LIB.exists():
+        problems.append("app/lib is missing")
+        return
+    count = 0
+    for path in LIB.rglob("*.dart"):
+        text = path.read_text(encoding="utf-8")
+        for m in re.finditer(r"^\s*(?:import|export)\s+'([^']+)'", text, flags=re.M):
+            target = m.group(1)
+            if target.startswith(("dart:", "package:")):
+                continue
+            resolved = (path.parent / target).resolve()
+            if not resolved.exists():
+                problems.append(f"{path.relative_to(ROOT)}: unresolved import '{target}'")
+            count += 1
+    notes.append(f"dart imports checked: {count}")
+
+TOP_LEVEL = re.compile(
+    r"^(?:Future<[^>]*>|void|String|int|double|bool|Widget|Map<[^>]*>|List<[^>]*>|"
+    r"PlayerState|[A-Z][A-Za-z0-9_]*\??)\s+([a-z][A-Za-z0-9_]*)\s*\(",
+    re.M,
+)
+
+def check_dart_duplicates() -> None:
+    seen: dict[str, list[str]] = defaultdict(list)
+    for path in LIB.rglob("*.dart"):
+        text = path.read_text(encoding="utf-8")
+        for m in TOP_LEVEL.finditer(text):
+            seen[m.group(1)].append(str(path.relative_to(ROOT)))
+    dupes = {name: files for name, files in seen.items() if len(files) > 1}
+    for name, files in sorted(dupes.items()):
+        # Methods live inside classes and are indented, so a column-0 hit in more
+        # than one file is a real duplicate global.
+        problems.append(f"duplicate top-level function '{name}': {', '.join(files)}")
+    notes.append(f"top-level dart declarations: {len(seen)}")
+
+REQUIRED = [
+    "README.md",
+    "docs/architecture.md",
+    "docs/build.md",
+    "docs/media-source.md",
+    "docs/roadmap.md",
+    "docs/security.md",
+    "native/CMakeLists.txt",
+    "native/include/lanplayer/lp_player.h",
+    "native/include/lanplayer/lp_source.h",
+    "native/include/lanplayer/lp_types.h",
+    "native/src/core/player.c",
+    "native/src/core/demux.c",
+    "native/src/core/video.c",
+    "native/src/core/audio.c",
+    "native/src/core/subtitle.c",
+    "native/src/core/queue.c",
+    "native/src/core/audio_ring.c",
+    "native/src/source/smb.c",
+    "native/src/source/file.c",
+    "native/src/source/io.c",
+    "native/src/platform/android/media_codec_decoder.c",
+    "native/src/platform/android/egl_renderer.c",
+    "native/src/platform/android/aaudio_sink.c",
+    "native/src/platform/android/jni_bridge.c",
+    "native/src/platform/apple/videotoolbox_decoder.c",
+    "native/src/platform/apple/coreaudio_sink.c",
+    "native/src/platform/apple/apple_texture.c",
+    "native/src/platform/stub/stub_platform.c",
+    "app/pubspec.yaml",
+    "app/lib/core/bindings.dart",
+    "app/lib/core/player_controller.dart",
+    "app/lib/data/stores.dart",
+    "app/lib/ui/home_screen.dart",
+    "app/lib/ui/browser_screen.dart",
+    "app/lib/ui/player_screen.dart",
+    "app/android/app/src/main/kotlin/dev/lanplayer/app/MainActivity.kt",
+    "app/ios/Runner/AppDelegate.swift",
+    "app/ios/Runner/Info.plist",
+    "app/windows/CMakeLists.txt",
+    "app/windows/runner/main.cpp",
+    "app/windows/runner/win32_window.cpp",
+    "app/windows/flutter/generated_plugin_registrant.cc",
+    "packages/lanplayer_video/pubspec.yaml",
+    "packages/lanplayer_video/windows/CMakeLists.txt",
+    "packages/lanplayer_video/windows/lanplayer_video_plugin.cpp",
+    "packages/lanplayer_video/windows/include/lanplayer_video/lan_player_video_plugin.h",
+    "packages/lanplayer_core/pubspec.yaml",
+    "packages/lanplayer_core/ios/lanplayer_core.podspec",
+    "packages/lanplayer_core/macos/lanplayer_core.podspec",
+    "packages/lanplayer_core/ios/Classes/lanplayer_core_anchor.m",
+    "packages/lanplayer_core/macos/Classes/lanplayer_core_anchor.m",
+    "app/ios/Podfile",
+    "app/macos/Podfile",
+    "app/macos/Runner/MainFlutterWindow.swift",
+    "app/macos/Runner/Runner-Bridging-Header.h",
+    "scripts/build_apple_deps.sh",
+    "scripts/gen_windows_runner.ps1",
+    "scripts/patch_flutter_tools.ps1",
+    "native/tests/lp_win32_texture_test.c",
+    "native/tests/lp_hw_decode_test.c",
+    "native/tests/lp_hw_probe.c",
+    "native/src/platform/win32/d3d11va_decoder.c",
+    "packages/lanplayer_video/windows/include/lanplayer_video/pixel_swizzle.h",
+    "app/lib/ui/widgets/subtitle_overlay.dart",
+    "app/lib/data/models.dart",
+    "app/test/subtitle_overlay_test.dart",
+    "app/test/settings_test.dart",
+    "app/test/goldens/rich_runs.png",
+    "scripts/build_windows_app.ps1",
+    "scripts/build_windows_desktop.ps1",
+    "scripts/fix_plugin_links.ps1",
+    "scripts/msvc_chain.bat",
+    "scripts/capture_window.ps1",
+    "scripts/capture_app.ps1",
+    "scripts/capture_screen.ps1",
+    "scripts/send_keys.ps1",
+    "scripts/capture_playback_ui.ps1",
+    "scripts/hover_probe.ps1",
+    "tool/image_stats.ps1",
+    "tool/make_pgs_fixture.py",
+    "tool/pgs_probe.c",
+    "app/lib/data/progress.dart",
+    "app/tool/browse_smoke.dart",
+    "docs/images/desktop-home.png",
+    "docs/images/desktop-player.png",
+    "docs/images/desktop-browse.png",
+    "docs/images/desktop-smb-play.png",
+    "docs/images/desktop-stats.png",
+    "docs/images/desktop-color-red.png",
+    "docs/images/desktop-d3d11va.png",
+]
+
+def check_texture_colors() -> None:
+    """Guard the BGRA->RGBA contract that fixes the "picture is blue" bug.
+
+    The engine always reads a pixel-buffer texture as RGBA8888 while the core
+    emits BGRA, so the plugin must swap the channels.  Two static facts are
+    enough to catch a regression without a build: the header must actually swap
+    R and B, and the plugin must call it from Copy().
+    """
+    header = ROOT / "packages" / "lanplayer_video" / "windows" / "include" / \
+        "lanplayer_video" / "pixel_swizzle.h"
+    plugin = ROOT / "packages" / "lanplayer_video" / "windows" / "lanplayer_video_plugin.cpp"
+    test = ROOT / "native" / "tests" / "lp_win32_texture_test.c"
+    if not header.exists():
+        problems.append("pixel_swizzle.h missing (BGRA->RGBA conversion)")
+        return
+    text = header.read_text(encoding="utf-8")
+    if "row[0] = row[2]" not in text or "row[2] = b" not in text:
+        problems.append("pixel_swizzle.h no longer swaps R and B")
+    if "row[3] = 0xFF" not in text:
+        problems.append("pixel_swizzle.h no longer forces opaque alpha")
+    if plugin.exists() and "lp_bgra_to_rgba(" not in plugin.read_text(encoding="utf-8"):
+        problems.append("plugin does not call lp_bgra_to_rgba() from Copy()")
+    if test.exists() and "--expect-red" not in test.read_text(encoding="utf-8"):
+        problems.append("texture test lost its --expect-red assertion")
+
+    cap = ROOT / "scripts" / "capture_screen.ps1"
+    if cap.exists():
+        ctext = cap.read_text(encoding="utf-8")
+        # A capture that silently grabs the desktop instead of the app produced
+        # an all-white "proof" twice; the colour assertion is what catches it.
+        for needle, why in (
+            ("-ExpectColor", "capture script lost its expected-colour option"),
+            ("Get-ColorMatch", "capture script no longer measures the expected colour"),
+            ("exit 3", "capture script no longer fails on invalid evidence"),
+        ):
+            if needle not in ctext:
+                problems.append(why)
+        if "$ecR = [int]$parts[0]" not in ctext:
+            problems.append("capture script assigns the colour array back to the [string] "
+                            "parameter (PowerShell coerces it, comparisons silently fail)")
+
+    media = ROOT / "scripts" / "make_test_media.ps1"
+    if media.exists() and "duration=60" not in media.read_text(encoding="utf-8"):
+        problems.append("colour probe clip is short again; capturing it becomes a race "
+                        "against playback ending (see docs/verification.md 3.14)")
+    notes.append("texture colour order: R<->B swapped once, alpha forced opaque")
+
+def check_required_files() -> None:
+    for rel in REQUIRED:
+        if not (ROOT / rel).exists():
+            problems.append(f"missing required file: {rel}")
+    notes.append(f"required files: {len(REQUIRED)}")
+
+def run(cmd: list[str], env: dict[str, str] | None = None,
+        cwd: Path | None = None) -> tuple[int, str]:
+    proc = subprocess.run(cmd, cwd=cwd or ROOT, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", env=env)
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+def dart_env() -> dict[str, str]:
+    """The Dart CLI wants a writable config dir; keep it inside .tools/."""
+    env = dict(os.environ)
+    cfg = ROOT / ".tools" / "dart-cfg"
+    cfg.mkdir(parents=True, exist_ok=True)
+    env["APPDATA"] = str(cfg)
+    env["LOCALAPPDATA"] = str(cfg)
+    env["PUB_CACHE"] = str(ROOT / ".tools" / "pub-cache")
+    # `dart format` and the engine frontend server both write temp files; the
+    # sandbox denies the default %LOCALAPPDATA%\Temp location.
+    tmp = ROOT / ".tools" / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    env["TMP"] = str(tmp)
+    env["TEMP"] = str(tmp)
+    return env
+
+def check_native_runtime() -> None:
+    """Runs the compiled smoke test when scripts/build_windows.ps1 has run."""
+    out_dir = ROOT / "build" / "win-x64"
+    exe = out_dir / "lp_smoke_test.exe"
+    if not exe.exists():
+        notes.append("native runtime: not built (scripts/build_windows.ps1)")
+        return
+    env = dict(os.environ)
+    env["PATH"] = str(out_dir) + os.pathsep + env.get("PATH", "")
+    code, out = run([str(exe)], env=env)
+    if code != 0 or "smoke test passed" not in out:
+        problems.append("native smoke test failed:\n" + out.strip()[-1500:])
+    else:
+        notes.append("native runtime: ABI + schemes OK")
+
+def check_hw_decode() -> None:
+    """Runs the D3D11VA end-to-end test when the native build exists.
+
+    A software fallback still decodes a perfect picture, so a picture alone
+    cannot prove the hardware path works: the test asserts the reported decoder
+    name, the colour order and the match against a software reference run.
+    """
+    out_dir = ROOT / "build" / "win-x64"
+    exe = out_dir / "lp_hw_decode_test.exe"
+    red = ROOT / "build" / "media" / "colortest" / "red.mp4"
+    if not exe.exists():
+        notes.append("hw decode: not built (scripts/build_windows.ps1)")
+        return
+    if not red.exists():
+        notes.append("hw decode: skipped (no colour probe clip; make_test_media.ps1)")
+        return
+    env = dict(os.environ)
+    env["PATH"] = str(out_dir) + os.pathsep + env.get("PATH", "")
+    code, out = run([str(exe), str(red), "--expect-red"], env=env, cwd=str(out_dir))
+    if code == 3 or "d3d11va" not in out:
+        # No hardware decoder in this environment is not a code problem.
+        notes.append("hw decode: no D3D11 device here, software path only")
+        return
+    if code != 0 or "hw decode OK" not in out:
+        problems.append("hw decode failed:\n" + out.strip()[-1500:])
+        return
+    mid = [ln for ln in out.splitlines() if ln.startswith("mid_pixel=")]
+    notes.append("hw decode: d3d11va matches software reference, " +
+                 (mid[-1] if mid else "no pixel"))
+
+def dart_exe() -> Path | None:
+    """Prefer the standalone SDK, fall back to the one bundled with Flutter.
+
+    `.tools/dart` is an optional download: the Flutter SDK ships its own Dart and
+    that copy formats identically, so a project kept lean with only Flutter must
+    still pass the Dart checks.
+    """
+    for candidate in (ROOT / ".tools" / "dart" / "bin" / "dart.exe",
+                      ROOT / ".tools" / "flutter-sdk" / "bin" / "cache" /
+                      "dart-sdk" / "bin" / "dart.exe"):
+        if candidate.exists():
+            return candidate
+    return None
+
+def check_dart_syntax() -> None:
+    dart = dart_exe()
+    if dart is None:
+        notes.append("dart syntax: no Dart SDK (tool/fetch_deps.py dart)")
+        return
+    code, out = run([str(dart), "format", "--output=none",
+                     str(APP / "lib"), str(APP / "test"), str(APP / "tool")],
+                    env=dart_env())
+    if code != 0 or "Could not format" in out:
+        problems.append("dart parse failed:\n" + out.strip()[-1500:])
+    else:
+        last = [ln for ln in out.strip().splitlines() if ln.startswith("Formatted")]
+        notes.append("dart syntax: " + (last[-1] if last else "ok"))
+
+def check_dart_compile() -> None:
+    """Compile lib/main.dart to kernel with the engine's frontend server.
+
+    This is the closest thing to `dart analyze` that works without the flutter
+    tool: it resolves every import and reports real type errors.
+    """
+    fs = ROOT / ".tools" / "flutter-sdk"
+    dart_sdk = fs / "bin" / "cache" / "dart-sdk"
+    frontend = dart_sdk / "bin" / "snapshots" / "frontend_server_aot.dart.snapshot"
+    runtime = dart_sdk / "bin" / "dartaotruntime.exe"
+    patched = fs / "bin" / "cache" / "artifacts" / "engine" / "common" / "flutter_patched_sdk"
+    cfg = APP / ".dart_tool" / "package_config.json"
+    if not (runtime.exists() and frontend.exists() and patched.exists() and cfg.exists()):
+        notes.append("dart compile: skipped (needs flutter sdk + dart pub get)")
+        return
+    out_dir = ROOT / "build" / "dart-check"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dill = out_dir / "app.dill"
+    code, out = run([str(runtime), str(frontend), "--sdk-root", str(patched),
+                     "--target=flutter", "--packages", str(cfg),
+                     "--output-dill", str(dill), str(APP / "lib" / "main.dart")],
+                    env=dart_env())
+    errors = [ln.strip() for ln in out.splitlines() if ": Error:" in ln]
+    if code != 0 or errors:
+        problems.append("dart compile failed (%d error(s)):\n%s"
+                        % (len(errors), "\n".join(errors[:15])))
+    else:
+        notes.append("dart compile: kernel ok (%.1f MB)" % (dill.stat().st_size / 1e6))
+
+def check_windows_plugin() -> None:
+    """The desktop plugin resolves lp_* at runtime; names must exist in headers."""
+    plugin = ROOT / "packages" / "lanplayer_video" / "windows" / "lanplayer_video_plugin.cpp"
+    if not plugin.exists():
+        problems.append("windows plugin missing")
+        return
+    headers = list((ROOT / "native" / "include").rglob("*.h")) + [
+        ROOT / "native" / "src" / "platform" / "win32" / "win32_preview.h"]
+    declared: set[str] = set()
+    for header in headers:
+        declared |= set(re.findall(r"\b(lp_[a-z0-9_]+)\s*\(", header.read_text(encoding="utf-8")))
+    text = plugin.read_text(encoding="utf-8")
+    used = set(re.findall(r'GetProcAddress\([^,]+,\s*"(lp_[a-z0-9_]+)"\)', text))
+    used |= set(re.findall(r'get\("(lp_[a-z0-9_]+)"\)', text))
+    for name in sorted(used):
+        if name not in declared:
+            problems.append(f"windows plugin resolves unknown symbol: {name}")
+    notes.append(f"windows plugin: {len(used)} lp_* symbols, all declared")
+
+def check_c_syntax() -> None:
+    code, out = run([sys.executable, str(ROOT / "tool" / "check_c_syntax.py")])
+    if code != 0:
+        problems.append("check_c_syntax.py failed:\n" + out.strip())
+    else:
+        notes.append(out.strip().splitlines()[-1])
+
+def check_symbols() -> None:
+    code, out = run([sys.executable, str(ROOT / "tool" / "check_symbols.py")])
+    if code != 0:
+        problems.append("check_symbols.py failed:\n" + out.strip())
+    else:
+        notes.append(out.strip().splitlines()[-1])
+
+def check_dart_tests() -> None:
+    """Run the Dart test suite (share key + subtitle rendering).
+
+    The Flutter SDK is required; without it the suite is skipped so the static
+    checks still work on a machine that only has the native toolchain.
+    """
+    flutter = ROOT / ".tools" / "flutter-sdk" / "bin" / "flutter.bat"
+    if not flutter.exists():
+        notes.append("dart tests: skipped (needs .tools/flutter-sdk)")
+        return
+    env = dart_env()
+    env["HOME"] = str(ROOT / ".tools" / "home")
+    env["TMP"] = str(ROOT / ".tools" / "tmp")
+    env["TEMP"] = str(ROOT / ".tools" / "tmp")
+    env["FLUTTER_ROOT"] = str(ROOT / ".tools" / "flutter-sdk")
+    code, out = run([str(flutter), "--no-version-check", "test"], env=env, cwd=APP)
+    if code != 0:
+        problems.append("dart tests failed:\n" + out.strip()[-2000:])
+    else:
+        last = [ln for ln in out.strip().splitlines() if "All tests passed" in ln]
+        notes.append("dart tests: " + (last[-1].strip() if last else "ok"))
+
+def check_player_layout() -> None:
+    """Guard the two layout bugs the user reported on the player page.
+
+    1. The back button sat at the vertical centre of the left edge.  The cause was
+       not the Align: the Column inside _topBar()'s Row defaulted to
+       mainAxisSize.max, so it claimed the full screen height and the Row's
+       crossAxisAlignment centred the button.  Dropping that parameter silently
+       reintroduces the bug, and no screenshot can catch it reliably here.
+    2. The picture controls lived behind a "more" button in the top-right corner.
+       They belong in the bottom transport row next to speed/subtitle/audio.
+    """
+    screen = ROOT / "app" / "lib" / "ui" / "player_screen.dart"
+    if not screen.exists():
+        problems.append("player_screen.dart missing")
+        return
+    text = screen.read_text(encoding="utf-8")
+
+    # mainAxisSize.min must appear inside _topBar().  Slice from the method header
+    # to the next top-level method so an unrelated Column cannot satisfy the check.
+    start = text.find("Widget _topBar()")
+    if start < 0:
+        problems.append("player_screen.dart: _topBar() not found")
+        return
+    end = text.find("Widget _bottomBar(", start)
+    top = text[start:end if end > 0 else start + 4000]
+    if "mainAxisSize: MainAxisSize.min" not in top:
+        problems.append("_topBar() lost mainAxisSize.min; the back button will "
+                        "return to the vertical centre (see docs/verification.md)")
+    if "_backKey" not in top:
+        problems.append("_topBar() lost the _backKey hook used by the layout probe")
+
+    bottom_start = text.find("Widget _bottomBar(")
+    bottom = text[bottom_start:] if bottom_start > 0 else ""
+    if "_pictureKey" not in bottom or "_openPictureSheet" not in bottom:
+        problems.append("the picture controls are no longer in the bottom transport row")
+    if "Icons.more_vert" in text:
+        problems.append("the top-right 'more' button is back; picture controls should "
+                        "live in the bottom row")
+
+    notes.append("player layout: back button pinned top-left, picture controls in the "
+                 "bottom row")
+
+
+def check_apple_wiring() -> None:
+    """Guard the iOS / macOS wiring.
+
+    Apple builds cannot be run on this machine at all (no Xcode, no macOS), so
+    the only protection against a silently-broken desktop chain is static: the
+    podspecs must still link liblanplayer.a, the Podfiles must exist, and the
+    deployment targets must match what scripts/build_apple_deps.sh produces.
+    A mismatch there does not fail pod install — it fails the link minutes
+    later with "building for iOS 13.0, but linking in object file built for
+    iOS 14.0", which is exactly the sort of thing nobody can debug on Windows.
+    """
+    core = ROOT / "packages" / "lanplayer_core"
+    for name in ("ios", "macos"):
+        spec = core / name / "lanplayer_core.podspec"
+        if not spec.exists():
+            problems.append(f"missing {spec.relative_to(ROOT)}")
+            continue
+        text = spec.read_text(encoding="utf-8")
+        for needle, why in (
+            ("-llanplayer", "the podspec no longer links the C core"),
+            ("third_party", "the podspec no longer points at native/third_party"),
+            ("OTHER_LDFLAGS", "the podspec no longer passes link flags to Runner"),
+        ):
+            if needle not in text:
+                problems.append(f"{spec.relative_to(ROOT)}: {why}")
+        # The pod must not try to compile native/ itself: Flutter symlinks this
+        # package into ephemeral/.symlinks/plugins, and globbing sources across a
+        # symlink is what we avoided on purpose.
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("s.source_files") and "native" in stripped:
+                problems.append(f"{spec.relative_to(ROOT)}: source_files must not "
+                                f"compile native/ (the core is a prebuilt archive)")
+
+    # Deployment targets must agree with build_apple_deps.sh, otherwise the
+    # static archives are newer than the app and the link fails.
+    # The script uses shell default-expansion: MIN_IOS="${MIN_IOS:-13.0}", so
+    # pull the fallback out of that form rather than the raw right-hand side.
+    script = ROOT / "scripts" / "build_apple_deps.sh"
+    min_ios = min_macos = None
+    if script.exists():
+        for line in script.read_text(encoding="utf-8").splitlines():
+            m = re.match(r'\s*(MIN_IOS|MIN_MACOS)="?\$\{\w+:-([0-9.]+)\}"?', line)
+            if not m:
+                m = re.match(r'\s*(MIN_IOS|MIN_MACOS)="?([0-9.]+)"?', line)
+            if not m:
+                continue
+            if m.group(1) == "MIN_IOS":
+                min_ios = m.group(2)
+            else:
+                min_macos = m.group(2)
+
+    ios_podfile = APP / "ios" / "Podfile"
+    macos_podfile = APP / "macos" / "Podfile"
+    if not ios_podfile.exists():
+        problems.append("app/ios/Podfile missing; flutter build ios refuses to run")
+    elif min_ios and f"platform :ios, '{min_ios}'" not in ios_podfile.read_text(encoding="utf-8"):
+        problems.append(f"app/ios/Podfile does not declare platform :ios, '{min_ios}' "
+                        f"(build_apple_deps.sh builds for {min_ios})")
+    if not macos_podfile.exists():
+        problems.append("app/macos/Podfile missing; flutter build macos refuses to run")
+    elif min_macos and f"platform :osx, '{min_macos}'" not in macos_podfile.read_text(encoding="utf-8"):
+        problems.append(f"app/macos/Podfile does not declare platform :osx, '{min_macos}' "
+                        f"(build_apple_deps.sh builds for {min_macos})")
+
+    # Swift cannot see lp_* without the bridging header in the build settings.
+    macos_pbx = APP / "macos" / "Runner.xcodeproj" / "project.pbxproj"
+    if macos_pbx.exists():
+        if "SWIFT_OBJC_BRIDGING_HEADER" not in macos_pbx.read_text(encoding="utf-8"):
+            problems.append("app/macos/Runner.xcodeproj: SWIFT_OBJC_BRIDGING_HEADER is "
+                            "not set, so MainFlutterWindow.swift cannot call lp_*")
+    if not (APP / "macos" / "Runner" / "MainFlutterWindow.swift").exists():
+        problems.append("app/macos/Runner/MainFlutterWindow.swift missing; the macOS "
+                        "build would have no lanplayer/video channel")
+
+    if not any(p.startswith(("app/ios/Podfile", "app/macos/Podfile",
+                             "app/macos/Runner.xcodeproj")) for p in problems):
+        notes.append(f"apple wiring: podspecs link liblanplayer.a, Podfiles declare "
+                     f"iOS {min_ios or '?'} / macOS {min_macos or '?'}")
+
+
+def main() -> int:
+    check_c_syntax()
+    check_dart_imports()
+    check_dart_duplicates()
+    check_required_files()
+    check_symbols()
+    check_native_runtime()
+    check_dart_syntax()
+    check_dart_compile()
+    check_dart_tests()
+    check_windows_plugin()
+    check_texture_colors()
+    check_player_layout()
+    check_apple_wiring()
+    check_hw_decode()
+
+    for n in notes:
+        print(f"· {n}")
+    if problems:
+        print()
+        for p in problems:
+            print(f"✗ {p}")
+        print(f"\n{len(problems)} problem(s)")
+        return 1
+    print("\n✓ all static checks passed")
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

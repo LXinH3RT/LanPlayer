@@ -1,0 +1,478 @@
+/*
+ * Apple hardware decoding through VideoToolbox.
+ *
+ * The decoder produces CVPixelBufferRef frames backed by IOSurfaces, which the
+ * Flutter texture bridge hands to the engine without a copy.  Both the h264 and
+ * hevc parameter set formats (avcC / Annex-B / hvcC) are accepted because
+ * Matroska carries Annex-B while MP4 carries the boxed form.
+ */
+#if defined(__APPLE__)
+
+#include <CoreMedia/CoreMedia.h>
+#include <CoreVideo/CoreVideo.h>
+#include <VideoToolbox/VideoToolbox.h>
+
+#include <stdlib.h>
+
+#include "player_internal.h"
+
+#define LP_VT_QUEUE 8
+
+struct LpVideoDecoder {
+    VTDecompressionSessionRef session;
+    CMVideoFormatDescriptionRef fmt;
+    int width;
+    int height;
+    AVRational tb;
+    LpPlayer *player;
+    int eos;
+
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    struct {
+        CVPixelBufferRef image;
+        int64_t pts_us;
+    } queue[LP_VT_QUEUE];
+    int head;
+    int count;
+};
+
+static int64_t cmtime_to_us(CMTime t)
+{
+    if (!CMTIME_IS_VALID(t) || t.timescale == 0) {
+        return -1;
+    }
+    return (int64_t)((double)t.value * 1000000.0 / (double)t.timescale);
+}
+
+/* ------------------------------------------------------- format description --- */
+
+/* Copies the parameter sets for one NAL type out of an avcC / Annex-B blob. */
+static int h264_param_sets(const uint8_t *ed, int size, const uint8_t **sets, int *set_sizes,
+                           int max)
+{
+    int n = 0;
+    if (!ed || size < 5) {
+        return 0;
+    }
+    if (ed[0] == 1) {
+        /* avcC */
+        int pos = 5;
+        int nsps = ed[pos++] & 0x1F;
+        for (int i = 0; i < nsps && n < max && pos + 2 <= size; i++) {
+            int len = (ed[pos] << 8) | ed[pos + 1];
+            pos += 2;
+            if (pos + len > size) {
+                return n;
+            }
+            sets[n] = ed + pos;
+            set_sizes[n] = len;
+            n++;
+            pos += len;
+        }
+        if (pos < size && n < max) {
+            int npss = ed[pos++];
+            for (int i = 0; i < npss && n < max && pos + 2 <= size; i++) {
+                int len = (ed[pos] << 8) | ed[pos + 1];
+                pos += 2;
+                if (pos + len > size) {
+                    return n;
+                }
+                sets[n] = ed + pos;
+                set_sizes[n] = len;
+                n++;
+                pos += len;
+            }
+        }
+        return n;
+    }
+    /* Annex-B: split on start codes, keep SPS (7) and PPS (8). */
+    int i = 0;
+    while (i + 3 < size && n < max) {
+        int sc = 0;
+        if (ed[i] == 0 && ed[i + 1] == 0 && ed[i + 2] == 1) {
+            sc = 3;
+        } else if (i + 4 < size && ed[i] == 0 && ed[i + 1] == 0 && ed[i + 2] == 0 && ed[i + 3] == 1) {
+            sc = 4;
+        }
+        if (!sc) {
+            i++;
+            continue;
+        }
+        int start = i + sc;
+        int end = start;
+        while (end + 2 < size && !(ed[end] == 0 && ed[end + 1] == 0 && ed[end + 2] <= 1)) {
+            end++;
+        }
+        if (end <= start) {
+            break;
+        }
+        int type = ed[start] & 0x1F;
+        if (type == 7 || type == 8) {
+            sets[n] = ed + start;
+            set_sizes[n] = end - start;
+            n++;
+        }
+        i = end;
+    }
+    return n;
+}
+
+static int hevc_param_sets(const uint8_t *ed, int size, const uint8_t **sets, int *set_sizes,
+                           int max)
+{
+    int n = 0;
+    if (!ed || size < 23 || ed[0] != 1) {
+        return 0;
+    }
+    int pos = 22;
+    int arrays = ed[pos++];
+    for (int a = 0; a < arrays && pos + 3 <= size; a++) {
+        int nal_type = ed[pos] & 0x3F;
+        pos++;
+        int num = (ed[pos] << 8) | ed[pos + 1];
+        pos += 2;
+        for (int k = 0; k < num && pos + 2 <= size; k++) {
+            int len = (ed[pos] << 8) | ed[pos + 1];
+            pos += 2;
+            if (pos + len > size) {
+                return n;
+            }
+            if ((nal_type == 32 || nal_type == 33 || nal_type == 34) && n < max) {
+                sets[n] = ed + pos;
+                set_sizes[n] = len;
+                n++;
+            }
+            pos += len;
+        }
+    }
+    return n;
+}
+
+static int build_format_description(LpVideoDecoder *d, const LpVideoDecoderConfig *cfg, char *err,
+                                    size_t errlen)
+{
+    const uint8_t *sets[16];
+    int sizes[16];
+    int n = 0;
+    if (cfg->codec_id == AV_CODEC_ID_H264) {
+        n = h264_param_sets(cfg->par->extradata, cfg->par->extradata_size, sets, sizes, 16);
+        if (n < 2) {
+            snprintf(err, errlen, "h264 parameter sets missing");
+            return -1;
+        }
+        OSStatus st = CMVideoFormatDescriptionCreateFromH264ParameterSets(
+            kCFAllocatorDefault, (size_t)n, sets, sizes, 4, &d->fmt);
+        if (st != noErr) {
+            snprintf(err, errlen, "CreateFromH264ParameterSets: %d", (int)st);
+            return -1;
+        }
+    } else if (cfg->codec_id == AV_CODEC_ID_HEVC) {
+        n = hevc_param_sets(cfg->par->extradata, cfg->par->extradata_size, sets, sizes, 16);
+        if (n < 2) {
+            snprintf(err, errlen, "hevc parameter sets missing");
+            return -1;
+        }
+        OSStatus st = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+            kCFAllocatorDefault, (size_t)n, sets, sizes, 4, NULL, &d->fmt);
+        if (st != noErr) {
+            snprintf(err, errlen, "CreateFromHEVCParameterSets: %d", (int)st);
+            return -1;
+        }
+    } else {
+        snprintf(err, errlen, "codec %s not supported by VideoToolbox path",
+                 avcodec_get_name(cfg->codec_id));
+        return -1;
+    }
+    CMVideoDimensions dim = CMVideoFormatDescriptionGetDimensions(d->fmt);
+    d->width = dim.width;
+    d->height = dim.height;
+    return 0;
+}
+
+static void push_frame(LpVideoDecoder *d, CVPixelBufferRef image, int64_t pts_us)
+{
+    pthread_mutex_lock(&d->mutex);
+    if (d->count >= LP_VT_QUEUE) {
+        /* Drop the oldest frame: the display is behind. */
+        CVPixelBufferRelease(d->queue[d->head].image);
+        d->queue[d->head].image = NULL;
+        d->head = (d->head + 1) % LP_VT_QUEUE;
+        d->count--;
+    }
+    int slot = (d->head + d->count) % LP_VT_QUEUE;
+    d->queue[slot].image = (CVPixelBufferRef)CVBufferRetain(image);
+    d->queue[slot].pts_us = pts_us;
+    d->count++;
+    pthread_cond_signal(&d->cond);
+    pthread_mutex_unlock(&d->mutex);
+}
+
+LpVideoDecoder *lp_hw_decoder_create(void)
+{
+    LpVideoDecoder *d = calloc(1, sizeof(*d));
+    if (!d) {
+        return NULL;
+    }
+    pthread_mutex_init(&d->mutex, NULL);
+    pthread_cond_init(&d->cond, NULL);
+    return d;
+}
+
+int lp_hw_decoder_available(void)
+{
+    return 1;
+}
+
+const char *lp_hw_decoder_name(void)
+{
+    return "videotoolbox";
+}
+
+int lp_hw_decoder_init(LpVideoDecoder *d, const LpVideoDecoderConfig *cfg, char *err, size_t errlen)
+{
+    if (!d || !cfg) {
+        return LP_ERR_ARGUMENT;
+    }
+    d->tb = cfg->time_base;
+    d->player = cfg->player;
+    if (build_format_description(d, cfg, err, errlen) != 0) {
+        return LP_ERR_UNSUPPORTED;
+    }
+
+    CFMutableDictionaryRef attrs = CFDictionaryCreateMutable(
+        kCFAllocatorDefault, 3, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    int format = kCVPixelFormatType_32BGRA;
+    CFNumberRef fmt_num = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &format);
+    CFDictionarySetValue(attrs, kCVPixelBufferPixelFormatTypeKey, fmt_num);
+    CFRelease(fmt_num);
+    CFMutableDictionaryRef iosurf = CFDictionaryCreateMutable(
+        kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFDictionarySetValue(attrs, kCVPixelBufferIOSurfacePropertiesKey, iosurf);
+    CFRelease(iosurf);
+
+    VTDecompressionOutputCallbackRecord cb;
+    memset(&cb, 0, sizeof(cb));
+    OSStatus st = VTDecompressionSessionCreate(kCFAllocatorDefault, d->fmt, NULL, attrs, NULL, NULL,
+                                               &d->session);
+    CFRelease(attrs);
+    if (st != noErr || !d->session) {
+        snprintf(err, errlen, "VTDecompressionSessionCreate: %d", (int)st);
+        return LP_ERR_CODEC;
+    }
+    LP_INFO("videotoolbox", "session ready %dx%d (%s)", d->width, d->height,
+            avcodec_get_name(cfg->codec_id));
+    return LP_OK;
+}
+
+/* Converts Annex-B start codes to 4-byte length prefixes (VT wants AVCC). */
+static AVPacket *to_avcc(LpVideoDecoder *d, const AVPacket *pkt)
+{
+    (void)d;
+    const uint8_t *src = pkt->data;
+    int size = pkt->size;
+    if (size < 4) {
+        return NULL;
+    }
+    int has_sc = (src[0] == 0 && src[1] == 0 && (src[2] == 1 || (src[2] == 0 && src[3] == 1)));
+    if (!has_sc) {
+        return NULL; /* already length prefixed */
+    }
+    AVPacket *out = av_packet_alloc();
+    if (!out) {
+        return NULL;
+    }
+    if (av_new_packet(out, size + 16) < 0) {
+        av_packet_free(&out);
+        return NULL;
+    }
+    int o = 0;
+    int i = 0;
+    while (i + 3 < size) {
+        int sc = 0;
+        if (src[i] == 0 && src[i + 1] == 0 && src[i + 2] == 1) {
+            sc = 3;
+        } else if (i + 4 < size && src[i] == 0 && src[i + 1] == 0 && src[i + 2] == 0 &&
+                   src[i + 3] == 1) {
+            sc = 4;
+        }
+        if (!sc) {
+            i++;
+            continue;
+        }
+        int start = i + sc;
+        int end = start;
+        while (end + 2 < size && !(src[end] == 0 && src[end + 1] == 0 && src[end + 2] <= 1)) {
+            end++;
+        }
+        int len = end - start;
+        if (len <= 0 || o + 4 + len > out->size) {
+            break;
+        }
+        out->data[o++] = (uint8_t)(len >> 24);
+        out->data[o++] = (uint8_t)(len >> 16);
+        out->data[o++] = (uint8_t)(len >> 8);
+        out->data[o++] = (uint8_t)len;
+        memcpy(out->data + o, src + start, (size_t)len);
+        o += len;
+        i = end;
+    }
+    if (o == 0) {
+        av_packet_free(&out);
+        return NULL;
+    }
+    out->size = o;
+    return out;
+}
+
+int lp_hw_decoder_send(LpVideoDecoder *d, const AVPacket *pkt)
+{
+    if (!d || !d->session) {
+        return LP_ERR_STATE;
+    }
+    if (!pkt) {
+        d->eos = 1;
+        VTDecompressionSessionWaitForAsynchronousFrames(d->session);
+        return LP_OK;
+    }
+    AVPacket *converted = to_avcc(d, pkt);
+    const AVPacket *use = converted ? converted : pkt;
+
+    CMBlockBufferRef block = NULL;
+    OSStatus st = CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault, NULL,
+                                                     (size_t)use->size, kCFAllocatorDefault, NULL, 0,
+                                                     (size_t)use->size, 0, &block);
+    if (st != kCMBlockBufferNoErr) {
+        av_packet_free(&converted);
+        return LP_ERR_CODEC;
+    }
+    CMBlockBufferReplaceDataBytes(use->data, block, 0, (size_t)use->size);
+
+    double seconds = 0;
+    if (use->pts != AV_NOPTS_VALUE) {
+        seconds = (double)use->pts * av_q2d(d->tb);
+    }
+    CMSampleTimingInfo timing;
+    timing.duration = CMTimeMake(1, 90000);
+    timing.presentationTimeStamp = CMTimeMakeWithSeconds(seconds, 90000);
+    timing.decodeTimeStamp = kCMTimeInvalid;
+    size_t sample_size = (size_t)use->size;
+    CMSampleBufferRef sb = NULL;
+    st = CMSampleBufferCreateReady(kCFAllocatorDefault, block, d->fmt, 1, 1, &timing, 1,
+                                   &sample_size, &sb);
+    CFRelease(block);
+    av_packet_free(&converted);
+    if (st != noErr || !sb) {
+        return LP_ERR_CODEC;
+    }
+    VTDecodeFrameFlags flags = 0;
+    VTDecodeInfoFlags info = 0;
+    LpVideoDecoder *dec = d;
+    st = VTDecompressionSessionDecodeFrameWithOutputHandler(
+        d->session, sb, flags, &info,
+        ^(OSStatus status, VTDecodeInfoFlags flags2, CVImageBufferRef image, CMTime pts,
+          CMTime dur) {
+          (void)flags2;
+          (void)dur;
+          if (status != noErr || !image) {
+              return;
+          }
+          int64_t pts_us = cmtime_to_us(pts);
+          push_frame(dec, (CVPixelBufferRef)image, pts_us);
+        });
+    CFRelease(sb);
+    return st == noErr ? LP_OK : LP_ERR_CODEC;
+}
+
+int lp_hw_decoder_receive(LpVideoDecoder *d, LpDecodedFrame *out)
+{
+    if (!d || !out) {
+        return LP_ERR_ARGUMENT;
+    }
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_nsec += 10 * 1000 * 1000;
+    if (ts.tv_nsec >= 1000000000) {
+        ts.tv_sec++;
+        ts.tv_nsec -= 1000000000;
+    }
+    pthread_mutex_lock(&d->mutex);
+    while (d->count == 0) {
+        if (d->eos) {
+            pthread_mutex_unlock(&d->mutex);
+            return LP_ERR_END_OF_STREAM;
+        }
+        if (pthread_cond_timedwait(&d->cond, &d->mutex, &ts) != 0 && d->count == 0) {
+            pthread_mutex_unlock(&d->mutex);
+            return LP_ERR_AGAIN;
+        }
+    }
+    out->kind = LP_DEC_PIXEL_BUFFER;
+    out->handle = d->queue[d->head].image;
+    out->pts_us = d->queue[d->head].pts_us;
+    out->width = d->width;
+    out->height = d->height;
+    d->queue[d->head].image = NULL;
+    d->head = (d->head + 1) % LP_VT_QUEUE;
+    d->count--;
+    pthread_mutex_unlock(&d->mutex);
+    return LP_OK;
+}
+
+int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f)
+{
+    if (!d || !f) {
+        return LP_ERR_ARGUMENT;
+    }
+    CVPixelBufferRef image = (CVPixelBufferRef)f->handle;
+    if (image && d->player) {
+        lp_render_publish_pixel_buffer(d->player, image);
+    }
+    if (image) {
+        CVPixelBufferRelease(image);
+    }
+    f->handle = NULL;
+    return LP_OK;
+}
+
+void lp_hw_decoder_flush(LpVideoDecoder *d)
+{
+    if (!d || !d->session) {
+        return;
+    }
+    VTDecompressionSessionWaitForAsynchronousFrames(d->session);
+    pthread_mutex_lock(&d->mutex);
+    for (int i = 0; i < d->count; i++) {
+        int slot = (d->head + i) % LP_VT_QUEUE;
+        if (d->queue[slot].image) {
+            CVPixelBufferRelease(d->queue[slot].image);
+            d->queue[slot].image = NULL;
+        }
+    }
+    d->count = 0;
+    d->head = 0;
+    d->eos = 0;
+    pthread_mutex_unlock(&d->mutex);
+}
+
+void lp_hw_decoder_destroy(LpVideoDecoder *d)
+{
+    if (!d) {
+        return;
+    }
+    lp_hw_decoder_flush(d);
+    if (d->session) {
+        VTDecompressionSessionInvalidate(d->session);
+        CFRelease(d->session);
+        d->session = NULL;
+    }
+    if (d->fmt) {
+        CFRelease(d->fmt);
+        d->fmt = NULL;
+    }
+    pthread_mutex_destroy(&d->mutex);
+    pthread_cond_destroy(&d->cond);
+    free(d);
+}
+
+#endif /* __APPLE__ */

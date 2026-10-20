@@ -1,0 +1,19 @@
+// 这行必须是第一条：CocoaPods 生成的 Pods-Runner xcconfig 里带着
+// Flutter 引擎、插件（含 lanplayer_core）的头文件与链接设置。
+// 用 #include? 而不是 #include，是因为还没跑过 pod install 时文件不存在，
+// 不能因此让整个工程配置失败。
+#include? "Pods/Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"
+
+#include "ephemeral/Flutter-Generated.xcconfig"
+
+// LanPlayer native core (see docs/build.md section 4).
+//
+// SRCDIR resolves to app/macos, so the repo's native/ tree is two levels up.
+// The static libraries are produced by scripts/build_apple_deps.sh.
+LP_NATIVE = $(SRCDIR)/../../native
+
+HEADER_SEARCH_PATHS = $(inherited) $(LP_NATIVE)/include
+LIBRARY_SEARCH_PATHS = $(inherited) \
+    $(LP_NATIVE)/third_party/lanplayer/apple/lib \
+    $(LP_NATIVE)/third_party/ffmpeg/apple/lib \
+    $(LP_NATIVE)/third_party/libsmb2/apple/lib
