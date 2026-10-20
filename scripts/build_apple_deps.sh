@@ -68,6 +68,11 @@ for SLICE in $SLICES; do
   CC="xcrun -sdk $SDK clang -arch $PRIMARY_ARCH $PLATFORM_FLAG"
 
   PREFIX="$WORK/ff-$SLICE"
+  # FFmpeg 编一次要十几分钟，而改脚本后通常只是后面某一步失败。
+  # 已有产物就跳过；真要重编用 FORCE=1 ./scripts/build_apple_deps.sh。
+  if [[ -f "$PREFIX/lib/libavcodec.a" && "${FORCE:-0}" != "1" ]]; then
+    echo "== FFmpeg $SLICE (cached)"
+  else
   echo "== FFmpeg $SLICE"
   rm -rf "$WORK/ffbuild-$SLICE"
   mkdir -p "$WORK/ffbuild-$SLICE"
@@ -86,14 +91,36 @@ for SLICE in $SLICES; do
   make -j"$(sysctl -n hw.ncpu)"
   make install
   popd >/dev/null
+  fi
 
   echo "== libsmb2 $SLICE"
   rm -rf "$WORK/smb-$SLICE"
+  # 为什么必须禁掉 GSSAPI / OpenSSL：
+  #   libsmb2 的 CMakeLists 无条件 find_package(GSSAPI) + find_package(OpenSSL)。
+  #   macOS 自带 libgssapi_krb5 与 gssapi/gssapi.h，于是 HAVE_LIBKRB5 被定义，
+  #   lib/krb5-wrapper.c 去用 gss_const_OID / gss_acquire_cred_with_password /
+  #   gss_set_neg_mechs / gss_inquire_sec_context_by_oid / GSS_C_INQ_SSPI_SESSION_KEY /
+  #   gss_release_buffer_set —— 这些是 MIT/Heimdal krb5 的扩展，Apple 的 GSS.framework
+  #   没有，Xcode 15 起隐式函数声明又是硬错误，直接 18 个 error。
+  #   装了 Homebrew 的话 OpenSSL 也会被找到，静态库里就留下 libcrypto 符号，
+  #   而 app 并不链接它，最后是链接期错误。
+  #   我们只用 NTLM（用户名 + 密码），不需要 Kerberos 与 SMB3 加密传输，
+  #   所以两个都关掉，让 libsmb2 用它自带的 AES/MD4/HMAC 实现。
+  #   CMAKE_DISABLE_FIND_PACKAGE_<pkg> 是 CMake 标准缓存变量，能让对应的
+  #   find_package 直接失败（不是致命错误），比 -DGSSAPI_FOUND=FALSE 可靠。
+  # CMAKE_POLICY_VERSION_MINIMUM=3.5：libsmb2 v4.0.0 的 cmake_minimum_required 是 3.2，
+  # 而 CMake 4.x（Homebrew 现在装的就是 4.x）已经删掉了 <3.5 的兼容性，配置会直接报
+  # "Compatibility with CMake < 3.5 has been removed"。这个变量是 CMake 3.31+ 加的开关，
+  # 老版本 CMake 不认识它、只会打一句 "Manually-specified variables were not used" 警告，
+  # 所以无条件传是安全的。
   cmake -S "$WORK/libsmb2" -B "$WORK/smb-$SLICE" \
     -DCMAKE_SYSTEM_NAME="$([[ "$SDK" == iphone* ]] && echo iOS || echo Darwin)" \
     -DCMAKE_OSX_SYSROOT="$SDK" -DCMAKE_OSX_ARCHITECTURES="$PRIMARY_ARCH" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOY_TARGET" \
     -DCMAKE_INSTALL_PREFIX="$WORK/smb-out-$SLICE" \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DCMAKE_DISABLE_FIND_PACKAGE_GSSAPI=TRUE \
+    -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=TRUE \
     -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
   cmake --build "$WORK/smb-$SLICE" -j"$(sysctl -n hw.ncpu)"
   cmake --install "$WORK/smb-$SLICE"
@@ -195,9 +222,24 @@ else
   echo "warning: liblanplayer.a not built, skipped" >&2
 fi
 
+# lanplayer_core.podspec 里 -lsmb2 之外的 FFmpeg 7 个库都按顺序列出，这里
+# 多导出一个 libpostproc 也没用（configure 里 --disable-postproc）。
+# avdevice 同理：核心代码从来没调用过 avdevice_*（用 grep 确认过），
+# 所以不需要 avdevice，podspec 里也不要列它。
+
 # Headers: identical across slices, take the first.
+# 用 install 版的头（$WORK/smb-out-*/include）而不是源码树的 include/：
+# 源码树里那些（asprintf.h、libsmb2-private.h、Makefile.am、msvc/…）是本仓库
+# 自己编 libsmb2 时才要的，app 侧只需要 <smb2/libsmb2.h>。
 FIRST_SLICE="${SLICES%% *}"
+rm -rf "$OUT/ffmpeg/apple/include" "$OUT/libsmb2/apple/include"
+mkdir -p "$OUT/ffmpeg/apple/include" "$OUT/libsmb2/apple/include"
 cp -r "$WORK/ff-$FIRST_SLICE/include/." "$OUT/ffmpeg/apple/include/"
-cp -r "$WORK/libsmb2/include/." "$OUT/libsmb2/apple/include/"
+if [[ -d "$WORK/smb-out-$FIRST_SLICE/include" ]]; then
+  cp -r "$WORK/smb-out-$FIRST_SLICE/include/." "$OUT/libsmb2/apple/include/"
+else
+  # 老版本 libsmb2 的 install() 只装库不装头；退回到源码树里的 smb2/ 子目录。
+  cp -r "$WORK/libsmb2/include/." "$OUT/libsmb2/apple/include/"
+fi
 
 echo "done: $OUT"

@@ -173,14 +173,48 @@ Apple 平台没有 CMake，也不用 MSBuild。整条链路是：
 
 ### 4.1 准备（只需一次）
 
+按顺序装，每一步都有坑（下面这些是在一台 Apple Silicon Mac 上实际踩出来的）：
+
 ```bash
-# 1) 依赖源码 + Xcode 命令行工具
-xcode-select --install
-# 2) CocoaPods（macOS 自带 ruby）
-sudo gem install cocoapods
-# 3) Flutter（3.27.x）
+# 1) Xcode（不是只有命令行工具）
+#    flutter build macos 需要完整 Xcode：xcodebuild -version 必须能打印版本，
+#    只有 Command Line Tools 时会在构建早期报 "xcodebuild: error: ... requires Xcode"。
+xcode-select --install          # 先把命令行工具装上
+#    然后从 App Store 装 Xcode，装完执行：
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -runFirstLaunch
+sudo xcodebuild -license accept
+
+# 2) Homebrew（如果还没有）
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# 3) CocoaPods：不要用 sudo gem install
+#    macOS 自带的 Ruby 2.6 的 gem 目录是 /Library/Ruby/Gems/2.6.0，没有写权限，
+#    sudo gem install cocoapods 会直接 "You don't have write permissions"。
+brew install cocoapods
+pod --version                   # 1.17.x
+
+# 4) cmake：libsmb2 只能用 CMake 编
+brew install cmake
+cmake --version                 # 4.x，脚本已用 CMAKE_POLICY_VERSION_MINIMUM 兼容
+
+# 5) Flutter：3.27.x（Apple 侧只需要 flutter 命令与 Dart SDK）
 flutter --version
 ```
+
+仓库克隆（GitHub 已关掉 HTTPS 密码认证，用 SSH）：
+
+```bash
+ssh-keygen -t ed25519 -C "you@mac"
+# 把 ~/.ssh/id_ed25519.pub 贴到 GitHub → Settings → SSH and GPG keys
+ssh -T git@github.com           # 看到 "Hi <user>! You've successfully authenticated"
+git clone git@github.com:LXinH3RT/LanPlayer.git
+cd LanPlayer
+chmod +x scripts/*.sh           # 仓库里 .sh 是 100644，不 chmod 会 permission denied
+```
+
+CocoaPods 首次跑 `pod install` 要拉 Specs 仓库（约 250 MB，`~/.cocoapods/repos/master`），
+慢的话可以先 `git clone --depth 1 https://github.com/CocoaPods/Specs.git ~/.cocoapods/repos/master`。
 
 ### 4.2 编静态库
 
@@ -201,6 +235,25 @@ ARCHS="arm64 x86_64" ./scripts/build_apple_deps.sh   # Intel Mac 再加 x86_64
 
 这一步会把 FFmpeg 6.1.1 与 libsmb2 v4.0.0 的源码下载到 `build/deps/`，编译十几分钟。
 `native/third_party/` 已被 `.gitignore` 排除，不进版本库。
+
+FFmpeg 编完会缓存（`build/deps/ff-<slice>/lib/libavcodec.a` 存在就跳过），
+改脚本后重跑不会把十几分钟再花一遍；要强编 `FORCE=1 ./scripts/build_apple_deps.sh`。
+
+脚本里针对 macOS 的两处必需开关（早期版本没有，会在 libsmb2 段失败）：
+
+- `-DCMAKE_DISABLE_FIND_PACKAGE_GSSAPI=TRUE` / `..._OpenSSL=TRUE`：
+  libsmb2 的 CMakeLists 无条件 `find_package(GSSAPI)` + `find_package(OpenSSL)`，
+  macOS 自带 `libgssapi_krb5.tbd` 与 `gssapi/gssapi.h`，于是 `HAVE_LIBKRB5` 被定义，
+  接着编 `lib/krb5-wrapper.c`——它用的 `gss_const_OID`、`gss_acquire_cred_with_password`、
+  `gss_buffer_set_t`、`gss_set_neg_mechs`、`gss_inquire_sec_context_by_oid` 都是 MIT/Heimdal
+  krb5 的扩展，Apple 的 GSS.framework 没有，Xcode 15 起隐式函数声明是硬错误，
+  结果是 `17 warnings and 18 errors` 卡在 `krb5-wrapper.c.o`。
+  我们只用 NTLM（用户名 + 密码），不需要 Kerberos，关掉即可。
+  （**不要**加 `-DUSE_KRB5=OFF`——libsmb2 没有这个变量，CMake 只会打一句
+  `Manually-specified variables were not used by the project: USE_KRB5`，等于没改。）
+- `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`：libsmb2 v4.0.0 的 `cmake_minimum_required(VERSION 3.2)`，
+  而 Homebrew 装的 CMake 4.x 已删除 `< 3.5` 兼容性，配置阶段直接报
+  `Compatibility with CMake < 3.5 has been removed`。
 
 ### 4.3 接进 Flutter 工程
 
