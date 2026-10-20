@@ -341,6 +341,18 @@ Apple 端的工程接线已经写在仓库里，`docs/build.md` 第 4 节有完�
 `MIN_IOS` / `MIN_MACOS` 对齐），macOS 的 `MainFlutterWindow.swift` 注册
 `lanplayer/video` 通道把 `CVPixelBuffer` 交给 Flutter 引擎。
 
+在真 Mac 上第一次动手前，`docs/build.md` 的 4.1 与 4.7 值得先看一遍，那里记了三条本机没有、
+但 macOS 上一定会撞到的事实：
+
+- CocoaPods 要用 `brew install cocoapods`，`sudo gem install cocoapods` 会因为没有
+  `/Library/Ruby/Gems/2.6.0` 写权限直接失败。
+- `cmake` 得单独 `brew install`；Homebrew 装的是 4.x，而 libsmb2 的
+  `cmake_minimum_required` 是 3.2，所以脚本里必须带 `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`。
+- macOS 自带的 GSSAPI 头缺 MIT/Heimdal 扩展，libsmb2 一旦 `find_package(GSSAPI)` 成功就会
+  编 `krb5-wrapper.c` 并失败 18 个 error；脚本已用
+  `-DCMAKE_DISABLE_FIND_PACKAGE_GSSAPI/OpenSSL=TRUE` 关掉（我们只用 NTLM）。
+- 仓库里的 `scripts/*.sh` 是 `100644`，克隆后先 `chmod +x scripts/*.sh`。
+
 ## 已验证 / 未验证
 
 在本机（Windows 10 x64）实际编译并运行的：
@@ -382,7 +394,7 @@ Apple 端的工程接线已经写在仓库里，`docs/build.md` 第 4 节有完�
 |项|原因|
 |-|-|
 |Android / iOS / macOS 构建|本机没有 NDK / Xcode / CocoaPods，只能在 Windows 上做静态检查|
-|Apple 端真机验证|`packages/lanplayer_core` 的两个 podspec、两个 `Podfile`、macOS 纹理通道都已写好，`tool/check_all.py` 的 `apple wiring` 一项会在静态层面守护它们（podspec 必须链 `-llanplayer`、Podfile 的部署目标必须等于 `build_apple_deps.sh` 的 `MIN_IOS`/`MIN_MACOS`），但**没有在 Mac / iPad 上真正编过一次**|
+|Apple 端真机验证|`packages/lanplayer_core` 的两个 podspec、两个 `Podfile`、macOS 纹理通道都已写好，`tool/check_all.py` 的 `apple wiring` 一项会在静态层面守护它们（podspec 必须链 `-llanplayer`、Podfile 的部署目标必须等于 `build_apple_deps.sh` 的 `MIN_IOS`/`MIN_MACOS`）。一台 Apple Silicon Mac 上已推进到：Xcode 命令行工具 / Homebrew / CocoaPods 1.17 / cmake 4.4 就绪，FFmpeg 6.1.1 编过，libsmb2 段因 macOS 自带的 GSSAPI 头缺 MIT 扩展失败（18 errors on `krb5-wrapper.c`）——脚本已修，但**还没在 Mac 上跑到 `flutter build macos` 成功**|
 |真机硬解（MediaCodec / VideoToolbox）|需要设备；桌面只有 stub 输出。Windows D3D11VA 已在本机真 GPU 上跑通并接进 `tool/check_all.py`|
 |Flutter `analyze`|Dart 侧用 `flutter test` + kernel 编译两重检查（都已接进 `tool/check_all.py`）；`flutter analyze` 需要完整依赖解析，未在本机跑|
 |视频区域的截图验证|`PrintWindow` 读不到 Flutter 合成结果（客户区全黑）；`CopyFromScreen` 按窗口矩形抓也会因为缩放显示器上合成位置与 `GetWindowRect` 不一致而整个错过客户区。**改用整屏抓取**（`capture_screen.ps1 -WholeScreen`）后视频区域可见并已用于颜色顺序验证；字幕渲染仍以 `flutter test` 金色文件为准|
