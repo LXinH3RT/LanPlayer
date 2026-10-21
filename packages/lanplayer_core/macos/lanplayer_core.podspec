@@ -70,7 +70,11 @@ Pod::Spec.new do |s|
   s.homepage = 'https://github.com/lanplayer/lanplayer'
   s.license = { :type => 'MIT', :text => 'Copyright (c) LanPlayer contributors' }
   s.author = { 'LanPlayer' => 'lanplayer@example.com' }
-  s.source = { :path => '.' }
+  # source 的主键只能是 git / hg / http / svn；写成 { :path => '.' } 会得到
+  #   WARN | [OSX] keys: Missing primary key for `source` attribute.
+  # 这个 pod 由本地 path 依赖引入（见 app/macos/Podfile），source 只是给
+  # CocoaPods 校验用，写仓库地址即可（不写会连校验都过不去）。
+  s.source = { :git => 'https://github.com/LXinH3RT/LanPlayer.git', :tag => s.version.to_s }
 
   # 内核用 arm64 与 x86_64 都在编，最低系统跟着 scripts/build_apple_deps.sh
   # 的 MIN_MACOS 走（脚本里是 11.0）。
@@ -81,10 +85,14 @@ Pod::Spec.new do |s|
   # （见 app/lib/core/bindings.dart），不会去 dlopen 一个 .dylib。
   s.static_framework = true
 
-  s.preserve_paths = [
-    File.join(LP_NATIVE, 'include', '**', '*.h'),
-    File.join(LP_CORE_LIB, '**', '*.a'),
-  ]
+  # 这里【不要】写 preserve_paths。它的用途只是告诉 CocoaPods「这些文件不要删」，
+  # 但 CocoaPods 校验时要求每条 pattern 都是相对路径：
+  #   ERROR | File Patterns: File patterns must be relative and cannot start with
+  #           a slash (preserve_paths).
+  # （CocoaPods 1.17 + Flutter 3.27 实测，pod install 直接失败）。
+  # 而我们的头文件与 .a 本来就在 pod 目录之外（native/ 下），CocoaPods 根本不会去
+  # 动 pod 之外的文件，所以这条声明没有作用。真正让链接器找到它们的是下面
+  # user_target_xcconfig 里的绝对路径 HEADER_SEARCH_PATHS / LIBRARY_SEARCH_PATHS。
 
   # Classes/ 里只有一个空的锚点 .m：它 #include "lanplayer/lp_player.h"，
   # 用来在 pod 构建阶段就验证 HEADER_SEARCH_PATHS 是否正确（见该文件注释）。

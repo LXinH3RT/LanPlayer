@@ -487,6 +487,18 @@ def check_apple_wiring() -> None:
             problems.append(f"{spec.relative_to(ROOT)}: the repo root lookup no longer "
                             f"walks up to a marker file, so it breaks when Flutter "
                             f"symlinks the package into ephemeral/.symlinks/plugins")
+        # It is very tempting to declare the prebuilt archive with preserve_paths,
+        # but CocoaPods validates every pattern against the pod root and refuses
+        # absolute ones, so `pod install` dies before the build even starts:
+        #   ERROR | File Patterns: File patterns must be relative and cannot
+        #   start with a slash (preserve_paths).
+        # (hit for real on CocoaPods 1.17). Nothing needs preserving anyway: the
+        # headers and .a live outside the pod directory, where CocoaPods never
+        # deletes anything. Linking goes through user_target_xcconfig instead.
+        if re.search(r'^\s*s\.preserve_paths', text, re.MULTILINE):
+            problems.append(f"{spec.relative_to(ROOT)}: preserve_paths must stay removed "
+                            f"(CocoaPods rejects absolute patterns); rely on "
+                            f"LIBRARY_SEARCH_PATHS / HEADER_SEARCH_PATHS instead")
 
     # Deployment targets must agree with build_apple_deps.sh, otherwise the
     # static archives are newer than the app and the link fails.
