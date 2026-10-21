@@ -44,9 +44,9 @@
 * ~~ASS 富文本（颜色块/描边/定位）~~ 已完成（v0.1 追加）：
   `native/src/core/subtitle.c` 的 `sub_compile_text()` 把一行拆成带样式的 run，
   事件 JSON 多一个 `runs` 数组，`app/lib/ui/widgets/subtitle_overlay.dart` 用 `Text.rich` 逐段渲染；
-  `app/test/subtitle_overlay_test.dart` 对渲染出的 `TextSpan` 做断言，并用金色文件
-  `app/test/goldens/rich_runs.png` 逐像素比对（截图无法用于视频区域：覆盖层会落到
-  `GetWindowRect` 报告的窗口矩形之外）
+  `app/test/subtitle_overlay_test.dart` 对渲染出的 `TextSpan` 做断言，并用
+  `RepaintBoundary.toImage()` 取真实像素后统计纯红/纯绿/纯白像素数（截图无法用于视频
+  区域：覆盖层会落到 `GetWindowRect` 报告的窗口矩形之外；金色文件又绑死宿主的字体光栅化器）
 * 字幕编码兜底（GBK 表）
 * ~~播放页手势：双击左右快进、上下滑音量/亮度、长按倍速~~ 已完成（v0.1 追加）：
   `app/lib/ui/player_screen.dart` 用 `GestureDetector` 实现；桌面端另有键盘快捷键

@@ -1,4 +1,7 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lanplayer/data/models.dart';
 import 'package:lanplayer/ui/widgets/subtitle_overlay.dart';
@@ -233,6 +236,12 @@ void main() {
   // pixels.  flutter_test rasterises the scene itself, so it needs no window
   // and cannot be confused by the DPI virtualisation that makes screen capture
   // of the real player page unreliable on Windows.
+  //
+  // It counts pixels instead of comparing against a golden file on purpose:
+  // goldens embed the host's font rasteriser and hinting, so a macOS runner
+  // disagreed with the Windows-generated reference by 2.63 % of the pixels
+  // while the colours themselves were identical.  Counting exact solid-colour
+  // pixels is portable - antialiased edges differ, the glyph interiors do not.
   testWidgets('the painted pixels contain the run colours', (tester) async {
     tester.view.physicalSize = const Size(400, 200);
     tester.view.devicePixelRatio = 1.0;
@@ -257,17 +266,38 @@ void main() {
         ),
       ],
     );
+    final key = GlobalKey();
     await tester.pumpWidget(
       MaterialApp(
-        home: ColoredBox(
-          color: const Color(0xFF000000),
-          child: SubtitleOverlay(cue: cue, scale: 1.0, safeArea: 0),
+        home: RepaintBoundary(
+          key: key,
+          child: ColoredBox(
+            color: const Color(0xFF000000),
+            child: SubtitleOverlay(cue: cue, scale: 1.0, safeArea: 0),
+          ),
         ),
       ),
     );
-    await expectLater(
-      find.byType(SubtitleOverlay),
-      matchesGoldenFile('goldens/rich_runs.png'),
-    );
+
+    final boundary =
+        key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+    // `toImage`/`toByteData` talk to the raster thread, which a widget test does
+    // not pump on its own - without `runAsync` they wait forever.
+    final image = await tester.runAsync(() => boundary.toImage());
+    final data =
+        await tester.runAsync(() => image!.toByteData(format: ui.ImageByteFormat.rawRgba));
+    expect(data, isNotNull);
+    final rgba = data!.buffer.asUint8List();
+
+    var red = 0, green = 0, white = 0;
+    for (var i = 0; i + 3 < rgba.length; i += 4) {
+      final r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
+      if (r > 200 && g < 60 && b < 60) red++;
+      if (g > 200 && r < 60 && b < 60) green++;
+      if (r > 200 && g > 200 && b > 200) white++;
+    }
+    expect(red, greaterThan(300), reason: 'the red run must actually paint');
+    expect(green, greaterThan(300), reason: 'the green run must actually paint');
+    expect(white, greaterThan(300), reason: 'the default white run must paint');
   });
 }

@@ -60,8 +60,7 @@
 | `app/lib/ui/` | 9 | 五个界面（首页/浏览/播放/服务器编辑/设置）+ 主题、反馈文案、`video_texture.dart` 纹理桥 |
 | `app/lib/ui/widgets/` | 1 | `subtitle_overlay.dart`：字幕气泡，纯 Flutter `Text.rich` 渲染，带描边层 |
 | `app/lib/util/` | 1 | `format.dart`：时长、体积、码率等格式化 |
-| `app/test/` | 3 | `flutter test` 用例：字幕 span 树断言 + golden 光栅化、设置项默认值 |
-| `app/test/goldens/` | 1 | `rich_runs.png` 基准图，字幕颜色/粗细的像素级回归 |
+| `app/test/` | 2 | `flutter test` 用例：字幕 span 树断言 + 真实光栅化的像素计数、设置项默认值 |
 | `app/tool/` | 1 | `browse_smoke.dart`：不开 UI 直接跑一遍 SMB 浏览的脚本 |
 | `app/android/` | 6 | Android 外壳：Gradle、清单、Kotlin `MainActivity`（纹理/JNI）、`cpp/CMakeLists.txt`、生成的插件注册表 |
 | `app/ios/` | 44 | iOS / iPadOS 外壳：`AppDelegate.swift`（纹理桥）、`Info.plist`、Bridging Header、`Runner.xcodeproj`、`Podfile` |
@@ -113,7 +112,7 @@ LanPlayer/
 │  ├─ ios/Runner/…          Swift 纹理桥、Bridging Header、Info.plist、Runner.xcodeproj
 │  ├─ macos/Runner/…        MainFlutterWindow.swift 纹理桥、entitlements、Runner.xcodeproj
 │  ├─ windows/…             runner + 生成的插件注册表（CMake + MSVC）
-│  └─ test/                 字幕渲染 golden 测试 + 设置项默认值测试
+│  └─ test/                 字幕渲染像素测试 + 设置项默认值测试
 ├─ packages/lanplayer_video/ Windows 纹理插件（C++，把内核的 BGRA 帧交给 Flutter）
 ├─ packages/lanplayer_core/  iOS / macOS 的 FFI 插件（两个 podspec，把静态库链进 Runner）
 ├─ native/                  C11 播放内核
@@ -374,7 +373,7 @@ Apple 端的工程接线已经写在仓库里，`docs/build.md` 第 4 节有完�
 |GBK / Big5 / Shift-JIS 字幕|✅ 非 UTF-8 文件按 Windows 代码页回退解码（`decoded 106 bytes with code page 54936`）|
 |内嵌字幕|✅ mkv `subrip` 轨默认选中，4 次事件，文本已剥离 ASS 字段|
 |图形字幕（PGS/VobSub）|✅ `anime-07.mkv` 的 6 条图形字幕轨（`dvd_subtitle` 1920x1080）全部打开，`bitmap rect 0 274x119 at 824,956` 之类逐条解出，媒体信息带 `"bitmap":true`；`--dump` 同一帧在 `LP_NO_GRAPHIC_SUB=1` 下 A/B 差 **27635** 像素，148 行全部落在 `y=875..1026` 的字幕带（同样开着的两次 dump 差异为 0，排除随机性）|
-|ASS 富文本|✅ 一行 `AAAA{\c&H0000FF&}BBBB{\c&H00FF00&}CCCC` → 3 个 run，颜色 `0xFFFF0000` / `0xFF00FF00`；Dart 侧断言 3 个 `TextSpan`，并用金色文件 `app/test/goldens/rich_runs.png` 逐像素比对（`flutter test` 全部 8 个用例）|
+|ASS 富文本|✅ 一行 `AAAA{\c&H0000FF&}BBBB{\c&H00FF00&}CCCC` → 3 个 run，颜色 `0xFFFF0000` / `0xFF00FF00`；Dart 侧断言 3 个 `TextSpan`，并用 `RepaintBoundary.toImage` 光栅化后逐像素统计纯红/纯绿/纯白（`flutter test` 全部 12 个用例）|
 |硬解请求回退|✅ `hw=mediacodec` → `active=software`，播放不中断|
 |SMB 协议栈|✅ 链接 libsmb2 4.0.0；不可达主机返回可读错误而非崩溃|
 |SMB 目录浏览|✅ 真实共享 192.168.1.10「共享」→ 9 项；「电影」→ 31 项（13 目录 / 9 视频）；可逐层进入|
@@ -394,7 +393,7 @@ Apple 端的工程接线已经写在仓库里，`docs/build.md` 第 4 节有完�
 |画面渲染|✅ 无头渲染 120 帧并导出 BMP，烧录时间码 4.76s 与内部位置一致|
 |声音输出|✅ waveOut 48 kHz 立体声，AAC→float→设备，播放推进到 4.76s/6s|
 |Dart 语法|✅ `dart format` 解析 22 个文件，0 语法错误|
-|Dart 测试|✅ `flutter test` 12 个用例（字幕 span 树 + golden 光栅化 + 设置项默认值）全部通过|
+|Dart 测试|✅ `flutter test` 12 个用例（字幕 span 树 + 光栅化像素计数 + 设置项默认值）全部通过|
 
 仍需在别的机器上完成：
 

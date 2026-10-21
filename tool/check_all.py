@@ -151,7 +151,6 @@ REQUIRED = [
     "app/lib/data/models.dart",
     "app/test/subtitle_overlay_test.dart",
     "app/test/settings_test.dart",
-    "app/test/goldens/rich_runs.png",
     "scripts/build_windows_app.ps1",
     "scripts/build_windows_desktop.ps1",
     "scripts/fix_plugin_links.ps1",
