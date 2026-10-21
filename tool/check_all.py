@@ -504,6 +504,16 @@ def check_apple_wiring() -> None:
             problems.append(f"{spec.relative_to(ROOT)}: the podspec must link "
                             f"liblanplayer.a with -force_load (plain -llanplayer "
                             f"lets ld drop the dlsym-only symbols)")
+        # -force_load alone is not enough. The archive does get pulled in whole,
+        # but ld's dead-strip pass still deletes every function nothing refers
+        # to statically, and Swift only calls two of the forty lp_* functions.
+        # Measured on macOS 27 / Xcode 27.1 / ld 1115.7.2: with force_load but
+        # DEAD_CODE_STRIPPING=YES the binary still exports exactly 2 T _lp_
+        # symbols and the app dies on lp_player_create.
+        if not re.search(r"'DEAD_CODE_STRIPPING'\s*=>\s*'NO'", code):
+            problems.append(f"{spec.relative_to(ROOT)}: -force_load needs "
+                            f"DEAD_CODE_STRIPPING => 'NO' as well, otherwise ld "
+                            f"dead-strips the dlsym-only lp_* symbols")
         # ... and it must be force-loading our archive, not the whole FFmpeg.
         for flag_line in code_lines:
             if "force_load" in flag_line and "liblanplayer.a" not in flag_line:

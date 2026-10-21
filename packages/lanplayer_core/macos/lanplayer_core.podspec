@@ -134,6 +134,14 @@ Pod::Spec.new do |s|
     # -force_load 让整个归档无条件进链接，符号表才完整。
     # 这里只对自家的 liblanplayer.a 用它；FFmpeg / libsmb2 仍然按需抽取
     # （它们体量大且只被内核内部调用，全量塞进去会让 .app 从 40MB 涨到数百 MB）。
+    #
+    # DEAD_CODE_STRIPPING = NO 是必须一起关的第二个开关，只加 -force_load 不够：
+    # 归档确实被整个塞进了链接，但 ld 的 dead-strip 阶段仍然按「有没有静态引用」
+    # 把没有被 Swift 直接调用的函数当成死代码删掉。实测 macOS 27 + Xcode 27.1 +
+    # ld 1115.7.2：只加 -force_load 后 nm -g 依旧只有 2 个 T _lp_ 符号；
+    # 关掉 dead-strip 之后 40 个 LP_EXPORT 符号全部保留。
+    # 代价是二进制略大，对这个 app 完全可以接受。
+    'DEAD_CODE_STRIPPING' => 'NO',
     'OTHER_LDFLAGS' => [
       '"$(inherited)"',
       %("-Wl,-force_load,#{File.join(LP_CORE_LIB, 'liblanplayer.a')}"),

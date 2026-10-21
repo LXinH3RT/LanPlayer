@@ -132,6 +132,11 @@ Pod::Spec.new do |s|
     # 目标文件，Swift 桥接头只直接调了两个函数，其余符号会被整体丢弃，
     # 运行时报 Failed to lookup symbol 'lp_player_create'。
     # FFmpeg / libsmb2 仍按需抽取，避免 .app 体积暴涨。
+    #
+    # 只加 -force_load 还不够：ld 的 dead-strip 阶段会把「没有静态引用」的函数
+    # 当死代码删掉（Swift 只直接调了 2 个 lp_* 函数）。所以必须同时把
+    # DEAD_CODE_STRIPPING 关掉，否则符号表里仍然只剩那两个。
+    'DEAD_CODE_STRIPPING' => 'NO',
     'OTHER_LDFLAGS' => [
       '"$(inherited)"',
       %("-Wl,-force_load,#{File.join(LP_CORE_LIB, 'liblanplayer.a')}"),
