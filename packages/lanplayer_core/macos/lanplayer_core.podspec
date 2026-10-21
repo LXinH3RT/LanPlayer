@@ -122,9 +122,21 @@ Pod::Spec.new do |s|
       %("#{LP_SMB2_LIB}"),
     ].join(' '),
     # 顺序有讲究：依赖方在前、被依赖方在后。
+    #
+    # liblanplayer.a 用 -force_load 而不是 -llanplayer，原因是 Dart 侧的取符号方式：
+    # app/lib/core/bindings.dart 在 macOS 上走 DynamicLibrary.process()，也就是对
+    # 主可执行文件做 dlsym(RTLD_DEFAULT, "lp_player_create")。而 ld 默认只把
+    # 「被静态引用到的」目标文件从 .a 里抽出来：Swift 桥接头只直接调了
+    # lp_player_copy_pixel_buffer / lp_player_install_frame_callback 两个，
+    # 于是 lp_player.o、url.o、smb.o 这些全被丢掉，运行时报
+    #   Invalid argument(s): Failed to lookup symbol 'lp_player_create':
+    #   dlsym(RTLD_DEFAULT, lp_player_create): symbol not found
+    # -force_load 让整个归档无条件进链接，符号表才完整。
+    # 这里只对自家的 liblanplayer.a 用它；FFmpeg / libsmb2 仍然按需抽取
+    # （它们体量大且只被内核内部调用，全量塞进去会让 .app 从 40MB 涨到数百 MB）。
     'OTHER_LDFLAGS' => [
       '"$(inherited)"',
-      '-llanplayer',
+      %("-Wl,-force_load,#{File.join(LP_CORE_LIB, 'liblanplayer.a')}"),
       '-lavformat', '-lavcodec', '-lswresample',
       '-lavfilter', '-lswscale', '-lavutil',
       '-lsmb2',

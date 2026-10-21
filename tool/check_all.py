@@ -483,12 +483,35 @@ def check_apple_wiring() -> None:
             continue
         text = spec.read_text(encoding="utf-8")
         for needle, why in (
-            ("-llanplayer", "the podspec no longer links the C core"),
             ("third_party", "the podspec no longer points at native/third_party"),
             ("OTHER_LDFLAGS", "the podspec no longer passes link flags to Runner"),
+            ("liblanplayer.a", "the podspec no longer references the C core archive"),
         ):
             if needle not in text:
                 problems.append(f"{spec.relative_to(ROOT)}: {why}")
+        # The C archive must enter the link unconditionally. Dart reaches the
+        # core through DynamicLibrary.process() + dlsym, which the static linker
+        # cannot see, so with a plain -llanplayer it keeps only the object files
+        # some Swift code literally calls and drops the rest; the app then dies
+        # at runtime with "Failed to lookup symbol 'lp_player_create'".
+        #
+        # Only code lines count: the comment above the flag explains the whole
+        # story and therefore contains both "-force_load" and "-llanplayer".
+        code_lines = [ln for ln in text.splitlines()
+                      if not ln.strip().startswith("#")]
+        code = "\n".join(code_lines)
+        if "force_load" not in code:
+            problems.append(f"{spec.relative_to(ROOT)}: the podspec must link "
+                            f"liblanplayer.a with -force_load (plain -llanplayer "
+                            f"lets ld drop the dlsym-only symbols)")
+        # ... and it must be force-loading our archive, not the whole FFmpeg.
+        for flag_line in code_lines:
+            if "force_load" in flag_line and "liblanplayer.a" not in flag_line:
+                problems.append(f"{spec.relative_to(ROOT)}: -force_load must target "
+                                f"liblanplayer.a only (FFmpeg/libsmb2 stay lazy)")
+            if "'-llanplayer'" in flag_line:
+                problems.append(f"{spec.relative_to(ROOT)}: -llanplayer is back; it "
+                                f"lets ld drop the dlsym-only lp_* symbols")
         # The pod must not try to compile native/ itself: Flutter symlinks this
         # package into ephemeral/.symlinks/plugins, and globbing sources across a
         # symlink is what we avoided on purpose.

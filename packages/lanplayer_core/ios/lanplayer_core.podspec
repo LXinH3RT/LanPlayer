@@ -125,9 +125,16 @@ Pod::Spec.new do |s|
     ].join(' '),
     # 顺序有讲究：依赖方在前、被依赖方在后。avformat 依赖 avcodec，
     # avcodec/swscale/swresample 依赖 avutil，avfilter 依赖 avformat+avutil。
+    #
+    # liblanplayer.a 用 -force_load 而不是 -llanplayer：Dart 侧
+    # app/lib/core/bindings.dart 在 iOS 上同样走 DynamicLibrary.process()，
+    # 靠 dlsym(RTLD_DEFAULT, "lp_xxx") 取符号。ld 默认只抽被静态引用到的
+    # 目标文件，Swift 桥接头只直接调了两个函数，其余符号会被整体丢弃，
+    # 运行时报 Failed to lookup symbol 'lp_player_create'。
+    # FFmpeg / libsmb2 仍按需抽取，避免 .app 体积暴涨。
     'OTHER_LDFLAGS' => [
       '"$(inherited)"',
-      '-llanplayer',
+      %("-Wl,-force_load,#{File.join(LP_CORE_LIB, 'liblanplayer.a')}"),
       '-lavformat', '-lavcodec', '-lswresample',
       '-lavfilter', '-lswscale', '-lavutil',
       '-lsmb2',
