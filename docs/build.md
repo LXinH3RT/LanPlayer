@@ -213,7 +213,11 @@ mkdir -p ~/development && cd ~/development
 curl -L -o flutter.zip \
   https://storage.flutter-io.cn/flutter_infra_release/releases/stable/macos/flutter_macos_arm64_3.27.4-stable.zip
 unzip -q flutter.zip && rm flutter.zip
-xattr -dr com.apple.quarantine ~/development/flutter   # 否则首次运行会被 Gatekeeper 拦
+#    这一步可以【跳过】。从镜像 curl 下来的 zip 通常不带 quarantine 属性，
+#    而且 SDK 的 bin/cache 里有些产物是只读/签名过的，xattr 会刷一屏
+#    "Permission denied"，那是正常的，不影响 flutter 运行。
+#    只有在真的弹 "flutter 已损坏" 时才需要跑（见 4.7 报错表）。
+#    xattr -dr com.apple.quarantine ~/development/flutter
 echo 'export PATH="$HOME/development/flutter/bin:$PATH"' >> ~/.zshrc
 echo 'export PUB_HOSTED_URL=https://pub.flutter-io.cn' >> ~/.zshrc
 echo 'export FLUTTER_STORAGE_BASE_URL=https://storage.flutter-io.cn' >> ~/.zshrc
@@ -430,8 +434,9 @@ iPad 与 iPhone 是同一个 iOS 包；`TARGETED_DEVICE_FAMILY = "1,2"` 已包�
 | `WARN \| [OSX] keys: Missing primary key for \`source\` attribute. The acceptable ones are: git, hg, http, svn` | `s.source = { :path => '.' }` 没有主键；本地 path 依赖时 CocoaPods 只当警告，但它和上面那条 ERROR 一起出现时容易看漏 | 已修：`s.source` 改成 `{ :git => '…LanPlayer.git', :tag => s.version.to_s }`（这个 pod 实际由 `app/*/Podfile` 的 path 依赖引入，source 只为过校验） |
 | `library not found for -llanplayer` | 4.2 没成功（`native/third_party/lanplayer/apple/lib` 不存在） | 重跑 `SLICES=macosx ./scripts/build_apple_deps.sh` |
 | `building for macOS 11.0, but linking in object file built for macOS 14.0` | 依赖用了更高的部署目标 | `MIN_MACOS=11.0` 重编，或把 `app/macos/Podfile` 与工程目标一起调高 |
-| `brew install --cask flutter` 慢到只有几十 KB/s | cask 直接去 `storage.googleapis.com` 拉 1.3 GB，Homebrew 本身不走国内镜像 | 按 4.1 第 5 步手动从 `storage.flutter-io.cn` 下载并 `xattr -dr com.apple.quarantine` |
-| `"flutter" 已损坏，无法打开` / Gatekeeper 拦截 | 手动解压的 SDK 带 quarantine 属性 | `xattr -dr com.apple.quarantine ~/development/flutter` |
+| `brew install --cask flutter` 慢到只有几十 KB/s | cask 直接去 `storage.googleapis.com` 拉 1.3 GB，Homebrew 本身不走国内镜像 | 按 4.1 第 5 步手动从 `storage.flutter-io.cn` 下载解压 |
+| `xattr -dr com.apple.quarantine` 输出一屏 `Permission denied` | SDK 的 `bin/cache/artifacts` 与 `.git/objects` 里有只读/已签名文件，xattr 改不动 | **正常现象，忽略即可**。这条命令本来就可以跳过；只有真弹 "flutter 已损坏" 时才需要执行 |
+| `"flutter" 已损坏，无法打开` / Gatekeeper 拦截 | 手动解压的 SDK 带 quarantine 属性 | `xattr -dr com.apple.quarantine ~/development/flutter`（有 Permission denied 不影响结果） |
 | `flutter pub get` 卡在 pub.dev | 没设 `PUB_HOSTED_URL` | `export PUB_HOSTED_URL=https://pub.flutter-io.cn`（写进 `~/.zshrc` 一次性解决） |
 | App 能开但连不上 SMB | macOS 沙盒拦 445 出站 | 确认 `Runner/*.entitlements` 里有 `com.apple.security.network.client` |
 
