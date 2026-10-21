@@ -121,7 +121,9 @@ for SLICE in $SLICES; do
     --enable-static --disable-shared --disable-programs --disable-doc \
     --disable-avdevice --disable-postproc \
     --enable-videotoolbox --enable-audiotoolbox \
-    --enable-filter=atempo,yadif,scale,format,aresample \
+    --extra-cflags="-Wno-error=unguarded-availability-new" \
+    --disable-filters \
+    --enable-filter=abuffer,abuffersink,buffer,buffersink,atempo,yadif,scale,format,aresample \
     --enable-demuxer=matroska,mov,avi,mpegts,flv,mp3,aac,flac,wav,ogg,ass,srt,webvtt \
     --enable-decoder=h264,hevc,vp8,vp9,av1,mpeg4,mpeg2video,aac,mp3,ac3,eac3,dts,flac,opus,vorbis,ass,subrip,webvtt \
     --enable-protocol=file,http,https,tcp,tls
