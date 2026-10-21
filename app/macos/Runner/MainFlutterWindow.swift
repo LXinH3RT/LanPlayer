@@ -32,7 +32,15 @@ class MainFlutterWindow: NSWindow {
   }
 
   private func installVideoChannel(controller: FlutterViewController) {
-    registry = controller.registrar(forPlugin: "lanplayer")?.textures()
+    // macOS 的 API 与 iOS 不同，这里两处都不通用：
+    //   1. `registrarForPlugin:` 在 FlutterPluginRegistry 协议里标的是 nonnull，
+    //      Swift 侧不带 `?`，写 `?.` 会报
+    //        error: cannot use optional chaining on non-optional value
+    //   2. macOS 的 registrar 把纹理注册表暴露成【属性】`textures`
+    //      （FlutterPluginRegistrarMacOS.h:39），不是 iOS 那样的 `textures()` 方法，
+    //      写 `textures()` 会报
+    //        error: cannot call value of non-function type 'any FlutterTextureRegistry'
+    registry = controller.registrar(forPlugin: "lanplayer").textures
 
     let ch = FlutterMethodChannel(
       name: "lanplayer/video",
