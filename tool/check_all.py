@@ -180,6 +180,7 @@ REQUIRED = [
     "native/src/core/thumb.c",
     "tool/thumb_probe.py",
     "tool/smb_ls_probe.py",
+    "tool/win_smb_thumb_probe.py",
     "docs/images/desktop-home.png",
     "docs/images/desktop-player.png",
     "docs/images/desktop-browse.png",

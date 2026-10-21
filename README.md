@@ -93,7 +93,7 @@
 | `native/platform/win32/smb2/` | 8 | libsmb2 在 mingw 下缺的头（`poll.h`、`sys/socket.h`、`netdb.h` 等） |
 | `native/tests/` | 4 | 四个测试可执行文件：冒烟、纹理/颜色、D3D11VA 端到端、硬解能力探针 |
 | `scripts/` | 18 | 所有构建与验证脚本（见下方脚本表） |
-| `tool/` | 8 | 静态检查与依赖下载（见下方工具表） |
+| `tool/` | 12 | 静态检查与依赖下载（见下方工具表） |
 | `docs/` | 15 | 6 篇文档 + 9 张验证截图 |
 | `docs/images/` | 9 | 界面与硬解验证截图，README 与 `verification.md` 引用 |
 | `.github/workflows/` | 1 | CI：五个平台的构建 + 全部静态检查（只改文档不触发，见 `docs/build.md` 6.6） |
@@ -162,6 +162,10 @@ LanPlayer/
 | `make_pgs_fixture.py` | 手写 PGS（`.sup`）测试素材，验证位图字幕 |
 | `pgs_probe.c` | 独立解码 PGS，打印矩形/调色板/字节 |
 | `smb_probe.c` | 探针：libsmb2 接受哪种共享根路径写法 |
+| `mdns_probe.py` | 手写 mDNS 查询，验证局域网里有没有 `_smb._tcp` 广播（实测没有） |
+| `thumb_probe.py` | 直接调 `lp_source_thumbnail()` 取一帧封面，打印尺寸/非黑像素/中心色 |
+| `win_smb_thumb_probe.py` | 同上，但路径写死在 UTF-8 源码里，避开 PowerShell 传中文参数的乱码 |
+| `smb_ls_probe.py` | ctypes 调 `lp_source_list`，列出 SMB 目录（调试浏览路径用） |
 
 ## 快速开始
 
