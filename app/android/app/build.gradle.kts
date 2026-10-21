@@ -76,6 +76,14 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // The Flutter Gradle plugin turns resource shrinking on for release
+            // builds, and the Android Gradle plugin refuses to configure when
+            // resources are shrunk without code shrinking:
+            //   Removing unused resources requires unused code shrinking to be
+            //   turned on.
+            // Shrinking is off for v1 (no ProGuard pass, faster CI builds), so
+            // resource shrinking has to be off as well.
+            isShrinkResources = false
             signingConfig = signingConfigs.getByName("debug")
         }
     }
