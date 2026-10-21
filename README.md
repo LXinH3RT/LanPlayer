@@ -276,11 +276,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_deskto
 冒烟测试）、`android`（NDK 交叉编 FFmpeg/libsmb2 + `flutter build apk`）、`apple`
 （macOS 上编 iOS 静态库 + `flutter build ios --no-codesign`）、`windows-native`（Zig 编
 `lanplayer.dll` + 静态检查）、`windows-app`（MSVC 编完整桌面 bundle + 纹理/硬解 preflight）。
-run `39584417040` 起五个 job 全绿。
+run `39586358303`（@ `628f0f2`）五个 job 全部 success，每个 job 有 9–15 个 step。
 
 > 该私有仓库的 Actions 曾被关闭过（`/actions/permissions` 返回 `{"enabled":false}`），
 > 症状是 push 后不产生 run、dispatch 出来的 run 永远 `queued`。用
 > `PUT /repos/{owner}/{repo}/actions/permissions` 传 `{"enabled":true}` 恢复。
+>
+> 之后又出现「3 秒失败、`steps` 为空、日志 404」——那**不是构建方式的问题**，
+> 是私有仓库的免费额度用完了（一次全量 CI ≈ 55 计费分钟，macOS 系数 ×10）。
+> 已加 `paths-ignore` 与 `concurrency` 降低消耗，要真正恢复全绿需要把仓库改成
+> public 或提高 spending limit，见 `docs/build.md` 6.6。
 
 ### 关于版本管理
 
