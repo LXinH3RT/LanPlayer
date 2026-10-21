@@ -174,6 +174,7 @@ REQUIRED = [
     "docs/images/desktop-stats.png",
     "docs/images/desktop-color-red.png",
     "docs/images/desktop-d3d11va.png",
+    "docs/images/ipad-player.png",
 ]
 
 def check_texture_colors() -> None:
