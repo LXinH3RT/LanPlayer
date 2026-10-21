@@ -45,7 +45,7 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
                 "destroyTexture" -> {
-                    release()
+                    releaseTexture()
                     result.success(null)
                 }
                 else -> result.notImplemented()
@@ -54,8 +54,11 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun createTexture(engine: FlutterEngine, width: Int, height: Int): Map<String, Any> {
-        release()
-        val e = engine.renderer.textureRegistry.createSurfaceTexture()
+        releaseTexture()
+        // FlutterRenderer implements TextureRegistry itself, so there is no
+        // separate `textureRegistry` getter on it (that name only exists on the
+        // iOS/macOS registrar).
+        val e = engine.renderer.createSurfaceTexture()
         e.surfaceTexture().setDefaultBufferSize(width, height)
         val s = Surface(e.surfaceTexture())
         val w = VideoTextureBridge.nativeCreateWindow(s)
@@ -65,7 +68,7 @@ class MainActivity : FlutterActivity() {
         return mapOf("textureId" to e.id(), "window" to w)
     }
 
-    private fun release() {
+    private fun releaseTexture() {
         if (windowPtr != 0L) {
             VideoTextureBridge.nativeReleaseWindow(windowPtr)
             windowPtr = 0
@@ -77,7 +80,7 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
-        release()
+        releaseTexture()
         channel?.setMethodCallHandler(null)
         channel = null
         super.onDestroy()
