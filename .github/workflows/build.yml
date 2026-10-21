@@ -225,8 +225,15 @@ jobs:
           $bundle = $exe.DirectoryName
           Write-Host "bundle: $bundle"
           foreach ($f in 'lanplayer.exe', 'lanplayer.dll', 'lanplayer_video_plugin.dll',
-                         'flutter_windows.dll', 'icudtl.dat') {
+                         'flutter_windows.dll') {
             if (-not (Test-Path (Join-Path $bundle $f))) { throw "missing $f in $bundle" }
+          }
+          # icudtl.dat is installed next to the assets (data\), not in the
+          # bundle root - check both so a future Flutter layout change is caught
+          # with a clear message instead of a false alarm.
+          if (-not ((Test-Path (Join-Path $bundle 'data\icudtl.dat')) -or
+                    (Test-Path (Join-Path $bundle 'icudtl.dat')))) {
+            throw "missing icudtl.dat in $bundle"
           }
           if (-not (Test-Path (Join-Path $bundle 'data\flutter_assets'))) {
             throw "missing data\flutter_assets in $bundle"

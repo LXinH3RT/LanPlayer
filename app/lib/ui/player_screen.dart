@@ -36,7 +36,7 @@ class PlayerScreen extends StatefulWidget {
 
 class _PlayerScreenState extends State<PlayerScreen> {
   late final PlayerController _player;
-  late PlaybackSettings _settings = widget.settings.copy();
+  late final PlaybackSettings _settings = widget.settings.copy();
 
   VideoTexture? _texture;
   Timer? _hideTimer;

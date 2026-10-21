@@ -108,10 +108,20 @@ for ABI in "${ABIS[@]}"; do
 
   echo "== libsmb2 for $ABI"
   rm -rf "$WORK/smb-$ABI"
+  # libsmb2's CMake probes for OpenSSL and GSSAPI.  The NDK sysroot has neither,
+  # so find_package() leaves OPENSSL_INCLUDE_DIR/OPENSSL_LIBRARIES as NOTFOUND
+  # and the generate step dies with "The following variables are used in this
+  # project, but they are set to NOTFOUND: OPENSSL_INCLUDE_DIR".  We only need
+  # plain SMB2/SMB3 (no TLS, no Kerberos), so turn both probes off explicitly.
+  # CMAKE_POLICY_VERSION_MINIMUM covers libsmb2's cmake_minimum_required(2.8.12)
+  # being rejected by CMake >= 4.
   cmake -S "$WORK/libsmb2" -B "$WORK/smb-$ABI" \
     -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI="$ABI" -DANDROID_PLATFORM="android-$API" \
     -DCMAKE_INSTALL_PREFIX="$OUT/libsmb2/android" \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=TRUE \
+    -DCMAKE_DISABLE_FIND_PACKAGE_GSSAPI=TRUE \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
   cmake --build "$WORK/smb-$ABI" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
   # libsmb2's install puts everything in the same prefix; copy per ABI.

@@ -34,15 +34,13 @@ typedef _OpenC = Int32 Function(
 typedef _OpenD = int Function(
     Pointer<Void> player, Pointer<Utf8> url, Pointer<Utf8> options);
 
-typedef _EventCbC = Void Function(
+typedef LpEventCbC = Void Function(
     Pointer<Void> user, Int32 event, Pointer<Utf8> json, Int64 value);
-typedef _EventCbDart = void Function(
-    Pointer<Void> user, int event, Pointer<Utf8> json, int value);
 
-typedef _SetEventCbC = Void Function(Pointer<Void> player,
-    Pointer<NativeFunction<_EventCbC>> cb, Pointer<Void> user);
-typedef _SetEventCbD = void Function(Pointer<Void> player,
-    Pointer<NativeFunction<_EventCbC>> cb, Pointer<Void> user);
+typedef LpSetEventCbC = Void Function(Pointer<Void> player,
+    Pointer<NativeFunction<LpEventCbC>> cb, Pointer<Void> user);
+typedef LpSetEventCbD = void Function(Pointer<Void> player,
+    Pointer<NativeFunction<LpEventCbC>> cb, Pointer<Void> user);
 
 /* player + one int32 (set_mute, set_scale_mode, select_track's first arg, ...) */
 typedef _Int32ArgC = Int32 Function(Pointer<Void> player, Int32 value);
@@ -67,12 +65,12 @@ typedef _SurfaceD = int Function(
 typedef _SurfaceSizeC = Int32 Function(Pointer<Void> player, Int32 w, Int32 h);
 typedef _SurfaceSizeD = int Function(Pointer<Void> player, int w, int h);
 
-typedef _FrameCbC = Void Function(Pointer<Void> user);
+typedef LpFrameCbC = Void Function(Pointer<Void> user);
 
-typedef _InstallFrameCbC = Int32 Function(Pointer<Void> player,
-    Pointer<NativeFunction<_FrameCbC>> cb, Pointer<Void> user);
-typedef _InstallFrameCbD = int Function(Pointer<Void> player,
-    Pointer<NativeFunction<_FrameCbC>> cb, Pointer<Void> user);
+typedef LpInstallFrameCbC = Int32 Function(Pointer<Void> player,
+    Pointer<NativeFunction<LpFrameCbC>> cb, Pointer<Void> user);
+typedef LpInstallFrameCbD = int Function(Pointer<Void> player,
+    Pointer<NativeFunction<LpFrameCbC>> cb, Pointer<Void> user);
 
 typedef _OptionC = Int32 Function(
     Pointer<Void> player, Pointer<Utf8> key, Pointer<Utf8> value);
@@ -127,8 +125,8 @@ class NativeCore {
       _lib.lookupFunction<_CreateC, _CreateD>('lp_player_create');
   late final _HandleD _destroy =
       _lib.lookupFunction<_HandleC, _HandleD>('lp_player_destroy');
-  late final _SetEventCbD _setEventCb =
-      _lib.lookupFunction<_SetEventCbC, _SetEventCbD>(
+  late final LpSetEventCbD _setEventCb =
+      _lib.lookupFunction<LpSetEventCbC, LpSetEventCbD>(
           'lp_player_set_event_callback');
   late final _OpenD _openMedia =
       _lib.lookupFunction<_OpenC, _OpenD>('lp_player_open');
@@ -170,8 +168,8 @@ class NativeCore {
           'lp_player_set_surface_size');
   late final _Int32ArgD _setScaleMode =
       _lib.lookupFunction<_Int32ArgC, _Int32ArgD>('lp_player_set_scale_mode');
-  late final _InstallFrameCbD _installFrameCb =
-      _lib.lookupFunction<_InstallFrameCbC, _InstallFrameCbD>(
+  late final LpInstallFrameCbD _installFrameCb =
+      _lib.lookupFunction<LpInstallFrameCbC, LpInstallFrameCbD>(
           'lp_player_install_frame_callback');
   late final _OptionD _setOption =
       _lib.lookupFunction<_OptionC, _OptionD>('lp_player_set_option');
@@ -225,7 +223,7 @@ class NativeCore {
 
   void destroyPlayer(Pointer<Void> p) => _destroy(p);
 
-  void setEventCallback(Pointer<Void> p, Pointer<NativeFunction<_EventCbC>> cb,
+  void setEventCallback(Pointer<Void> p, Pointer<NativeFunction<LpEventCbC>> cb,
           Pointer<Void> user) =>
       _setEventCb(p, cb, user);
 
@@ -310,7 +308,7 @@ class NativeCore {
   int setScaleMode(Pointer<Void> p, int mode) => _setScaleMode(p, mode);
 
   void installFrameCallback(Pointer<Void> p,
-          Pointer<NativeFunction<_FrameCbC>> cb, Pointer<Void> user) =>
+          Pointer<NativeFunction<LpFrameCbC>> cb, Pointer<Void> user) =>
       _installFrameCb(p, cb, user);
 
   int setOption(Pointer<Void> p, String key, String value) {

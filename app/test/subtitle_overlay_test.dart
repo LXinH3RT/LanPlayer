@@ -13,7 +13,6 @@ import 'package:lanplayer/ui/widgets/subtitle_overlay.dart';
 /// the Dart code owns (the native side is covered by `lp_smoke_test --dump`).
 SubtitleCue _cue({
   String text = 'PLAIN',
-  int style = 0,
   List<SubtitleLine> lines = const [],
   SubtitleStyle? override,
 }) {
@@ -173,7 +172,7 @@ void main() {
 
   testWidgets('an empty cue paints nothing', (tester) async {
     await tester.pumpWidget(
-      MaterialApp(
+      const MaterialApp(
         home: Scaffold(
           body: SubtitleOverlay(
             cue: SubtitleCue.empty,

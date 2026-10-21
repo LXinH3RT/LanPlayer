@@ -37,7 +37,7 @@ class MediaLocation {
   String credentialized(String path) {
     final p = profile;
     if (p == null || isLocal) return path;
-    final marker = 'smb://';
+    const marker = 'smb://';
     if (!path.startsWith(marker)) return path;
     final rest = path.substring(marker.length);
     if (rest.contains('@')) return path;

@@ -45,10 +45,10 @@ void main(List<String> args) {
         failed++;
         continue;
       }
-      var videos = 0;
       for (final v in child.entries.where((e) => !e.isDir).take(2)) {
-        final grand = _browse(core, child.url, options, quiet: true);
-        if (grand != null) videos++;
+        // Descend one more level from the child to prove the parent link works
+        // both ways; the listing itself is what gets printed.
+        _browse(core, child.url, options, quiet: true);
         stdout.writeln('         - ${v.name} [${v.kind}] ${v.size} B');
       }
       stdout.writeln('  ok     ${f.name} -> ${child.entries.length} entries, '
