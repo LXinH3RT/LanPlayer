@@ -24,9 +24,22 @@ jobs:
           sudo apt-get install -y cmake ninja-build nasm pkg-config \
             libsmbclient-dev libssl-dev
       - name: build ffmpeg (shared)
+        # ffmpeg.org intermittently fails to resolve from the hosted runners
+        # ("Could not resolve host: ffmpeg.org", curl exit 6), so fall back to
+        # the GitHub mirror of the same release tag before giving up.
         run: |
-          curl -fsSL https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz -o ffmpeg.tar.xz
-          tar xf ffmpeg.tar.xz
+          set -o pipefail
+          if ! curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
+               "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" -o ffmpeg.tar.xz; then
+            echo "ffmpeg.org unreachable, using the GitHub mirror"
+            curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
+              "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n$FFMPEG_VERSION" \
+              -o ffmpeg.tar.gz
+            tar xf ffmpeg.tar.gz
+            mv "FFmpeg-n$FFMPEG_VERSION" "ffmpeg-$FFMPEG_VERSION"
+          else
+            tar xf ffmpeg.tar.xz
+          fi
           cd ffmpeg-$FFMPEG_VERSION
           ./configure --prefix=$PWD/../ff-out --enable-shared --disable-static \
             --disable-programs --disable-doc --enable-gpl \

@@ -129,28 +129,58 @@ if (-not (Test-Path (Join-Path $nativeOut 'lanplayer.dll'))) {
 }
 
 # ------------------------------------------------- 6. engine + ephemeral files
+$art = Join-Path $fs 'bin\cache\artifacts\engine\windows-x64'
+if (-not (Test-Path (Join-Path $art 'flutter_windows.dll'))) { Fail 'FLUTTER_ROOT engine artifacts are incomplete' }
 if (-not (Test-Path (Join-Path $eph 'flutter_windows.dll'))) {
     Write-Host "`n== ephemeral engine files"
-    $art = Join-Path $fs 'bin\cache\artifacts\engine\windows-x64'
-    if (-not (Test-Path (Join-Path $art 'flutter_windows.dll'))) { Fail 'FLUTTER_ROOT engine artifacts are incomplete' }
     New-Item -ItemType Directory -Force -Path $eph | Out-Null
     foreach ($f in 'flutter_windows.dll', 'flutter_windows.dll.lib', 'flutter_windows.dll.exp',
         'flutter_windows.dll.pdb', 'flutter_export.h', 'flutter_messenger.h',
         'flutter_plugin_registrar.h', 'flutter_texture_registrar.h', 'flutter_windows.h',
-        'icudtl.dat', 'generated_config.cmake') {
+        'icudtl.dat') {
         if (Test-Path (Join-Path $art $f)) { Copy-Item (Join-Path $art $f) $eph -Force }
     }
     if (-not (Test-Path (Join-Path $eph 'cpp_client_wrapper'))) {
         Copy-Item (Join-Path $art 'cpp_client_wrapper') (Join-Path $eph 'cpp_client_wrapper') -Recurse -Force
     }
-    $cfgText = @"
-set(FLUTTER_ROOT "$($fs -replace '\\','/')")
-set(FLUTTER_TARGET_PLATFORM "windows-x64")
-set(EPHEMERAL_DIR "`${CMAKE_CURRENT_SOURCE_DIR}/ephemeral")
-"@
-    [IO.File]::WriteAllText((Join-Path $eph 'generated_config.cmake'), $cfgText,
-        (New-Object System.Text.UTF8Encoding($false)))
 }
+
+# generated_config.cmake is normally written by `flutter build windows`.  When we
+# drive CMake ourselves it does not exist yet, and a hand-written stub is not
+# enough: app/windows/flutter/CMakeLists.txt passes ${FLUTTER_TOOL_ENVIRONMENT}
+# to tool_backend.bat, which exits with
+#   PROJECT_DIR environment variable must be set to the location of Flutter
+#   project to be built.
+# and MSBuild reports it as MSB8066 on the flutter_windows.dll rule.  So write
+# the same set of variables flutter_tools writes (lib/src/cmake.dart,
+# writeGeneratedCmakeConfig).  Always rewrite it: its content embeds absolute
+# paths, so a stale copy from another checkout is wrong.
+$cfgText = @"
+# Generated code do not commit.
+file(TO_CMAKE_PATH "$($fs -replace '\\','/')" FLUTTER_ROOT)
+file(TO_CMAKE_PATH "$($app -replace '\\','/')" PROJECT_DIR)
+
+set(FLUTTER_VERSION "0.1.0+1" PARENT_SCOPE)
+set(FLUTTER_VERSION_MAJOR 0 PARENT_SCOPE)
+set(FLUTTER_VERSION_MINOR 1 PARENT_SCOPE)
+set(FLUTTER_VERSION_PATCH 0 PARENT_SCOPE)
+set(FLUTTER_VERSION_BUILD 1 PARENT_SCOPE)
+
+# Environment variables to pass to tool_backend.bat
+list(APPEND FLUTTER_TOOL_ENVIRONMENT
+  "FLUTTER_ROOT=$($fs -replace '\\','/')"
+  "PROJECT_DIR=$($app -replace '\\','/')"
+  "FLUTTER_EPHEMERAL_DIR=$($eph -replace '\\','/')"
+  "FLUTTER_TARGET=lib/main.dart"
+  "DART_DEFINES="
+  "DART_OBFUSCATION=false"
+  "TRACK_WIDGET_CREATION=true"
+  "TREE_SHAKE_ICONS=true"
+  "PACKAGE_CONFIG=$($app -replace '\\','/')/.dart_tool/package_config.json"
+)
+"@
+[IO.File]::WriteAllText((Join-Path $eph 'generated_config.cmake'), $cfgText,
+    (New-Object System.Text.UTF8Encoding($false)))
 
 # --------------------------------------------------------------- 7. cmake -----
 $bd = Join-Path $winDir "out\build\x64-$($generator -replace '\s+', '')"

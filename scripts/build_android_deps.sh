@@ -39,8 +39,29 @@ fetch() { # url dest
   fi
 }
 
-fetch "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" "$WORK/ffmpeg.tar.xz"
-[[ -d "$WORK/ffmpeg-${FFMPEG_VERSION}" ]] || tar xf "$WORK/ffmpeg.tar.xz" -C "$WORK"
+# ffmpeg.org has been flaky from GitHub's Linux runners ("Could not resolve
+# host: ffmpeg.org", curl exit 6), so fall back to the GitHub mirror of the same
+# release tag and normalise the directory name.
+fetch_ffmpeg() {
+  if [[ -d "$WORK/ffmpeg-${FFMPEG_VERSION}" ]]; then return 0; fi
+  if ! fetch "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+      "$WORK/ffmpeg.tar.xz"; then
+    echo "== ffmpeg.org unreachable, falling back to the GitHub mirror" >&2
+    local tag="n${FFMPEG_VERSION}"
+    curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
+      "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/${tag}" \
+      -o "$WORK/ffmpeg.tar.gz"
+    tar xf "$WORK/ffmpeg.tar.gz" -C "$WORK"
+    # GitHub names the archive directory after the tag: FFmpeg-n6.1.1.
+    local dir
+    dir=$(find "$WORK" -maxdepth 1 -type d -name 'FFmpeg-*' | head -n1)
+    [[ -n "$dir" ]] || { echo "ffmpeg tarball extracted nowhere" >&2; exit 1; }
+    mv "$dir" "$WORK/ffmpeg-${FFMPEG_VERSION}"
+    return 0
+  fi
+  tar xf "$WORK/ffmpeg.tar.xz" -C "$WORK"
+}
+fetch_ffmpeg
 
 if [[ ! -d "$WORK/libsmb2" ]]; then
   git clone --depth 1 --branch "$LIBSMB2_VERSION" https://github.com/sahlberg/libsmb2 "$WORK/libsmb2"

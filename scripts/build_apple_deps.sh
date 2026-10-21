@@ -48,8 +48,26 @@ fetch() {
     curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "$1" -o "$2"
   }
 }
-fetch "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" "$WORK/ffmpeg.tar.xz"
-[[ -d "$WORK/ffmpeg-${FFMPEG_VERSION}" ]] || tar xf "$WORK/ffmpeg.tar.xz" -C "$WORK"
+
+# ffmpeg.org is unreachable from the hosted runners often enough to be a
+# nuisance ("Could not resolve host: ffmpeg.org").  Fall back to the GitHub
+# mirror of the same release tag when that happens.
+if [[ ! -d "$WORK/ffmpeg-${FFMPEG_VERSION}" ]]; then
+  if ! fetch "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+      "$WORK/ffmpeg.tar.xz"; then
+    echo "== ffmpeg.org unreachable, falling back to the GitHub mirror" >&2
+    curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
+      "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/refs/tags/n${FFMPEG_VERSION}" \
+      -o "$WORK/ffmpeg.tar.gz"
+    tar xf "$WORK/ffmpeg.tar.gz" -C "$WORK"
+    # GitHub names the archive directory after the tag: FFmpeg-n6.1.1.
+    dir=$(find "$WORK" -maxdepth 1 -type d -name 'FFmpeg-*' | head -n1)
+    [[ -n "$dir" ]] || { echo "ffmpeg tarball extracted nowhere" >&2; exit 1; }
+    mv "$dir" "$WORK/ffmpeg-${FFMPEG_VERSION}"
+  else
+    tar xf "$WORK/ffmpeg.tar.xz" -C "$WORK"
+  fi
+fi
 if [[ ! -d "$WORK/libsmb2" ]]; then
   git clone --depth 1 --branch "$LIBSMB2_VERSION" https://github.com/sahlberg/libsmb2 "$WORK/libsmb2"
 fi
