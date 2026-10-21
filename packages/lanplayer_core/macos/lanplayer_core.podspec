@@ -59,6 +59,52 @@ LP_SMB2_LIB = File.join(LP_THIRD, 'libsmb2', 'apple', 'lib')
 LP_SMB2_INC = File.join(LP_THIRD, 'libsmb2', 'apple', 'include')
 LP_CORE_LIB = File.join(LP_THIRD, 'lanplayer', 'apple', 'lib')
 
+# C 内核对外导出的全部函数（对应 native/include/lanplayer/*.h 里的 LP_EXPORT）。
+# 这些符号要靠 ld 的 -u 强引用住，否则 dead-strip 会把它们当死代码删掉，
+# Dart 的 dlsym 就取不到（详见下面 user_target_xcconfig 里的注释）。
+# 新增/删除导出函数时，这里和 tool/check_all.py 的守护要一起改。
+LP_EXPORTED_SYMBOLS = %w[
+  lp_abi_version
+  lp_log_get_level
+  lp_log_set_callback
+  lp_log_set_level
+  lp_player_add_subtitle
+  lp_player_close
+  lp_player_copy_pixel_buffer
+  lp_player_create
+  lp_player_destroy
+  lp_player_get_duration
+  lp_player_get_media_info
+  lp_player_get_option
+  lp_player_get_position
+  lp_player_get_speed
+  lp_player_get_state
+  lp_player_install_frame_callback
+  lp_player_open
+  lp_player_pause
+  lp_player_play
+  lp_player_seek
+  lp_player_select_track
+  lp_player_set_event_callback
+  lp_player_set_mute
+  lp_player_set_option
+  lp_player_set_scale_mode
+  lp_player_set_speed
+  lp_player_set_subtitle_delay
+  lp_player_set_surface
+  lp_player_set_surface_size
+  lp_player_set_volume
+  lp_player_stop
+  lp_source_last_error
+  lp_source_list
+  lp_source_options_default
+  lp_source_options_parse
+  lp_source_probe
+  lp_source_schemes
+  lp_string_free
+  lp_url_normalize
+].freeze
+
 Pod::Spec.new do |s|
   s.name = 'lanplayer_core'
   s.version = '0.1.0'
@@ -123,28 +169,32 @@ Pod::Spec.new do |s|
     ].join(' '),
     # 顺序有讲究：依赖方在前、被依赖方在后。
     #
-    # liblanplayer.a 用 -force_load 而不是 -llanplayer，原因是 Dart 侧的取符号方式：
-    # app/lib/core/bindings.dart 在 macOS 上走 DynamicLibrary.process()，也就是对
-    # 主可执行文件做 dlsym(RTLD_DEFAULT, "lp_player_create")。而 ld 默认只把
-    # 「被静态引用到的」目标文件从 .a 里抽出来：Swift 桥接头只直接调了
-    # lp_player_copy_pixel_buffer / lp_player_install_frame_callback 两个，
-    # 于是 lp_player.o、url.o、smb.o 这些全被丢掉，运行时报
-    #   Invalid argument(s): Failed to lookup symbol 'lp_player_create':
-    #   dlsym(RTLD_DEFAULT, lp_player_create): symbol not found
-    # -force_load 让整个归档无条件进链接，符号表才完整。
-    # 这里只对自家的 liblanplayer.a 用它；FFmpeg / libsmb2 仍然按需抽取
-    # （它们体量大且只被内核内部调用，全量塞进去会让 .app 从 40MB 涨到数百 MB）。
+    # 这里有两个坑叠在一起，都必须处理，否则 app 能编出来但一开视频就崩：
     #
-    # DEAD_CODE_STRIPPING = NO 是必须一起关的第二个开关，只加 -force_load 不够：
-    # 归档确实被整个塞进了链接，但 ld 的 dead-strip 阶段仍然按「有没有静态引用」
-    # 把没有被 Swift 直接调用的函数当成死代码删掉。实测 macOS 27 + Xcode 27.1 +
-    # ld 1115.7.2：只加 -force_load 后 nm -g 依旧只有 2 个 T _lp_ 符号；
-    # 关掉 dead-strip 之后 40 个 LP_EXPORT 符号全部保留。
-    # 代价是二进制略大，对这个 app 完全可以接受。
-    'DEAD_CODE_STRIPPING' => 'NO',
+    # 坑 1：ld 默认只从 .a 里抽取「被静态引用到的」目标文件。
+    #   Dart 侧 app/lib/core/bindings.dart 在 macOS 上走 DynamicLibrary.process()，
+    #   即对主可执行文件做 dlsym(RTLD_DEFAULT, "lp_player_create")，链接器看不见
+    #   这种引用。Swift 桥接头只直接调了 lp_player_copy_pixel_buffer /
+    #   lp_player_install_frame_callback 两个，于是 lp_player.o、url.o、smb.o
+    #   这些整体被丢弃。修法：-Wl,-force_load,<归档> 让整个归档无条件进链接。
+    #   （只对自家的 liblanplayer.a 这么做；FFmpeg / libsmb2 保持按需抽取，
+    #    全量塞进去会让 .app 从 40MB 涨到数百 MB。）
+    #
+    # 坑 2：归档进来了，ld 的 dead-strip 阶段仍按「有没有静态引用」删代码。
+    #   而 Runner target 的 project.pbxproj 里把 DEAD_CODE_STRIPPING 写死成 YES
+    #   （target 级设置盖过 podspec 通过 xcconfig 注入的值，实测改 podspec 无效），
+    #   所以不能靠关 dead-strip 解决。改用「把每个导出符号声明成外部引用」：
+    #   -Wl,-u,_lp_xxx 让链接器认为该符号有未定义引用，dead-strip 就不会动它，
+    #   也不会因此关掉整个工程对其它无用代码的裁剪（比全局关 dead-strip 干净）。
+    #
+    # 实测（macOS 27 / Xcode 27.1 / ld 1115.7.2）：只加 -force_load 时
+    # nm -g 只有 2 个 T _lp_ 符号；补上 -u 之后 40 个 LP_EXPORT 符号全部保留。
+    # LP_EXPORTED_SYMBOLS 必须与 native/include/lanplayer/*.h 里的 LP_EXPORT
+    # 一一对应（tool/check_all.py 的 apple wiring 守护会核对，漏一个就报错）。
     'OTHER_LDFLAGS' => [
       '"$(inherited)"',
       %("-Wl,-force_load,#{File.join(LP_CORE_LIB, 'liblanplayer.a')}"),
+      *LP_EXPORTED_SYMBOLS.map { |sym| %("-Wl,-u,_#{sym}") },
       '-lavformat', '-lavcodec', '-lswresample',
       '-lavfilter', '-lswscale', '-lavutil',
       '-lsmb2',

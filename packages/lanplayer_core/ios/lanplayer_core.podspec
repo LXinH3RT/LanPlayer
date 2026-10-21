@@ -64,6 +64,52 @@ LP_SMB2_LIB = File.join(LP_THIRD, 'libsmb2', 'apple', 'lib')
 LP_SMB2_INC = File.join(LP_THIRD, 'libsmb2', 'apple', 'include')
 LP_CORE_LIB = File.join(LP_THIRD, 'lanplayer', 'apple', 'lib')
 
+# C 内核对外导出的全部函数（对应 native/include/lanplayer/*.h 里的 LP_EXPORT）。
+# 这些符号要靠 ld 的 -u 强引用住，否则 dead-strip 会把它们当死代码删掉，
+# Dart 的 dlsym 就取不到（详见下面 user_target_xcconfig 里的注释）。
+# 新增/删除导出函数时，这里和 tool/check_all.py 的守护要一起改。
+LP_EXPORTED_SYMBOLS = %w[
+  lp_abi_version
+  lp_log_get_level
+  lp_log_set_callback
+  lp_log_set_level
+  lp_player_add_subtitle
+  lp_player_close
+  lp_player_copy_pixel_buffer
+  lp_player_create
+  lp_player_destroy
+  lp_player_get_duration
+  lp_player_get_media_info
+  lp_player_get_option
+  lp_player_get_position
+  lp_player_get_speed
+  lp_player_get_state
+  lp_player_install_frame_callback
+  lp_player_open
+  lp_player_pause
+  lp_player_play
+  lp_player_seek
+  lp_player_select_track
+  lp_player_set_event_callback
+  lp_player_set_mute
+  lp_player_set_option
+  lp_player_set_scale_mode
+  lp_player_set_speed
+  lp_player_set_subtitle_delay
+  lp_player_set_surface
+  lp_player_set_surface_size
+  lp_player_set_volume
+  lp_player_stop
+  lp_source_last_error
+  lp_source_list
+  lp_source_options_default
+  lp_source_options_parse
+  lp_source_probe
+  lp_source_schemes
+  lp_string_free
+  lp_url_normalize
+].freeze
+
 Pod::Spec.new do |s|
   s.name = 'lanplayer_core'
   s.version = '0.1.0'
@@ -126,20 +172,25 @@ Pod::Spec.new do |s|
     # 顺序有讲究：依赖方在前、被依赖方在后。avformat 依赖 avcodec，
     # avcodec/swscale/swresample 依赖 avutil，avfilter 依赖 avformat+avutil。
     #
-    # liblanplayer.a 用 -force_load 而不是 -llanplayer：Dart 侧
-    # app/lib/core/bindings.dart 在 iOS 上同样走 DynamicLibrary.process()，
-    # 靠 dlsym(RTLD_DEFAULT, "lp_xxx") 取符号。ld 默认只抽被静态引用到的
-    # 目标文件，Swift 桥接头只直接调了两个函数，其余符号会被整体丢弃，
-    # 运行时报 Failed to lookup symbol 'lp_player_create'。
-    # FFmpeg / libsmb2 仍按需抽取，避免 .app 体积暴涨。
+    # 两个坑叠在一起，都必须处理，否则 app 能编出来但一开视频就崩：
     #
-    # 只加 -force_load 还不够：ld 的 dead-strip 阶段会把「没有静态引用」的函数
-    # 当死代码删掉（Swift 只直接调了 2 个 lp_* 函数）。所以必须同时把
-    # DEAD_CODE_STRIPPING 关掉，否则符号表里仍然只剩那两个。
-    'DEAD_CODE_STRIPPING' => 'NO',
+    # 坑 1：ld 默认只从 .a 里抽「被静态引用到的」目标文件。Dart 侧
+    #   app/lib/core/bindings.dart 在 iOS 上走 DynamicLibrary.process()，
+    #   靠 dlsym(RTLD_DEFAULT, "lp_xxx") 取符号，链接器看不见这种引用。
+    #   Swift 桥接头只直接调了两个函数，其余 lp_* 会被整体丢弃。
+    #   修法：-Wl,-force_load,<归档> 让整个归档无条件进链接。
+    #
+    # 坑 2：归档进来了，ld 的 dead-strip 阶段仍按「有没有静态引用」删代码，
+    #   而 Runner target 的 pbxproj 把 DEAD_CODE_STRIPPING 写死成 YES
+    #   （target 级设置盖过 podspec 从 xcconfig 注入的值，实测改无效）。
+    #   改用 -Wl,-u,_lp_xxx 把每个导出符号声明成外部引用，
+    #   dead-strip 就不会动它们，也不必关掉整个工程的死代码裁剪。
+    #   实测 macOS 27 / Xcode 27.1 / ld 1115.7.2：只加 -force_load 时
+    #   nm -g 只有 2 个 T _lp_ 符号；补上 -u 后 40 个全部保留。
     'OTHER_LDFLAGS' => [
       '"$(inherited)"',
       %("-Wl,-force_load,#{File.join(LP_CORE_LIB, 'liblanplayer.a')}"),
+      *LP_EXPORTED_SYMBOLS.map { |sym| %("-Wl,-u,_#{sym}") },
       '-lavformat', '-lavcodec', '-lswresample',
       '-lavfilter', '-lswscale', '-lavutil',
       '-lsmb2',

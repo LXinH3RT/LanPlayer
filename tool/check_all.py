@@ -464,6 +464,29 @@ def _ver_tuple(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in text.split(".") if part.isdigit())
 
 
+# Every LP_EXPORT function in the public headers. The Apple podspecs must list
+# all of them with -Wl,-u,_<name>: Dart reaches the core through dlsym, which
+# ld cannot see, and Runner's pbxproj hard-codes DEAD_CODE_STRIPPING=YES at
+# target level (a podspec xcconfig cannot override it), so anything not
+# explicitly referenced gets stripped out of the release binary.
+_LP_EXPORT_RE = re.compile(r"LP_EXPORT\b[^;()]*?\b(lp_[a-z0-9_]+)\s*\(")
+
+
+def _lp_exported_symbols() -> set[str]:
+    names: set[str] = set()
+    for header in sorted((ROOT / "native" / "include" / "lanplayer").glob("*.h")):
+        names.update(_LP_EXPORT_RE.findall(header.read_text(encoding="utf-8")))
+    return names
+
+
+def _lp_exported_in_spec(code: str) -> set[str]:
+    """Read the LP_EXPORTED_SYMBOLS = %w[...] list out of a podspec."""
+    match = re.search(r"LP_EXPORTED_SYMBOLS\s*=\s*%w\[(.*?)\]", code, re.S)
+    if not match:
+        return set()
+    return {tok for tok in match.group(1).split() if tok.startswith("lp_")}
+
+
 def check_apple_wiring() -> None:
     """Guard the iOS / macOS wiring.
 
@@ -508,12 +531,32 @@ def check_apple_wiring() -> None:
         # but ld's dead-strip pass still deletes every function nothing refers
         # to statically, and Swift only calls two of the forty lp_* functions.
         # Measured on macOS 27 / Xcode 27.1 / ld 1115.7.2: with force_load but
-        # DEAD_CODE_STRIPPING=YES the binary still exports exactly 2 T _lp_
-        # symbols and the app dies on lp_player_create.
-        if not re.search(r"'DEAD_CODE_STRIPPING'\s*=>\s*'NO'", code):
+        # DEAD_CODE_STRIPPING=YES (which Runner's pbxproj hard-codes at target
+        # level, so a podspec xcconfig cannot override it) the binary still
+        # exported exactly 2 T _lp_ symbols and the app died on lp_player_create.
+        # The fix is to mark each export as an external reference with -u.
+        # The podspec builds those flags from LP_EXPORTED_SYMBOLS, so the check
+        # is on the list plus the flag construction, not on 39 literal flags.
+        if "-Wl,-u,_" not in code:
             problems.append(f"{spec.relative_to(ROOT)}: -force_load needs "
-                            f"DEAD_CODE_STRIPPING => 'NO' as well, otherwise ld "
-                            f"dead-strips the dlsym-only lp_* symbols")
+                            f"-Wl,-u,_<symbol> for each export as well, otherwise "
+                            f"ld dead-strips the dlsym-only lp_* symbols")
+        # The list must match the headers exactly: a function added to
+        # native/include/lanplayer/*.h but forgotten here works in debug builds
+        # and dies in release (dead-strip only bites at -O/-release).
+        listed = _lp_exported_in_spec(code)
+        if not listed:
+            problems.append(f"{spec.relative_to(ROOT)}: LP_EXPORTED_SYMBOLS is empty "
+                            f"or unparsable; the -u list cannot be built")
+        else:
+            header_symbols = _lp_exported_symbols()
+            for missing in sorted(header_symbols - listed):
+                problems.append(f"{spec.relative_to(ROOT)}: LP_EXPORTED_SYMBOLS is "
+                                f"missing {missing} (declared LP_EXPORT, will be "
+                                f"dead-stripped out of the release binary)")
+            for extra in sorted(listed - header_symbols):
+                problems.append(f"{spec.relative_to(ROOT)}: LP_EXPORTED_SYMBOLS lists "
+                                f"{extra}, which no header declares LP_EXPORT for")
         # ... and it must be force-loading our archive, not the whole FFmpeg.
         for flag_line in code_lines:
             if "force_load" in flag_line and "liblanplayer.a" not in flag_line:
