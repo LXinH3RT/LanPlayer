@@ -263,6 +263,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\scripts\build_windows.ps1
 
 `scripts\build_windows_desktop.ps1` 是这两条路之外的一条独立通道（VS 自带 cmake +
 MSBuild），在不打补丁的机器上也能用，产物在 `app\windows\out\build\x64-VisualStudio182026\`。
+CI 就走这条（`-Config Release -NoEnvRedirect`），因为 runner 的 VS 18 同样让
+`flutter build windows` 选错 generator：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_desktop.ps1 -Config Release
+```
+
+### 持续集成
+
+`.github/workflows/build.yml` 有五个 job：`native-desktop`（Linux 上源码编 FFmpeg +
+冒烟测试）、`android`（NDK 交叉编 FFmpeg/libsmb2 + `flutter build apk`）、`apple`
+（macOS 上编 iOS 静态库 + `flutter build ios --no-codesign`）、`windows-native`（Zig 编
+`lanplayer.dll` + 静态检查）、`windows-app`（MSVC 编完整桌面 bundle + 纹理/硬解 preflight）。
+run `39584417040` 起五个 job 全绿。
+
+> 该私有仓库的 Actions 曾被关闭过（`/actions/permissions` 返回 `{"enabled":false}`），
+> 症状是 push 后不产生 run、dispatch 出来的 run 永远 `queued`。用
+> `PUT /repos/{owner}/{repo}/actions/permissions` 传 `{"enabled":true}` 恢复。
 
 ### 关于版本管理
 

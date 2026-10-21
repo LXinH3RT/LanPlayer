@@ -284,8 +284,8 @@ void main() {
     // `toImage`/`toByteData` talk to the raster thread, which a widget test does
     // not pump on its own - without `runAsync` they wait forever.
     final image = await tester.runAsync(() => boundary.toImage());
-    final data =
-        await tester.runAsync(() => image!.toByteData(format: ui.ImageByteFormat.rawRgba));
+    final data = await tester
+        .runAsync(() => image!.toByteData(format: ui.ImageByteFormat.rawRgba));
     expect(data, isNotNull);
     final rgba = data!.buffer.asUint8List();
 
@@ -297,7 +297,8 @@ void main() {
       if (r > 200 && g > 200 && b > 200) white++;
     }
     expect(red, greaterThan(300), reason: 'the red run must actually paint');
-    expect(green, greaterThan(300), reason: 'the green run must actually paint');
+    expect(green, greaterThan(300),
+        reason: 'the green run must actually paint');
     expect(white, greaterThan(300), reason: 'the default white run must paint');
   });
 }

@@ -59,7 +59,7 @@
 **v0.3 — 桌面与发现**
 
 * Windows：~~D3D11VA 硬解~~（已完成，`native/src/platform/win32/d3d11va_decoder.c`）+ GPU 直出纹理 + WASAPI；macOS 同步
-* Apple：~~iOS / macOS 工程接线~~（已完成静态部分：`packages/lanplayer_core` 两个 podspec + 两个 Podfile + macOS 纹理通道 + 部署目标对齐，见 `docs/build.md` 第 4 节）。**待办：在真机/模拟器上跑一遍**——本仓库在 Windows 上开发，没有 Xcode
+* Apple：~~iOS / macOS 工程接线~~（已完成静态部分：`packages/lanplayer_core` 两个 podspec + 两个 Podfile + macOS 纹理通道 + 部署目标对齐，见 `docs/build.md` 第 4 节）。iOS 已在 CI 的 `apple` job 上真编译（`flutter build ios --release --no-codesign` 通过）。**待办：macOS 桌面 bundle 仍要在真机跑一遍**——本仓库在 Windows 上开发，没有 Xcode
 * SMB 局域网自动发现（mDNS `_smb._tcp` + 代理广播）；共享名由用户填写，不做列表枚举
 * 缩略图/海报（解第一帧，缓存到本地）
 
@@ -77,10 +77,11 @@
 
 ## 工程质量待办
 
-* CI：GitHub Actions 三个 job —— Android（NDK 构建 + `flutter test`）、
-  Apple（Xcode 构建）、Linux（CMake + `lp_smoke_test`）
-* 桌面构建脚本化：`scripts/build_windows_desktop.ps1` 已把 junction、pub get、
-  VS generator、INSTALL、DLL 部署串成一条命令；后续可接进 CI 的 windows job
+* CI：~~GitHub Actions 三个 job~~（已扩到五个：Android NDK + `flutter build apk`、
+  Apple iOS 静态库 + `flutter build ios`、Linux CMake + `lp_smoke_test`、Windows Zig
+  内核、Windows MSVC 桌面 bundle；run `39584417040` 全绿，见 `docs/verification.md` §3.17）
+* 桌面构建脚本化：~~`scripts/build_windows_desktop.ps1` 串成一条命令~~（已完成并接进
+  CI 的 `windows-app` job，带 `-FlutterRoot` / `-NoEnvRedirect` 与 bundle 断言）
 * 内核单元测试：`subtitle.c` 的 SRT/ASS 解析器可以用纯 C 测试驱动，
   目前只做了冒烟测试（`native/tests/lp_smoke_test.c`）
 * 内存检查：ASan 跑一遍长片（2 小时）确认无泄漏，重点看 seek 与切集路径
