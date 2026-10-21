@@ -669,6 +669,47 @@ def check_apple_wiring() -> None:
         problems.append("app/macos/Runner/MainFlutterWindow.swift missing; the macOS "
                         "build would have no lanplayer/video channel")
 
+    # iOS side of the same class of bug.  Xcode 27 (iOS SDK 27) raised its floor to
+    # 15.0, so a pod or target left on 13.0 now fails with:
+    #   Target Integrity (Xcode): The iOS Simulator deployment target
+    #   'IPHONEOS_DEPLOYMENT_TARGET' is set to 13.0, but the range of supported
+    #   deployment target versions is 15.0 to 27.1.x.
+    # Every place that can carry the value has to agree with build_apple_deps.sh.
+    ios_podfile_text = ios_podfile.read_text(encoding="utf-8") if ios_podfile.exists() else ""
+    if min_ios and ios_podfile_text:
+        if "config.build_settings['IPHONEOS_DEPLOYMENT_TARGET']" not in ios_podfile_text:
+            problems.append("app/ios/Podfile post_install does not raise every pod's "
+                            "IPHONEOS_DEPLOYMENT_TARGET; third-party pods ship 12.0/13.0 "
+                            "and Xcode 27 rejects it")
+    ios_pbx = APP / "ios" / "Runner.xcodeproj" / "project.pbxproj"
+    if ios_pbx.exists() and min_ios:
+        for target in re.findall(r'IPHONEOS_DEPLOYMENT_TARGET = "?([0-9.]+)"?;',
+                                 ios_pbx.read_text(encoding="utf-8")):
+            if _ver_tuple(target) < _ver_tuple(min_ios):
+                problems.append(f"app/ios/Runner.xcodeproj: IPHONEOS_DEPLOYMENT_TARGET = "
+                                f"{target} is below {min_ios}; Xcode 27 rejects it")
+                break
+    app_framework_info = APP / "ios" / "Flutter" / "AppFrameworkInfo.plist"
+    if app_framework_info.exists() and min_ios:
+        m = re.search(r'<key>MinimumOSVersion</key>\s*<string>([0-9.]+)</string>',
+                      app_framework_info.read_text(encoding="utf-8"))
+        if m and _ver_tuple(m.group(1)) < _ver_tuple(min_ios):
+            problems.append(f"app/ios/Flutter/AppFrameworkInfo.plist: MinimumOSVersion = "
+                            f"{m.group(1)} is below {min_ios}")
+    for name in ("ios", "macos"):
+        spec = core / name / "lanplayer_core.podspec"
+        if not spec.exists():
+            continue
+        floor = min_ios if name == "ios" else min_macos
+        if not floor:
+            continue
+        key = "s.ios.deployment_target" if name == "ios" else "s.osx.deployment_target"
+        m = re.search(re.escape(key) + r"\s*=\s*'([0-9.]+)'",
+                      spec.read_text(encoding="utf-8"))
+        if m and _ver_tuple(m.group(1)) < _ver_tuple(floor):
+            problems.append(f"packages/lanplayer_core/{name}/lanplayer_core.podspec: "
+                            f"{key} = {m.group(1)} is below {floor}")
+
     if not any(p.startswith(("app/ios/Podfile", "app/macos/Podfile",
                              "app/macos/Runner.xcodeproj")) for p in problems):
         notes.append(f"apple wiring: podspecs link liblanplayer.a, Podfiles declare "

@@ -126,7 +126,7 @@ Pod::Spec.new do |s|
   # 这个 pod 由本地 path 依赖引入（见 app/ios/Podfile），source 只为通过校验。
   s.source = { :git => 'https://github.com/LXinH3RT/LanPlayer.git', :tag => s.version.to_s }
 
-  s.ios.deployment_target = '13.0'
+  s.ios.deployment_target = '15.0'
   s.ios.dependency 'Flutter'
 
   # 内核必须静态进 app 二进制：Dart 侧在 iOS 上用 DynamicLibrary.process()

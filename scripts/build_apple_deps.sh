@@ -22,7 +22,13 @@ OUT="$ROOT/native/third_party"
 WORK="${WORK:-$ROOT/build/deps}"
 FFMPEG_VERSION="${FFMPEG_VERSION:-6.1.1}"
 LIBSMB2_VERSION="${LIBSMB2_VERSION:-v4.0.0}"
-MIN_IOS="${MIN_IOS:-13.0}"
+# 15.0 是 Xcode 27（iOS SDK 27）允许的最低部署目标下限：
+#   Target Integrity (Xcode): The iOS Simulator deployment target
+#   'IPHONEOS_DEPLOYMENT_TARGET' is set to 13.0, but the range of supported
+#   deployment target versions is 15.0 to 27.1.x.
+# Xcode 26 的下限是 12.0、更低版本接受 13.0，所以统一抬到 15.0 是安全的选择
+# （本项目不需要支持 iOS 15 以前的系统）。
+MIN_IOS="${MIN_IOS:-15.0}"
 # 12.0 是 Xcode 26（macOS SDK 27）允许的最低部署目标下限：
 #   error: The macOS deployment target 'MACOSX_DEPLOYMENT_TARGET' is set to
 #   11.0, but the range of supported deployment target versions is 12.0 to

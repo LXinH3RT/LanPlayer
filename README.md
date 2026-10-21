@@ -356,8 +356,9 @@ flutter build ios --release --no-codesign
 Apple 端的工程接线已经写在仓库里，`docs/build.md` 第 4 节有完整说明：
 `packages/lanplayer_core/` 的两个 podspec 负责把
 `liblanplayer.a + libav*.a + libsmb2.a` 链进 Runner，两个 `Podfile` 声明
-`platform :ios, '13.0'` / `platform :osx, '12.0'`（与 `build_apple_deps.sh` 的
-`MIN_IOS` / `MIN_MACOS` 对齐；macOS 的 12.0 下限由 Xcode 26 决定），macOS 的
+`platform :ios, '15.0'` / `platform :osx, '12.0'`（与 `build_apple_deps.sh` 的
+`MIN_IOS` / `MIN_MACOS` 对齐；iOS 的 15.0、macOS 的 12.0 分别是 Xcode 27 与
+Xcode 26 的 SDK 受支持下限），macOS 的
 `MainFlutterWindow.swift` 注册
 `lanplayer/video` 通道把 `CVPixelBuffer` 交给 Flutter 引擎。
 

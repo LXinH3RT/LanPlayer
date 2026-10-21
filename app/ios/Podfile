@@ -1,16 +1,18 @@
 # LanPlayer 的 iOS / iPadOS Podfile。
 #
 # 与 `flutter create` 生成的模板基本一致，只有两处改动：
-#   1. 打开 platform 行并写成 13.0 —— native/third_party 里的 FFmpeg / libsmb2
-#      是 scripts/build_apple_deps.sh 用 MIN_IOS=13.0 编的，工程目标低于它
-#      链接时会报 "building for iOS 12.0, but linking in object file built for iOS 13.0"。
+#   1. 打开 platform 行并写成 15.0 —— native/third_party 里的 FFmpeg / libsmb2
+#      是 scripts/build_apple_deps.sh 用 MIN_IOS=15.0 编的，工程目标低于它
+#      链接时会报 "building for iOS 14.0, but linking in object file built for iOS 15.0"。
+#      另外 Xcode 27（iOS SDK 27）的受支持下限就是 15.0，写 13.0 会被
+#      "Target Integrity" 直接拒掉。
 #   2. 末尾 post_install 里不再强制 BITCODE（Flutter 3.27 已默认关闭，留着只会刷警告）。
 #
 # lanplayer_core 这个 pod（C 内核 + FFmpeg + libsmb2）不需要在这里手写 pod 行：
 # 它在 app/pubspec.yaml 里是 dart:ffi 插件，flutter_install_all_ios_pods 会读
 # .flutter-plugins-dependencies，自动 `pod 'lanplayer_core', :path => ...`。
 
-platform :ios, '13.0'
+platform :ios, '15.0'
 
 # CocoaPods 的统计上报会同步阻塞，明显拖慢 flutter build。
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -48,8 +50,24 @@ target 'Runner' do
   end
 end
 
+# 部署目标统一抬到 15.0。为什么必须在这里强制覆盖：
+#   Xcode 27（iOS SDK 27）的受支持下限是 15.0，而第三方 pod 自己声明的部署
+#   目标普遍是 12.0 / 13.0，pod install 会原样写进 Pods.xcodeproj：
+#     Target Integrity (Xcode): The iOS Simulator deployment target
+#     'IPHONEOS_DEPLOYMENT_TARGET' is set to 12.0, but the range of supported
+#     deployment target versions is 15.0 to 27.1.x.
+#   Flutter 的 podhelper.rb 只在目标低于 10.14 时才删这个键，13.0 正好不被
+#   处理，所以只能自己遍历覆盖（项目级 + 每个 target 级都写，避免继承漏网）。
+IOS_DEPLOYMENT_TARGET = '15.0'
+
 post_install do |installer|
+  installer.pods_project.build_configurations.each do |config|
+    config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = IOS_DEPLOYMENT_TARGET
+  end
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = IOS_DEPLOYMENT_TARGET
+    end
   end
 end

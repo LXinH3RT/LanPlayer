@@ -118,7 +118,7 @@ done
 ```bash
 ./configure --prefix=/tmp/ff/apple --enable-cross-compile \
   --target-os=darwin --arch=arm64 \
-  --cc="xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=13.0" \
+  --cc="xcrun -sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0" \
   --enable-videotoolbox --enable-audiotoolbox \
   --enable-static --disable-shared --disable-programs --disable-doc
 ```
@@ -361,9 +361,13 @@ FFmpeg 编完会缓存（`build/deps/ff-<slice>/lib/libavcodec.a` 存在就跳�
   加进 `OTHER_LDFLAGS`，并链接 `VideoToolbox CoreMedia CoreVideo AudioToolbox
   CoreFoundation Security` 与 `z bz2 lzma iconv`。
 - `app/pubspec.yaml` 里已声明 `lanplayer_core: {path: ../packages/lanplayer_core}`。
-- `app/ios/Podfile` 与 `app/macos/Podfile` 已存在（`platform :ios, '13.0'` / `platform :osx, '12.0'`，
+- `app/ios/Podfile` 与 `app/macos/Podfile` 已存在（`platform :ios, '15.0'` / `platform :osx, '12.0'`，
   与 `build_apple_deps.sh` 的 `MIN_IOS`/`MIN_MACOS` 对齐），里面没有手写 `pod` 行——
   Flutter 会读 `.flutter-plugins-dependencies`，自动把 `lanplayer_core` 装上。
+  iOS 侧 `post_install` 会把**每个 pod**（以及 `Pods.xcodeproj` 的项目级）的
+  `IPHONEOS_DEPLOYMENT_TARGET` 统一抬到 15.0：第三方插件的 podspec 自带更低
+  数字（`path_provider_foundation` 写的是 12.0），Xcode 27 的受支持下限是 15.0，
+  低于它直接报 `Target Integrity (Xcode)` 拒绝构建。
   macOS 侧 `post_install` 里还会把**每个 pod**（以及 `Pods.xcodeproj` 的项目级）
   的 `MACOSX_DEPLOYMENT_TARGET` 统一抬到 12.0：第三方插件的 podspec 自带更低
   数字（`path_provider_foundation` 写的是 10.14），Xcode 26 不支持低于 12.0。
@@ -383,7 +387,7 @@ flutter build macos --release     # 或 flutter build ios --release --no-codesig
 ```
 
 如果报 `library not found for -llanplayer`，说明 4.2 没跑或没成功；报
-`building for iOS 13.0, but linking in object file built for iOS 14.0`，说明
+`building for iOS 14.0, but linking in object file built for iOS 15.0`，说明
 依赖是用更高的 `MIN_IOS` 编的，把工程目标同步调高（或重跑 4.2）。
 
 ### 4.4 桌面纹理与音频
