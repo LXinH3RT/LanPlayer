@@ -342,7 +342,7 @@ exe 旁边。产物可以直接拷到别的机器上运行。
 ```bash
 # 1) 先编依赖（FFmpeg + libsmb2 + C 内核），产物落到 native/third_party/
 ANDROID_NDK_HOME=~/android-ndk-r26 ./scripts/build_android_deps.sh
-./scripts/build_apple_deps.sh          # 三切片：iphoneos / iphonesimulator / macosx
+./scripts/build_apple_deps.sh          # 默认 macosx；iOS 用 SLICES=iphoneos / iphonesimulator
 
 # 2) 在 Mac 上装依赖并运行（iOS / macOS 都不需要手工改 Xcode 工程）
 #    前置：完整 Xcode + CocoaPods + cmake + Flutter，缺 Flutter 时
@@ -351,6 +351,7 @@ cd app
 flutter pub get
 flutter build macos --release          # 或 flutter run -d macos
 flutter build ios --release --no-codesign
+flutter build ios --simulator --debug  # 模拟器（iPad 已验证，见下）
 ```
 
 Apple 端的工程接线已经写在仓库里，`docs/build.md` 第 4 节有完整说明：
@@ -359,8 +360,20 @@ Apple 端的工程接线已经写在仓库里，`docs/build.md` 第 4 节有完�
 `platform :ios, '15.0'` / `platform :osx, '12.0'`（与 `build_apple_deps.sh` 的
 `MIN_IOS` / `MIN_MACOS` 对齐；iOS 的 15.0、macOS 的 12.0 分别是 Xcode 27 与
 Xcode 26 的 SDK 受支持下限），macOS 的
-`MainFlutterWindow.swift` 注册
+`MainFlutterWindow.swift` 与 iOS 的 `AppDelegate.swift` 各自注册
 `lanplayer/video` 通道把 `CVPixelBuffer` 交给 Flutter 引擎。
+
+iOS 侧有两个和桌面端不一样的地方，改代码前必须先知道：
+
+- **必须采用 UIScene 生命周期**（iOS 26/27 SDK 强制）。`Info.plist` 声明
+  `UIApplicationSceneManifest`，`AppDelegate` 自己持有 `FlutterEngine`，
+  由 `SceneDelegate` 建 `FlutterViewController` 再回调 `attach()`。
+- **`registrarForPlugin:` 对同名插件只能调一次**，第二次会走 `NSAssertionHandler`
+  直接 abort。registrar 与 textures 要在 `attach()` 里取一次缓存复用。
+
+iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字幕）：
+
+![iPad 播放](docs/images/ipad-player.png)
 
 在真 Mac 上第一次动手前，`docs/build.md` 的 4.1、4.6 与 4.8 值得先看一遍，那里记了三条本机没有、
 但 macOS 上一定会撞到的事实：
@@ -420,7 +433,7 @@ Xcode 26 的 SDK 受支持下限），macOS 的
 |项|原因|
 |-|-|
 |Android / iOS / macOS 构建|本机没有 NDK / Xcode / CocoaPods，只能在 Windows 上做静态检查；Android 与 iOS 的编译产物已在 CI 的 `android` / `apple` 两个 job 上验过|
-|Apple 端真机验证|**macOS 已实测通过**：Mac（macOS 27.0.1 / Xcode 27.1）上 `flutter build macos --release` → `✓ Built lanplayer.app (61.7MB)`，运行后 `libsmb2` 浏览 NAS、`VideoToolbox` 硬解 640x360 h264、`AudioQueue` 48 kHz 立体声出声、外挂 SRT 载入 3 条 cue，日志零 error（详见 `docs/verification.md` 3.18）。iPadOS 侧工程接线（podspec / Podfile / `AppDelegate.swift` 纹理通道 / 部署目标 15.0）已就绪，**还差一台真机做最终验证**|
+|Apple 端真机验证|**macOS 已实测通过**：Mac（macOS 27.0.1 / Xcode 27.1）上 `flutter build macos --release` → `✓ Built lanplayer.app (61.7MB)`，运行后 `libsmb2` 浏览 NAS、`VideoToolbox` 硬解 640x360 h264、`AudioQueue` 48 kHz 立体声出声、外挂 SRT 载入 3 条 cue，日志零 error（详见 `docs/verification.md` 3.18）。**iPadOS 已在 iPad 模拟器上实测通过**：同一条 VideoToolbox 硬解 + AudioQueue + 外挂 SRT 链路，截图彩条顺序正确、字幕像素可见（`docs/images/ipad-player.png`，详见 3.19）；实体 iPad 仍需一次签名与「开发者模式」|
 |真机硬解（MediaCodec / VideoToolbox）|`VideoToolbox` 已在 macOS 真机跑通（日志 `hardware decode videotoolbox`）；`MediaCodec` 需要在 Android 设备上验（CI 只保证编译）|
 |Flutter `analyze`|Dart 侧用 `flutter test` + kernel 编译两重检查（都已接进 `tool/check_all.py`）；`flutter analyze` 需要完整依赖解析，未在本机跑|
 |视频区域的截图验证|`PrintWindow` 读不到 Flutter 合成结果（客户区全黑）；`CopyFromScreen` 按窗口矩形抓也会因为缩放显示器上合成位置与 `GetWindowRect` 不一致而整个错过客户区。**改用整屏抓取**（`capture_screen.ps1 -WholeScreen`）后视频区域可见并已用于颜色顺序验证；字幕渲染仍以 `flutter test` 金色文件为准|
