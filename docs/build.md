@@ -660,6 +660,57 @@ flutter build windows --release      # 先生成 ephemeral/generated_config.cmak
 VS 自带 `C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`
 （本机 **4.3.1-msvc1**），`scripts/build_windows_desktop.ps1` 用的就是它，所以走 A/B 哪种都不缺 CMake。
 
+## 6.6 GitHub Actions 的额度：为什么 job 会「3 秒失败、日志 404」
+
+私有仓库的 Actions 有免费额度（Free 计划 **2000 分钟/月**），并且**按平台乘系数扣**：
+Linux ×1、Windows ×2、macOS ×10。本仓库一次全量 CI 的实测账：
+
+| job | 平台 | 实测原始分钟 | 系数 | 计费分钟 |
+|-|-|-|-|-|
+| apple (iOS build only) | macOS | 79.5 | ×10 | **794.7** |
+| windows desktop app | Windows | 198.6 | ×2 | **397.1** |
+| native core (Linux) | Linux | 242.6 | ×1 | 242.6 |
+| android | Linux | 176.7 | ×1 | 176.7 |
+| windows x64 native core | Windows | 67.6 | ×2 | 135.3 |
+| **合计（32 次提交）** | | | | **1746.3** |
+
+也就是说：**一次全量 CI ≈ 55 计费分钟，其中 macOS 那一个 job 就占 25 分钟**。
+32 次推送就把 2000 分钟烧光了。额度用尽后的表现很有欺骗性：
+
+- 每个 job 的 `steps` 是**空数组**、`runner_name` 为空、`started_at` 与 `completed_at` 只差 3 秒；
+- `ci_log.py` 拉日志报 `HTTP Error 404: The specified blob does not exist`（根本没有日志）；
+- 网页上只显示一排红叉，看不出原因。
+
+真正的错误信息藏在 **check-run 的 annotations** 里（`gh api` 或 REST）：
+
+```
+The job was not started because recent account payments have failed
+or your spending limit needs to be increased.
+Please check the 'Billing & plans' section in your settings
+```
+
+排查命令（本仓库的辅助脚本，读 Windows 凭据管理器里的 token）：
+
+```powershell
+.tools\python\python.exe .tools\ci_probe.py            # 列最近 run 与失败 step
+.tools\python\python.exe .tools\ci_cost.py             # 按计费分钟统计各 job
+.tools\python\python.exe .tools\ci_usage.py            # 当月 usage（官方 billing/usage）
+.tools\python\python.exe .tools\ci_annot.py <run_id>   # 打印 check-run annotations
+```
+
+修复方向有三条，本仓库已做了前两条：
+
+1. **文档改动不再触发整套构建**（`.github/workflows/build.yml` 的 `paths-ignore`：
+   `**.md`、`docs/**`、`LICENSE`、`.gitignore`、`.gitattributes`）。改一行 README
+   本来就要烧 55 分钟额度，很不划算。
+2. **同一分支的新推送取消旧跑批**（`concurrency: build-${{ github.ref }}` +
+   `cancel-in-progress: true`），连续推几次只留最后一次。
+3. **把仓库改成 public**：公共仓库的 Actions 完全免费、不扣额度。
+   私有仓库也可以去 *Settings → Billing* 提高 spending limit（需要绑卡）。
+
+> 额度用尽**不影响本地构建**：`scripts/build_windows.ps1`、`build_windows_desktop.ps1`、
+> Mac 上的 `build_apple_deps.sh` + `flutter build macos` 全部照常，`tool/check_all.py` 也不依赖 CI。
+
 ## 7\. 构建后自检
 
 ```bash

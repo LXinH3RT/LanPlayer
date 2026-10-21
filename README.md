@@ -95,7 +95,7 @@
 | `tool/` | 8 | 静态检查与依赖下载（见下方工具表） |
 | `docs/` | 15 | 6 篇文档 + 9 张验证截图 |
 | `docs/images/` | 9 | 界面与硬解验证截图，README 与 `verification.md` 引用 |
-| `.github/workflows/` | 1 | CI：Windows 内核构建 + 全部静态检查 |
+| `.github/workflows/` | 1 | CI：五个平台的构建 + 全部静态检查（只改文档不触发，见 `docs/build.md` 6.6） |
 | `.tools/` | — | 下载的工具链（zig / ffmpeg / libsmb2 / flutter-sdk），不进 git |
 | `build/` | — | 构建产物与测试素材，不进 git |
 
@@ -434,10 +434,11 @@ iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字�
 
 |项|原因|
 |-|-|
-|Android / iOS / macOS 构建|本机没有 NDK / Xcode / CocoaPods，只能在 Windows 上做静态检查；Android 与 iOS 的编译产物已在 CI 的 `android` / `apple` 两个 job 上验过|
+|Android / iOS / macOS 构建|本机没有 NDK / Xcode / CocoaPods；Android 与 iOS 已在 CI 的 `android` / `apple` 两个 job 上编译通过；macOS 已在本机的 Mac 上真跑通|
 |Apple 端真机验证|**macOS 已实测通过**：Mac（macOS 27.0.1 / Xcode 27.1）上 `flutter build macos --release` → `✓ Built lanplayer.app (61.7MB)`，运行后 `libsmb2` 浏览 NAS、`VideoToolbox` 硬解 640x360 h264、`AudioQueue` 48 kHz 立体声出声、外挂 SRT 载入 3 条 cue，日志零 error（详见 `docs/verification.md` 3.18）。**iPadOS 已在 iPad 模拟器上实测通过**：同一条 VideoToolbox 硬解 + AudioQueue + 外挂 SRT 链路，截图彩条顺序正确、字幕像素可见（`docs/images/ipad-player.png`，详见 3.19）；实体 iPad 仍需一次签名与「开发者模式」|
 |真机硬解（MediaCodec / VideoToolbox）|`VideoToolbox` 已在 macOS 真机跑通（日志 `hardware decode videotoolbox`）；`MediaCodec` 需要在 Android 设备上验（CI 只保证编译）|
 |Flutter `analyze`|Dart 侧用 `flutter test` + kernel 编译两重检查（都已接进 `tool/check_all.py`）；`flutter analyze` 需要完整依赖解析，未在本机跑|
+|GitHub Actions 全绿|私有仓库的免费额度（2000 分钟/月）已被这笔开发用完：一次全量 CI ≈ 55 计费分钟（macOS ×10、Windows ×2）。额度耗尽时 job 会「3 秒失败、`steps` 为空、日志 404」，annotation 里写的是 billing。已加 `paths-ignore`（改文档不触发）与 `concurrency`（新推送取消旧跑批）；要恢复全绿需改 public 仓库或提高 spending limit。详见 `docs/build.md` 6.6|
 |视频区域的截图验证|`PrintWindow` 读不到 Flutter 合成结果（客户区全黑）；`CopyFromScreen` 按窗口矩形抓也会因为缩放显示器上合成位置与 `GetWindowRect` 不一致而整个错过客户区。**改用整屏抓取**（`capture_screen.ps1 -WholeScreen`）后视频区域可见并已用于颜色顺序验证；字幕渲染仍以 `flutter test` 金色文件为准|
 
 **限制（有意为之，见 `docs/roadmap.md`）**：ASS 的 `\t` 动画、`\clip`、矢量绘图 `\p`、

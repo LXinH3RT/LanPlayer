@@ -5,8 +5,29 @@ name: build
 on:
   push:
     branches: [main]
+    # 只改文档/图片时不跑整套跨平台构建：一次全量 CI 约 60 分钟，
+    # 折算成计费分钟约 55（macOS 乘 10、Windows 乘 2），改一行 README
+    # 就烧掉这么多额度很不划算。这些路径只在源码/构建脚本变化时才需要验证。
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.gitattributes'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.gitattributes'
   workflow_dispatch:
+
+# 同一分支上的新推送取消旧跑批：连续推几次时只会保留最后一次，
+# 而不是让几次全量构建排队把配额一起烧掉。
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   FFMPEG_VERSION: "6.1.1"
