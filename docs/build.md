@@ -312,21 +312,28 @@ SLICES=iphonesimulator ./scripts/build_apple_deps.sh  # 做 iOS 模拟器切片
 ARCHS="arm64 x86_64" ./scripts/build_apple_deps.sh   # Intel Mac 再加 x86_64
 ```
 
-> **一次只能做一个平台族。** Apple silicon 上 `iphoneos` / `iphonesimulator` /
-> `macosx` 都是 arm64，`lipo` 不允许把两个同架构的切片塞进同一个 fat 归档
-> （`have the same architectures (arm64) and can't be in the same fat output file`），
-> 而三个 podspec 都指向同一个 `native/third_party/*/apple/lib` 目录，一次只放得下
-> 一个族的产物。脚本在开头就会检查 `SLICES` 跨族并直接报错退出（不会白编二十分钟）。
-> 默认值从「三切片」改成 `macosx`：桌面构建只要 macOS 切片，而 iOS 真机/模拟器
-> 需要时显式指定。要换目标就重跑一次，FFmpeg 会按切片缓存，只重编不同的那一个。
+> **一次只能做一个平台族，但三个族可以共存。** Apple silicon 上 `iphoneos` /
+> `iphonesimulator` / `macosx` 都是 arm64，`lipo` 不允许把两个同架构的切片塞进
+> 同一个 fat 归档（`have the same architectures (arm64) and can't be in the same
+> fat output file`），所以一次运行的 `SLICES` 不能跨族——脚本在开头就检查并直接
+> 报错退出（不会白编二十分钟）。
+> 每个族写**各自的目录** `native/third_party/<lib>/apple/<family>/lib`，所以
+> macOS 与 iOS 的归档可以同时存在，先做 macOS 再做 iOS 不会把前者覆盖掉。
+> 老路径 `apple/lib` 仍会被填一份（附带 `.family` 标记），只作为「这个克隆只跑过
+> 一族构建」时的兜底。默认值从「三切片」改成 `macosx`：桌面构建只要 macOS 切片，
+> 而 iOS 真机/模拟器需要时显式指定。FFmpeg 会按切片缓存，换目标只重编不同的那一个。
 
-产出（全部是 universal 静态库，已按切片 `lipo` 合并）：
+产出（每个平台族一套，全部是 universal 静态库，已按切片 `lipo` 合并）：
 
 | 路径 | 内容 |
 | --- | --- |
-| `native/third_party/ffmpeg/apple/lib` | `libavformat.a` `libavcodec.a` `libavutil.a` `libswresample.a` `libswscale.a` `libavfilter.a` |
-| `native/third_party/libsmb2/apple/lib` | `libsmb2.a` |
-| `native/third_party/lanplayer/apple/lib` | `liblanplayer.a` ← **C 内核自己**（16 个 .c：核心 13 个 + `platform/apple` 3 个） |
+| `native/third_party/ffmpeg/apple/<family>/lib` | `libavformat.a` `libavcodec.a` `libavutil.a` `libswresample.a` `libswscale.a` `libavfilter.a` |
+| `native/third_party/libsmb2/apple/<family>/lib` | `libsmb2.a` |
+| `native/third_party/lanplayer/apple/<family>/lib` | `liblanplayer.a` ← **C 内核自己**（16 个 .c：核心 13 个 + `platform/apple` 3 个） |
+| `native/third_party/*/apple/lib` | 最近一次构建那一族的副本（兜底，带 `.family` 标记） |
+
+`<family>` 取 `macosx` / `iphoneos` / `iphonesimulator`。podspec 用 Xcode 的
+`$(PLATFORM_NAME)` 自动选对目录，不需要在切换目标时改任何工程设置。
 
 这一步会把 FFmpeg 6.1.1 与 libsmb2 v4.0.0 的源码下载到 `build/deps/`，编译十几分钟。
 `native/third_party/` 已被 `.gitignore` 排除，不进版本库。
@@ -459,7 +466,7 @@ stdout/stderr，`xcrun simctl spawn <dev> log show` 只能看到 `flutter:` 那�
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
 | `zsh: permission denied: ./scripts/build_apple_deps.sh` | 仓库里的 `.sh` 曾以 `100644` 提交，执行位丢了 | 已修：两个 `.sh` 在 git 里改成 `100755`；旧克隆上直接 `bash scripts/build_apple_deps.sh` 也行 |
-| `error: SLICES spans more than one platform family` | 一次跑了 `iphoneos` + `iphonesimulator` + `macosx`，三者都是 arm64，`lipo` 不允许多个同架构切片进同一个 fat 归档；三个 podspec 又都指向同一个 `native/third_party/*/apple/lib` | 一次只做一个族：`SLICES=macosx`（默认）/ `SLICES=iphoneos` / `SLICES=iphonesimulator`，需要另一个目标时重跑一次 |
+| `error: SLICES spans more than one platform family` | 一次跑了 `iphoneos` + `iphonesimulator` + `macosx`，三者都是 arm64，`lipo` 不允许多个同架构切片进同一个 fat 归档 | 一次只做一个族：`SLICES=macosx`（默认）/ `SLICES=iphoneos` / `SLICES=iphonesimulator`。三个族各写自己的目录，可以先后都做，互不覆盖 |
 | `zsh: command not found: flutter` | 装 Xcode / Homebrew / CocoaPods 都不会顺手装 Flutter | 按 4.1 第 5 步从镜像装，再确认新终端里 `flutter --version` 可用 |
 | `flutter --version` 停在 `Building flutter tool...` 不动 | 首次运行要编 flutter tool（`pub upgrade` + 编快照），这期间没有任何进度输出 | 正常，本机实测 179 s；另开终端 `ps aux \| grep dart` 能看到进程就是在干活 |
 | `flutter --version` 卡 30 s 以上才回 | 默认每 3 天做一次版本检查（`git fetch` 官方仓库 + 访问 `storage.googleapis.com`），国内常 35 s 超时 | `flutter --version --no-version-check`，或 export `FLUTTER_SUPPRESS_ANALYTICS=true` |
@@ -475,7 +482,8 @@ stdout/stderr，`xcrun simctl spawn <dev> log show` 只能看到 `flutter:` 那�
 | `Failed to load 'lanplayer_core' podspec: undefined method 'lanplayer_repo_root' for module Pod` | CocoaPods 1.16 起把 podspec 放在 `module Pod` 作用域里 eval，podspec 顶层的 `def` 会变成 `Pod` 的实例方法，裸调用就报 undefined method | 已修：`lanplayer_core.podspec` 不再定义方法，改成 `LP_ROOT = begin … end` 按 `native/src/core/player.c` 标记向上找仓库根。更新仓库即可 |
 | `[!] The 'lanplayer_core' pod failed to validate due to 1 error: - ERROR \| File Patterns: File patterns must be relative and cannot start with a slash (preserve_paths)` | podspec 里用 `preserve_paths` 声明了 `native/` 下的头文件与 `.a`，但 CocoaPods 校验要求每条 pattern 都是相对 pod 目录的路径，绝对路径直接判死，`pod install` 还没开始就退出 | 已修：删掉 `preserve_paths`（头文件与 `.a` 在 pod 目录之外，CocoaPods 本来也不会删；链接靠 `user_target_xcconfig` 的 `LIBRARY_SEARCH_PATHS` / `HEADER_SEARCH_PATHS`）。更新仓库即可 |
 | `WARN \| [OSX] keys: Missing primary key for \`source\` attribute. The acceptable ones are: git, hg, http, svn` | `s.source = { :path => '.' }` 没有主键；本地 path 依赖时 CocoaPods 只当警告，但它和上面那条 ERROR 一起出现时容易看漏 | 已修：`s.source` 改成 `{ :git => '…LanPlayer.git', :tag => s.version.to_s }`（这个 pod 实际由 `app/*/Podfile` 的 path 依赖引入，source 只为过校验） |
-| `library not found for -llanplayer` | 4.2 没成功（`native/third_party/lanplayer/apple/lib` 不存在） | 重跑 `SLICES=macosx ./scripts/build_apple_deps.sh` |
+| `library not found for -llanplayer` | 4.2 没成功（`native/third_party/lanplayer/apple/<family>/lib` 不存在） | 重跑对应族的 `SLICES=macosx ./scripts/build_apple_deps.sh` |
+| `ld: building for 'macOS', but linking in object file (…liblanplayer.a[2](lp_str.o)) built for 'iOS-simulator'` | 旧版脚本把三个族的归档都写进同一个 `native/third_party/*/apple/lib`，做 iOS 时把 macOS 那份覆盖了 | 已修：脚本按族写 `apple/<family>/lib`，podspec 用 `$(PLATFORM_NAME)` 选目录。更新仓库后重跑一次 `SLICES=macosx ./scripts/build_apple_deps.sh`（不必删旧的，新目录写进去就生效） |
 | `building for macOS 12.0, but linking in object file built for macOS 14.0` | 依赖用了更高的部署目标 | `MIN_MACOS=12.0` 重编，或把 `app/macos/Podfile` 与工程目标一起调高 |
 | `error: The macOS deployment target 'MACOSX_DEPLOYMENT_TARGET' is set to 10.14/11.0, but the range of supported deployment target versions is 12.0 to 27.0.x` | Xcode 26（macOS SDK 27）把最低部署目标抬到了 12.0；第三方 pod（如 `path_provider_foundation` 10.14）与旧工程设置（11.0）都被判非法 | 已修：`app/macos/Podfile` 的 `platform` 改 12.0，并在 `post_install` 里把每个 pod 的 `MACOSX_DEPLOYMENT_TARGET` 统一设为 12.0；`Runner.xcodeproj` 的三处 11.0 也已改成 12.0。更新仓库后 `pod install` 会自动重生成 |
 | `brew install --cask flutter` 慢到只有几十 KB/s | cask 直接去 `storage.googleapis.com` 拉 1.3 GB，Homebrew 本身不走国内镜像 | 按 4.1 第 5 步手动从 `storage.flutter-io.cn` 下载解压 |

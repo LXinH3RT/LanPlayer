@@ -566,6 +566,23 @@ def check_apple_wiring() -> None:
             if "'-llanplayer'" in flag_line:
                 problems.append(f"{spec.relative_to(ROOT)}: -llanplayer is back; it "
                                 f"lets ld drop the dlsym-only lp_* symbols")
+        # Each platform family must search its own archive directory.  When all
+        # three families share native/third_party/*/apple/lib, whichever script
+        # run happened last wins, and the next build of another family dies with
+        #   ld: building for 'macOS', but linking in object file
+        #       (…/lanplayer/apple/lib/liblanplayer.a[2](lp_str.o))
+        #       built for 'iOS-simulator'
+        # which looks like a corrupted toolchain rather than a stale artifact.
+        # The podspecs therefore key the directory off $(PLATFORM_NAME) and keep
+        # the flat path only as a fallback.
+        if "PLATFORM_NAME" not in code:
+            problems.append(f"{spec.relative_to(ROOT)}: LIBRARY_SEARCH_PATHS must "
+                            f"key the archive directory off $(PLATFORM_NAME) so the "
+                            f"macOS/iOS-device/iOS-simulator archives can coexist")
+        if "_FLAT" not in code:
+            problems.append(f"{spec.relative_to(ROOT)}: keep the flat apple/lib "
+                            f"path as a fallback (_FLAT) for checkouts that only "
+                            f"ever ran one family's build")
         # The pod must not try to compile native/ itself: Flutter symlinks this
         # package into ephemeral/.symlinks/plugins, and globbing sources across a
         # symlink is what we avoided on purpose.

@@ -6,10 +6,15 @@
 #   SLICES=iphoneos ./scripts/build_apple_deps.sh
 #   ARCHS=x86_64 ./scripts/build_apple_deps.sh   # Intel Mac
 #
-# Output layout (each lib is a universal archive when several slices ran):
-#   native/third_party/ffmpeg/apple/{include,lib}     libav*.a, libsw*.a
-#   native/third_party/libsmb2/apple/{include,lib}    libsmb2.a
-#   native/third_party/lanplayer/apple/lib            liblanplayer.a  <- our C core
+# Output layout — one directory per platform family, so macOS and iOS archives
+# can coexist in one working copy:
+#   native/third_party/ffmpeg/apple/<family>/{include,lib}   libav*.a, libsw*.a
+#   native/third_party/libsmb2/apple/<family>/{include,lib}  libsmb2.a
+#   native/third_party/lanplayer/apple/<family>/lib         liblanplayer.a  <- our C core
+# where <family> is macosx / iphoneos / iphonesimulator.  A copy of the family
+# that was built last also lands in the old flat apple/lib path (with a
+# apple/lib/.family marker) so a checkout that never ran this script for its
+# own family still links, and so one-shot CI jobs keep working.
 #
 # The core is built here (rather than by CocoaPods) on purpose: this script
 # already has to run on the Mac for FFmpeg and libsmb2, and a plain `ar` of our
@@ -37,10 +42,10 @@ MIN_IOS="${MIN_IOS:-15.0}"
 MIN_MACOS="${MIN_MACOS:-12.0}"
 # One platform family per run.  On Apple silicon iphoneos, iphonesimulator and
 # macosx are all arm64, and lipo refuses to pack two slices with the same
-# architecture into one fat archive ("have the same architectures (arm64)")
-# - and the podspecs all point at native/third_party/*/apple/lib, so there is
-# only room for one family's archives at a time.  Re-run with a different
-# SLICES value to switch target:
+# architecture into one fat archive ("have the same architectures (arm64)").
+# Each family therefore gets its own output directory (see FAMILY below), and a
+# run only ever touches its own family, so you can build the three targets in
+# any order without clobbering each other:
 #   SLICES=macosx          macOS (default: the usual desktop build)
 #   SLICES=iphoneos        iOS device
 #   SLICES=iphonesimulator iOS simulator
@@ -48,6 +53,16 @@ SLICES="${SLICES:-macosx}"
 # Simulator slices: arm64 for Apple-silicon Macs, x86_64 for Intel ones.
 # Override with ARCHS="arm64 x86_64" to build a fat simulator archive.
 ARCHS="${ARCHS:-arm64}"
+
+# 每个平台族各写各的目录，互不覆盖：
+#   native/third_party/<lib>/apple/macosx/lib        macOS
+#   native/third_party/<lib>/apple/iphoneos/lib      iOS 真机
+#   native/third_party/<lib>/apple/iphonesimulator/lib  iOS 模拟器
+# 同时把本次构建的族再复制一份到 apple/lib（老路径），并写 apple/lib/.family
+# 记录它是哪一族 —— podspec 会先找自己那一族的目录，找不到才退回 apple/lib，
+# 并在族不匹配时报一条能看懂的错误。这样 macOS 与 iOS 的归档可以同时存在，
+# 不用每次切目标都重编一遍依赖。
+FAMILY="${SLICES%% *}"
 
 mkdir -p "$WORK" "$OUT/ffmpeg/apple" "$OUT/libsmb2/apple"
 
@@ -249,10 +264,15 @@ merge() { # name outdir
 mkdir -p "$OUT/ffmpeg/apple/lib" "$OUT/ffmpeg/apple/include" \
          "$OUT/libsmb2/apple/lib" "$OUT/libsmb2/apple/include" \
          "$OUT/lanplayer/apple/lib"
+# 本族专属目录（见 FAMILY 处的说明）。
+FF_OUT="$OUT/ffmpeg/apple/$FAMILY/lib"
+SMB_OUT="$OUT/libsmb2/apple/$FAMILY/lib"
+LP_OUT="$OUT/lanplayer/apple/$FAMILY/lib"
+mkdir -p "$FF_OUT" "$SMB_OUT" "$LP_OUT"
 for LIB in avformat avcodec avutil swresample swscale avfilter; do
-  merge "$LIB" "$OUT/ffmpeg/apple/lib"
+  merge "$LIB" "$FF_OUT"
 done
-merge smb2 "$OUT/libsmb2/apple/lib"
+merge smb2 "$SMB_OUT"
 
 # Our own core: one liblanplayer.a per slice, merged the same way (arch-deduped,
 # so iphoneos arm64 wins over iphonesimulator arm64).
@@ -270,14 +290,30 @@ for SLICE in $SLICES; do
   LP_INPUTS+=("$f")
 done
 if [[ ${#LP_INPUTS[@]} -eq 1 ]]; then
-  cp "${LP_INPUTS[0]}" "$OUT/lanplayer/apple/lib/liblanplayer.a"
+  cp "${LP_INPUTS[0]}" "$LP_OUT/liblanplayer.a"
   echo "== copy liblanplayer.a <- 1 slice"
 elif [[ ${#LP_INPUTS[@]} -gt 1 ]]; then
-  lipo -create "${LP_INPUTS[@]}" -output "$OUT/lanplayer/apple/lib/liblanplayer.a"
+  lipo -create "${LP_INPUTS[@]}" -output "$LP_OUT/liblanplayer.a"
   echo "== lipo liblanplayer.a <- ${#LP_INPUTS[@]} slice(s)"
 else
   echo "warning: liblanplayer.a not built, skipped" >&2
 fi
+
+# 老路径回填：三个 podspec 的 LIBRARY_SEARCH_PATHS 里仍有 apple/lib，
+# 用来兼容「只跑过一次构建、没有分族目录」的旧克隆与一次性 CI job。
+# 注意这只决定默认值，不改变分族目录的存在；podspec 会优先用分族目录。
+for pair in "ffmpeg:$FF_OUT" "libsmb2:$SMB_OUT" "lanplayer:$LP_OUT"; do
+  lib="${pair%%:*}"
+  src="${pair#*:}"
+  dst="$OUT/$lib/apple/lib"
+  mkdir -p "$dst"
+  for f in "$src"/*.a; do
+    [[ -f "$f" ]] || continue
+    cp -f "$f" "$dst/"
+  done
+  printf '%s\n' "$FAMILY" > "$OUT/$lib/apple/lib/.family"
+done
+echo "== staged $FAMILY archives into $OUT/*/apple/$FAMILY/lib (+ apple/lib mirror)"
 
 # lanplayer_core.podspec 里 -lsmb2 之外的 FFmpeg 7 个库都按顺序列出，这里
 # 多导出一个 libpostproc 也没用（configure 里 --disable-postproc）。
@@ -298,5 +334,10 @@ else
   # 老版本 libsmb2 的 install() 只装库不装头；退回到源码树里的 smb2/ 子目录。
   cp -r "$WORK/libsmb2/include/." "$OUT/libsmb2/apple/include/"
 fi
+# 分族目录下也各放一份头，podspec 用分族的 include 时不必再来回判断。
+rm -rf "$OUT/ffmpeg/apple/$FAMILY/include" "$OUT/libsmb2/apple/$FAMILY/include"
+mkdir -p "$OUT/ffmpeg/apple/$FAMILY/include" "$OUT/libsmb2/apple/$FAMILY/include"
+cp -r "$OUT/ffmpeg/apple/include/." "$OUT/ffmpeg/apple/$FAMILY/include/"
+cp -r "$OUT/libsmb2/apple/include/." "$OUT/libsmb2/apple/$FAMILY/include/"
 
 echo "done: $OUT"

@@ -53,11 +53,23 @@ LP_ROOT = begin
 end
 LP_NATIVE = File.join(LP_ROOT, 'native')
 LP_THIRD = File.join(LP_NATIVE, 'third_party')
-LP_FFMPEG_LIB = File.join(LP_THIRD, 'ffmpeg', 'apple', 'lib')
-LP_FFMPEG_INC = File.join(LP_THIRD, 'ffmpeg', 'apple', 'include')
-LP_SMB2_LIB = File.join(LP_THIRD, 'libsmb2', 'apple', 'lib')
-LP_SMB2_INC = File.join(LP_THIRD, 'libsmb2', 'apple', 'include')
-LP_CORE_LIB = File.join(LP_THIRD, 'lanplayer', 'apple', 'lib')
+# scripts/build_apple_deps.sh 每个平台族写各自的目录：
+#   native/third_party/<lib>/apple/<family>/{include,lib}
+# family 是 macosx / iphoneos / iphonesimulator。这里用 Xcode 的
+# $(PLATFORM_NAME) 让同一个 podspec 在三种构建里都指向正确的目录，
+# 而不是所有族共用 apple/lib（那样后跑的构建会覆盖前一个族的归档，
+# 实测会报 ld: building for 'macOS', but linking in object file … built for
+# 'iOS-simulator'）。apple/lib 仍在搜索路径里兜底，兼容只跑过一次构建的旧克隆。
+LP_FAMILY = '$(PLATFORM_NAME)'
+LP_FFMPEG_LIB = File.join(LP_THIRD, 'ffmpeg', 'apple', LP_FAMILY, 'lib')
+LP_FFMPEG_LIB_FLAT = File.join(LP_THIRD, 'ffmpeg', 'apple', 'lib')
+LP_FFMPEG_INC = File.join(LP_THIRD, 'ffmpeg', 'apple', LP_FAMILY, 'include')
+LP_FFMPEG_INC_FLAT = File.join(LP_THIRD, 'ffmpeg', 'apple', 'include')
+LP_SMB2_LIB = File.join(LP_THIRD, 'libsmb2', 'apple', LP_FAMILY, 'lib')
+LP_SMB2_LIB_FLAT = File.join(LP_THIRD, 'libsmb2', 'apple', 'lib')
+LP_SMB2_INC = File.join(LP_THIRD, 'libsmb2', 'apple', LP_FAMILY, 'include')
+LP_SMB2_INC_FLAT = File.join(LP_THIRD, 'libsmb2', 'apple', 'include')
+LP_CORE_LIB = File.join(LP_THIRD, 'lanplayer', 'apple', LP_FAMILY, 'lib')
 
 # C 内核对外导出的全部函数（对应 native/include/lanplayer/*.h 里的 LP_EXPORT）。
 # 这些符号要靠 ld 的 -u 强引用住，否则 dead-strip 会把它们当死代码删掉，
@@ -152,7 +164,9 @@ Pod::Spec.new do |s|
       %("#{File.join(LP_NATIVE, 'src')}"),
       %("#{File.join(LP_NATIVE, 'src', 'source')}"),
       %("#{LP_FFMPEG_INC}"),
+      %("#{LP_FFMPEG_INC_FLAT}"),
       %("#{LP_SMB2_INC}"),
+      %("#{LP_SMB2_INC_FLAT}"),
     ].join(' '),
   }
 
@@ -165,7 +179,9 @@ Pod::Spec.new do |s|
       '"$(inherited)"',
       %("#{LP_CORE_LIB}"),
       %("#{LP_FFMPEG_LIB}"),
+      %("#{LP_FFMPEG_LIB_FLAT}"),
       %("#{LP_SMB2_LIB}"),
+      %("#{LP_SMB2_LIB_FLAT}"),
     ].join(' '),
     # 顺序有讲究：依赖方在前、被依赖方在后。
     #

@@ -343,6 +343,8 @@ exe 旁边。产物可以直接拷到别的机器上运行。
 # 1) 先编依赖（FFmpeg + libsmb2 + C 内核），产物落到 native/third_party/
 ANDROID_NDK_HOME=~/android-ndk-r26 ./scripts/build_android_deps.sh
 ./scripts/build_apple_deps.sh          # 默认 macosx；iOS 用 SLICES=iphoneos / iphonesimulator
+#    三个平台族各写 native/third_party/<lib>/apple/<family>/lib，可以先后都跑，
+#    互不覆盖；podspec 用 $(PLATFORM_NAME) 自动选对那一份。
 
 # 2) 在 Mac 上装依赖并运行（iOS / macOS 都不需要手工改 Xcode 工程）
 #    前置：完整 Xcode + CocoaPods + cmake + Flutter，缺 Flutter 时
