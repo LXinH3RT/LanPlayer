@@ -473,6 +473,20 @@ def check_apple_wiring() -> None:
             if stripped.startswith("s.source_files") and "native" in stripped:
                 problems.append(f"{spec.relative_to(ROOT)}: source_files must not "
                                 f"compile native/ (the core is a prebuilt archive)")
+            # CocoaPods 1.16+ eval()s the podspec inside `module Pod`, so a
+            # top-level `def lanplayer_repo_root` becomes an instance method of
+            # Pod and the call fails with:
+            #   undefined method 'lanplayer_repo_root' for module Pod
+            # (hit for real on CocoaPods 1.17 + Ruby 4.0). Keep the root lookup
+            # method-free and marker-driven instead.
+            if stripped.startswith("def "):
+                problems.append(f"{spec.relative_to(ROOT)}: top-level `{stripped}` is "
+                                f"evaluated inside `module Pod`, so it cannot be called "
+                                f"from the podspec body (use a begin/end expression)")
+        if "File.exist?" not in text:
+            problems.append(f"{spec.relative_to(ROOT)}: the repo root lookup no longer "
+                            f"walks up to a marker file, so it breaks when Flutter "
+                            f"symlinks the package into ephemeral/.symlinks/plugins")
 
     # Deployment targets must agree with build_apple_deps.sh, otherwise the
     # static archives are newer than the app and the link fails.

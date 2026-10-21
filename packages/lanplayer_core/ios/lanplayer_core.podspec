@@ -19,24 +19,43 @@
 # 缺 liblanplayer.a 时链接会报 "library not found for -llanplayer"，看到这句
 # 就回去跑第一个命令。
 
-# 解析仓库根目录。
+# 从 podspec 所在目录开始向上找仓库根（含 native/src/core/player.c 的那一层）。
 #
-# __dir__ 可能是一个符号链接路径（Flutter 把插件挂到 ephemeral/.symlinks/plugins/
-# 下），所以先 File.realpath 还原成 packages/lanplayer_core/ios 的真实路径，
-# 再向上三级得到仓库根。这样无论 CocoaPods 从哪条路径读进来都算得对。
-def lanplayer_repo_root(spec_dir)
-  real = File.realpath(spec_dir)
-  # real = <repo>/packages/lanplayer_core/ios
-  root = File.expand_path('../../..', real)
-  marker = File.join(root, 'native', 'src', 'core', 'player.c')
-  unless File.exist?(marker)
-    raise "lanplayer_core: 从 #{real} 推出的仓库根 #{root} 里没有 native/src/core/player.c"
+# 两个坑要一起绕：
+#   1. Flutter 把插件挂到 app/ios/Flutter/ephemeral/.symlinks/plugins/ 下再让
+#      CocoaPods 去读，此时 __dir__ 是符号链接路径，沿它向上永远走不到仓库根
+#      （native/ 在真实路径的三级之上）。所以先 File.realpath 还原。
+#   2. CocoaPods 用 eval 读 podspec 时，相对路径的 __dir__ 可能退化成 "."。
+#      所以 realpath 失败就退回 File.expand_path，再按文件标记向上搜索。
+#
+# 另外这里【不能】写 `def lanplayer_repo_root(...)`：CocoaPods 1.16 起把 podspec
+# 放在 `module Pod` 的作用域里 eval，顶层 def 会变成 Pod 模块的实例方法，调用时
+# 直接报 undefined method 'lanplayer_repo_root' for module Pod
+# （CocoaPods 1.17 + Ruby 4.0 上实测）。
+LP_ROOT = begin
+  base = begin
+    File.realpath(__dir__)
+  rescue StandardError
+    File.expand_path(__dir__)
+  end
+  dir = base
+  found = nil
+  loop do
+    if File.exist?(File.join(dir, 'native', 'src', 'core', 'player.c'))
+      found = dir
+      break
+    end
+
+    parent = File.dirname(dir)
+    break if parent == dir
+    dir = parent
+  end
+  unless found
+    raise "lanplayer_core: 从 #{base} 向上找不到仓库根（应含 native/src/core/player.c），请确认 podspec 在 <repo>/packages/lanplayer_core/ios/ 下。"
   end
 
-  root
+  found
 end
-
-LP_ROOT = lanplayer_repo_root(__dir__)
 LP_NATIVE = File.join(LP_ROOT, 'native')
 LP_THIRD = File.join(LP_NATIVE, 'third_party')
 LP_FFMPEG_LIB = File.join(LP_THIRD, 'ffmpeg', 'apple', 'lib')
