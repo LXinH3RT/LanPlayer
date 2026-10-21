@@ -7,7 +7,10 @@ plugins {
 android {
     namespace = "dev.lanplayer.app"
     compileSdk = 35
-    ndkVersion = "26.1.10909125"
+    // Pinned by default; CI overrides it with whatever NDK the runner really
+    // has (see the "locate the Android NDK" step in build.yml), because Gradle
+    // refuses to configure when the named version is not installed.
+    ndkVersion = System.getenv("LP_ANDROID_NDK") ?: "26.1.10909125"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -28,8 +31,12 @@ android {
 
         externalNativeBuild {
             cmake {
-                // Build only what we ship: two ABIs keeps the APK under control.
-                abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+                // Only the ABI we actually ship and verify.  Every extra ABI
+                // multiplies the FFmpeg/libsmb2 cross-build time, and the CI job
+                // (and `flutter build apk --target-platform android-arm64`) only
+                // produces arm64-v8a anyway.  Add "armeabi-v7a" here AND pass it
+                // to scripts/build_android_deps.sh to ship 32-bit ARM too.
+                abiFilters += listOf("arm64-v8a")
                 arguments += listOf(
                     "-DANDROID_STL=c++_shared",
                     // Point this at the prebuilt FFmpeg / libsmb2 layout described
@@ -46,6 +53,16 @@ android {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.22.1"
+        }
+    }
+
+    sourceSets {
+        getByName("main") {
+            // FFmpeg and libsmb2 are IMPORTED targets in native/CMakeLists.txt,
+            // and the Android Gradle plugin does not package imported shared
+            // libraries.  scripts/build_android_deps.sh stages them here in the
+            // <abi>/lib*.so layout jniLibs expects.
+            jniLibs.srcDir("${rootProject.projectDir.parentFile}/../native/third_party/jniLibs")
         }
     }
 

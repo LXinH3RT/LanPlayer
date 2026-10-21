@@ -30,7 +30,16 @@ param(
     [switch]$Core,
     [switch]$Run,
     [switch]$Clean,
-    [switch]$Reconfigure
+    [switch]$Reconfigure,
+    # Override the Flutter SDK location.  CI gets its SDK from
+    # subosito/flutter-action and exposes it as $env:FLUTTER_ROOT, so that is
+    # the default fallback; local builds use the pinned .tools\flutter-sdk.
+    [string]$FlutterRoot = '',
+    # Do not redirect APPDATA/TEMP/PUB_CACHE into .tools\.  Only needed on
+    # machines where the profile directories are not writable (this dev box);
+    # on a CI runner the real ones work and PUB_CACHE must keep pointing at the
+    # cache the action already populated.
+    [switch]$NoEnvRedirect
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,7 +47,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $app = Join-Path $root 'app'
 $winDir = Join-Path $app 'windows'
 $eph = Join-Path $winDir 'flutter\ephemeral'
-$fs = Join-Path $root '.tools\flutter-sdk'
+if ($FlutterRoot) { $fs = $FlutterRoot }
+elseif ($env:FLUTTER_ROOT) { $fs = $env:FLUTTER_ROOT }
+else { $fs = Join-Path $root '.tools\flutter-sdk' }
+$fs = $fs.TrimEnd('\', '/')
 
 function Fail([string]$msg) { Write-Host "`n!! $msg" -ForegroundColor Red; exit 1 }
 
@@ -89,17 +101,21 @@ if ($LASTEXITCODE -ne 0) { Fail 'fix_plugin_links.ps1 failed' }
 # flutter_assemble (CMake custom target) runs the flutter tool, which writes
 # under %APPDATA%\.flutter_tool_state and %TEMP%; both are redirected into the
 # repo so the build works when the profile directories are not writable.
-$cfg = Join-Path $root '.tools\flutter-cfg'
-$tmp = Join-Path $root '.tools\tmp'
-New-Item -ItemType Directory -Force -Path $cfg, $tmp | Out-Null
-$env:APPDATA = $cfg
-$env:LOCALAPPDATA = $cfg
-$env:HOME = Join-Path $root '.tools\home'
-$env:TMP = $tmp
-$env:TEMP = $tmp
-$env:PUB_CACHE = Join-Path $root '.tools\pub-cache'
+# -NoEnvRedirect keeps the real ones (needed on CI, where the Flutter action has
+# already populated the SDK + PUB_CACHE).
+if (-not $NoEnvRedirect) {
+    $cfg = Join-Path $root '.tools\flutter-cfg'
+    $tmp = Join-Path $root '.tools\tmp'
+    New-Item -ItemType Directory -Force -Path $cfg, $tmp | Out-Null
+    $env:APPDATA = $cfg
+    $env:LOCALAPPDATA = $cfg
+    $env:HOME = Join-Path $root '.tools\home'
+    $env:TMP = $tmp
+    $env:TEMP = $tmp
+    $env:PUB_CACHE = Join-Path $root '.tools\pub-cache'
+    New-Item -ItemType Directory -Force -Path $env:HOME | Out-Null
+}
 $env:FLUTTER_ROOT = $fs
-New-Item -ItemType Directory -Force -Path $env:HOME | Out-Null
 
 # --------------------------------------------------------- 5. native core -----
 if ($Core) {

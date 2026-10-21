@@ -17,9 +17,28 @@ set(LP_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(NOT LP_FFMPEG_ROOT)
     if(DEFINED ANDROID_ABI)
-        set(LP_FFMPEG_ROOT ${LP_ROOT}/third_party/ffmpeg/${ANDROID_ABI})
+        # scripts/build_android_deps.sh writes <out>/ffmpeg/android/<abi>/{include,lib/<abi>}
+        set(LP_FFMPEG_ROOT ${LP_ROOT}/third_party/ffmpeg/android/${ANDROID_ABI})
     elseif(APPLE)
         set(LP_FFMPEG_ROOT ${LP_ROOT}/third_party/ffmpeg/apple)
+    endif()
+endif()
+
+if(NOT LP_SMB2_ROOT AND DEFINED ANDROID_ABI)
+    # scripts/build_android_deps.sh writes <out>/libsmb2/android/{include,lib/<abi>}
+    set(LP_SMB2_ROOT ${LP_ROOT}/third_party/libsmb2/android)
+endif()
+
+# The Android Gradle project points both roots at the shared parent directory
+# (third_party/ffmpeg, third_party/libsmb2) instead of the per-ABI prefix the
+# build script writes.  Descend one level when that is what we were given, so a
+# single -D flag works for every ABI.
+if(DEFINED ANDROID_ABI)
+    if(EXISTS ${LP_FFMPEG_ROOT}/android/${ANDROID_ABI}/include/libavformat/avformat.h)
+        set(LP_FFMPEG_ROOT ${LP_FFMPEG_ROOT}/android/${ANDROID_ABI})
+    endif()
+    if(EXISTS ${LP_SMB2_ROOT}/android/lib/${ANDROID_ABI}/libsmb2.so)
+        set(LP_SMB2_ROOT ${LP_SMB2_ROOT}/android)
     endif()
 endif()
 
@@ -93,10 +112,64 @@ if(EXISTS ${LP_FFMPEG_ROOT}/include/libavformat/avformat.h)
                 IMPORTED_LOCATION ${LP_FFMPEG_ROOT}/lib/${_abi}/lib${_lib}.so)
         endforeach()
     else()
+        # Desktop (Linux / macOS / Windows).  The prebuilts can be static or
+        # shared depending on how FFmpeg was configured:
+        #   * docs/build.md and the Apple scripts produce libav*.a;
+        #   * the Linux CI job builds FFmpeg with --enable-shared, which only
+        #     yields libav*.so, so a hard-coded .a import would make configure
+        #     fail with "Cannot specify link libraries for target ...".
+        # Pick whichever the prefix actually contains, in that order.  A
+        # Windows-style shared import additionally needs IMPORTED_IMPLIB -
+        # without it MSVC generators stop at configure time with
+        # "IMPORTED_IMPLIB not set for imported target".
         foreach(_lib avformat avcodec avutil swresample swscale avfilter)
-            add_library(ff_${_lib} STATIC IMPORTED)
-            set_target_properties(ff_${_lib} PROPERTIES
-                IMPORTED_LOCATION ${LP_FFMPEG_ROOT}/lib/lib${_lib}.a)
+            unset(_ff_loc)
+            unset(_ff_implib)
+            unset(_ff_kind)
+            if(WIN32)
+                set(_cands lib${_lib}.a ${_lib}.lib lib${_lib}.dll.a)
+            else()
+                set(_cands lib${_lib}.a lib${_lib}.dylib lib${_lib}.so)
+            endif()
+            foreach(_cand ${_cands})
+                if(EXISTS ${LP_FFMPEG_ROOT}/lib/${_cand})
+                    set(_ff_loc ${LP_FFMPEG_ROOT}/lib/${_cand})
+                    if(_cand MATCHES "\\.a$" AND NOT _cand MATCHES "\\.dll\\.a$")
+                        set(_ff_kind STATIC)
+                    elseif(WIN32)
+                        set(_ff_kind SHARED)
+                        set(_ff_implib ${_ff_loc})
+                    else()
+                        set(_ff_kind SHARED)
+                    endif()
+                    break()
+                endif()
+            endforeach()
+            if(NOT _ff_loc)
+                message(FATAL_ERROR
+                    "lanplayer: no ${_lib} import library under "
+                    "${LP_FFMPEG_ROOT}/lib - build FFmpeg first (docs/build.md)")
+            endif()
+            add_library(ff_${_lib} ${_ff_kind} IMPORTED)
+            if(_ff_implib)
+                # The DLL itself lives in <prefix>/bin on Windows; pass it along
+                # when present so it can be copied next to the executable.
+                file(GLOB _ff_dll ${LP_FFMPEG_ROOT}/bin/${_lib}-*.dll
+                                   ${LP_FFMPEG_ROOT}/bin/lib${_lib}.dll
+                                   ${LP_FFMPEG_ROOT}/bin/${_lib}.dll)
+                if(_ff_dll)
+                    list(GET _ff_dll 0 _ff_dll0)
+                    set_target_properties(ff_${_lib} PROPERTIES
+                        IMPORTED_LOCATION ${_ff_dll0}
+                        IMPORTED_IMPLIB ${_ff_implib})
+                else()
+                    set_target_properties(ff_${_lib} PROPERTIES
+                        IMPORTED_LOCATION ${_ff_implib}
+                        IMPORTED_IMPLIB ${_ff_implib})
+                endif()
+            else()
+                set_target_properties(ff_${_lib} PROPERTIES IMPORTED_LOCATION ${_ff_loc})
+            endif()
         endforeach()
     endif()
     set(LP_FF_LIBS ff_avformat ff_avcodec ff_swresample ff_avfilter ff_swscale ff_avutil)
@@ -112,8 +185,53 @@ if(LP_SMB2_ROOT AND EXISTS ${LP_SMB2_ROOT}/include/smb2/libsmb2.h)
         set_target_properties(smb2 PROPERTIES
             IMPORTED_LOCATION ${LP_SMB2_ROOT}/lib/${ANDROID_ABI}/libsmb2.so)
     else()
-        add_library(smb2 STATIC IMPORTED)
-        set_target_properties(smb2 PROPERTIES IMPORTED_LOCATION ${LP_SMB2_ROOT}/lib/libsmb2.a)
+        # Desktop: same story as FFmpeg above - accept a shared or a static
+        # libsmb2 depending on how it was configured, and give MSVC the import
+        # library when the archive is a DLL import stub.
+        unset(_smb_loc)
+        unset(_smb_implib)
+        unset(_smb_kind)
+        if(WIN32)
+            set(_smb_cands libsmb2.a smb2.lib libsmb2.dll.a)
+        else()
+            set(_smb_cands libsmb2.a libsmb2.dylib libsmb2.so)
+        endif()
+        foreach(_cand ${_smb_cands})
+            if(EXISTS ${LP_SMB2_ROOT}/lib/${_cand})
+                set(_smb_loc ${LP_SMB2_ROOT}/lib/${_cand})
+                if(_cand MATCHES "\\.a$" AND NOT _cand MATCHES "\\.dll\\.a$")
+                    set(_smb_kind STATIC)
+                elseif(WIN32)
+                    set(_smb_kind SHARED)
+                    set(_smb_implib ${_smb_loc})
+                else()
+                    set(_smb_kind SHARED)
+                endif()
+                break()
+            endif()
+        endforeach()
+        if(NOT _smb_loc)
+            message(FATAL_ERROR
+                "lanplayer: no libsmb2 import library under "
+                "${LP_SMB2_ROOT}/lib - run scripts/build_*_deps.sh first")
+        endif()
+        add_library(smb2 ${_smb_kind} IMPORTED)
+        if(_smb_implib)
+            file(GLOB _smb_dll ${LP_SMB2_ROOT}/bin/libsmb2-*.dll
+                               ${LP_SMB2_ROOT}/bin/libsmb2.dll)
+            if(_smb_dll)
+                list(GET _smb_dll 0 _smb_dll0)
+                set_target_properties(smb2 PROPERTIES
+                    IMPORTED_LOCATION ${_smb_dll0}
+                    IMPORTED_IMPLIB ${_smb_implib})
+            else()
+                set_target_properties(smb2 PROPERTIES
+                    IMPORTED_LOCATION ${_smb_implib}
+                    IMPORTED_IMPLIB ${_smb_implib})
+            endif()
+        else()
+            set_target_properties(smb2 PROPERTIES IMPORTED_LOCATION ${_smb_loc})
+        endif()
     endif()
     target_link_libraries(lanplayer PRIVATE smb2)
     target_compile_definitions(lanplayer PRIVATE LP_HAVE_SMB2=1)
@@ -189,7 +307,11 @@ elseif(ANDROID)
         "-Wl,--version-script=${LP_ROOT}/lp_map.txt")
 endif()
 
-if(NOT DEFINED LP_NO_TESTS)
+# `if(NOT LP_NO_TESTS)` rather than `if(NOT DEFINED LP_NO_TESTS)`: the CI job
+# passes -DLP_NO_TESTS=OFF to ask for the smoke test, and `DEFINED` would treat
+# that exactly like ON (defined is defined), so the executable was never built
+# and `./build/lp_smoke_test` failed with "No such file or directory".
+if(NOT LP_NO_TESTS)
     add_executable(lp_smoke_test tests/lp_smoke_test.c)
     target_link_libraries(lp_smoke_test PRIVATE lanplayer)
 endif()

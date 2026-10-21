@@ -36,7 +36,9 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/ff-out/lib
         run: |
-          cmake -B build -G Ninja \
+          # The CMake project root is native/, not the repository root: there is
+          # no top-level CMakeLists.txt on purpose (the app has its own one).
+          cmake -S native -B build -G Ninja \
             -DLP_FFMPEG_ROOT=${{ github.workspace }}/ff-out \
             -DLP_NO_TESTS=OFF
       - name: build
@@ -63,8 +65,40 @@ jobs:
         with:
           flutter-version: "3.27.x"
           channel: stable
+      - name: locate the Android NDK
+        # build_android_deps.sh refuses to run without ANDROID_NDK_HOME; the
+        # runner image ships several NDKs under $ANDROID_HOME/ndk but does not
+        # export the variable.  Prefer the one pinned in build.gradle.kts and
+        # install it if the image does not carry that exact version.
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          NDK="$SDK/ndk/26.1.10909125"
+          if [ ! -d "$NDK" ]; then
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" "ndk;26.1.10909125" || true
+          fi
+          if [ ! -d "$NDK" ]; then
+            NDK="$(ls -d "$SDK"/ndk/* 2>/dev/null | sort -V | tail -1)"
+          fi
+          if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then
+            echo "no NDK found under $SDK/ndk" >&2
+            exit 1
+          fi
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$NDK" >> "$GITHUB_ENV"
+          echo "using NDK $NDK"
+          # Gradle only accepts the NDK version named in build.gradle.kts.
+          echo "LP_ANDROID_NDK=$(basename "$NDK")" >> "$GITHUB_ENV"
       - name: build ffmpeg + libsmb2 for Android
-        run: ./scripts/build_android_deps.sh
+        # `bash <script>` instead of `<script>`: the executable bit is not part
+        # of this repository's history on every checkout (core.fileMode is off
+        # on the Windows machine the tree was mostly authored on), so running
+        # the file directly fails with "Permission denied" / exit code 126.
+        #
+        # Only arm64-v8a: the APK below is built with --target-platform
+        # android-arm64, and every extra ABI doubles the FFmpeg cross-build
+        # (which dominates this job's runtime).  Pass "armeabi-v7a" as well to
+        # ship 32-bit ARM; app/build.gradle.kts lists the same set.
+        run: bash scripts/build_android_deps.sh arm64-v8a
       - name: analyze + test
         working-directory: app
         run: |
@@ -85,7 +119,9 @@ jobs:
           flutter-version: "3.27.x"
           channel: stable
       - name: build ffmpeg + libsmb2 for Apple
-        run: ./scripts/build_apple_deps.sh
+        # `bash <script>`: see the note in the android job - the executable bit
+        # is not reliable in this repository's history.
+        run: bash scripts/build_apple_deps.sh
       - name: analyze + test
         working-directory: app
         run: |
@@ -105,7 +141,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: fetch toolchain and dependencies
-        run: python tool/fetch_deps.py zig ffmpeg libsmb2 dart crypto typed_data collection
+        # No `crypto`/`typed_data`/`collection` any more: those were only needed
+        # by the share-key codec, which has been removed.  tool/fetch_deps.py
+        # exits with "unknown artifact <name>" for them.
+        run: python tool/fetch_deps.py zig ffmpeg libsmb2 dart
       - name: build (dll + smoke test, SMB included)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 -Clean
       - name: test media + runtime check
@@ -115,7 +154,7 @@ jobs:
           build\win-x64\lp_smoke_test.exe --list .
           build\win-x64\lp_smoke_test.exe build\media\clip.mp4 6
           build\win-x64\lp_smoke_test.exe build\media\subbed.mkv 6
-      - name: static + dart + key suite
+      - name: static + dart + runtime suite
         run: python tool/check_all.py
 
   windows-app:
@@ -143,12 +182,42 @@ jobs:
           flutter analyze
           flutter test
       - name: build the desktop app
-        working-directory: app
-        run: flutter build windows --release
-      - name: deploy the core next to the app
+        # Deliberately NOT `flutter build windows`: flutter_tools 3.27.4 picks
+        # its CMake generator from a hard-coded switch that only knows VS 16/17
+        # (packages/flutter_tools/lib/src/windows/visual_studio.dart,
+        # cmakeGenerator -> `_ => 'Visual Studio 16 2019'`).  windows-latest has
+        # been the `windows-2025-vs2026` image since late 2025, i.e. Visual
+        # Studio 18 only, so configure dies with
+        #   Generator Visual Studio 16 2019 could not find any instance ...
+        # This script runs the same CMake + MSBuild steps but asks the
+        # `cmake --help` of the installed Visual Studio for the generator name
+        # and builds the CMake project directly, so no flutter_tools patch or
+        # snapshot rebuild is needed.  It also creates the plugin junctions that
+        # `flutter pub get` wants to symlink, and copies lanplayer.dll + the
+        # FFmpeg DLLs next to the exe.
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 `
-            -DeployTo app\build\windows\x64\runner\Release
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows_desktop.ps1 `
+            -Config Release -NoEnvRedirect
+      - name: bundle check (exe + core + engine + assets)
+        run: |
+          $exe = Get-ChildItem -Path app\windows\out\build -Recurse -Filter lanplayer.exe -File |
+            Where-Object { $_.Directory.Name -eq 'Release' } |
+            Select-Object -First 1
+          if (-not $exe) { throw 'lanplayer.exe was not produced' }
+          $bundle = $exe.DirectoryName
+          Write-Host "bundle: $bundle"
+          foreach ($f in 'lanplayer.exe', 'lanplayer.dll', 'lanplayer_video_plugin.dll',
+                         'flutter_windows.dll', 'icudtl.dat') {
+            if (-not (Test-Path (Join-Path $bundle $f))) { throw "missing $f in $bundle" }
+          }
+          if (-not (Test-Path (Join-Path $bundle 'data\flutter_assets'))) {
+            throw "missing data\flutter_assets in $bundle"
+          }
+          if (-not (Test-Path (Join-Path $bundle 'data\app.so'))) {
+            throw "missing data\app.so (AOT kernel) in $bundle"
+          }
+          Get-ChildItem $bundle -File | Sort-Object Name |
+            ForEach-Object { Write-Host ("  {0,-32} {1,9:N0} KiB" -f $_.Name, ($_.Length / 1KB)) }
       - name: texture path preflight (loads lanplayer.dll)
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make_test_media.ps1

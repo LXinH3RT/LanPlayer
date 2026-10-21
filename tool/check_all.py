@@ -109,6 +109,17 @@ REQUIRED = [
     "app/lib/ui/browser_screen.dart",
     "app/lib/ui/player_screen.dart",
     "app/android/app/src/main/kotlin/dev/lanplayer/app/MainActivity.kt",
+    # A Gradle project needs these to build at all.  They are the stock Flutter
+    # 3.27 templates (settings.gradle / build.gradle / gradle.properties /
+    # wrapper), plus the res/ tree AndroidManifest.xml references via
+    # @mipmap/ic_launcher and @style/LaunchTheme.
+    "app/android/settings.gradle",
+    "app/android/build.gradle",
+    "app/android/gradle.properties",
+    "app/android/gradle/wrapper/gradle-wrapper.properties",
+    "app/android/app/src/debug/AndroidManifest.xml",
+    "app/android/app/src/main/res/values/styles.xml",
+    "app/android/app/src/main/res/mipmap-hdpi/ic_launcher.png",
     "app/ios/Runner/AppDelegate.swift",
     "app/ios/Runner/Info.plist",
     "app/windows/CMakeLists.txt",

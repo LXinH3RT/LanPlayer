@@ -58,8 +58,11 @@ Add-Junction (Join-Path $links 'lanplayer_video') `
 
 # 2) path_provider_windows is a Dart-only implementation, but `pub get` still
 #    links every plugin folder it finds.  It lives in the pinned PUB_CACHE.
+# PUB_CACHE is set explicitly on the dev box (.tools\) and by flutter_tools in
+# some CI setups; otherwise pub uses %LOCALAPPDATA%\Pub\Cache.
 $pubCache = $env:PUB_CACHE
-if (-not $pubCache) { $pubCache = Join-Path $root '.tools\pub-cache' }
+if (-not $pubCache) { $pubCache = Join-Path $env:LOCALAPPDATA 'Pub\Cache' }
+if (-not (Test-Path -LiteralPath $pubCache)) { $pubCache = Join-Path $root '.tools\pub-cache' }
 $ppw = Get-ChildItem -LiteralPath (Join-Path $pubCache 'hosted\pub.dev') -Directory `
     -Filter 'path_provider_windows-*' -ErrorAction SilentlyContinue |
     Sort-Object Name -Descending | Select-Object -First 1

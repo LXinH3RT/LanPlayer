@@ -95,6 +95,14 @@ for ABI in "${ABIS[@]}"; do
   mkdir -p "$OUT/libsmb2/android/lib/$ABI" "$OUT/libsmb2/android/include"
   find "$WORK/smb-$ABI" -name 'libsmb2*.so*' -exec cp -a {} "$OUT/libsmb2/android/lib/$ABI/" \;
   cp -r "$WORK/libsmb2/include/." "$OUT/libsmb2/android/include/"
+
+  # Gradle only packages libraries that live in a jniLibs directory, and the
+  # CMake IMPORTED targets above are not copied into the APK by AGP.  Stage a
+  # jniLibs-friendly tree (<root>/<abi>/*.so) so app/build.gradle.kts can point
+  # sourceSets.main.jniLibs at it.
+  mkdir -p "$OUT/jniLibs/$ABI"
+  cp "$PREFIX"/lib/*.so "$OUT/jniLibs/$ABI/"
+  find "$WORK/smb-$ABI" -name 'libsmb2*.so*' -exec cp -a {} "$OUT/jniLibs/$ABI/" \;
 done
 
 echo "done: $OUT"
