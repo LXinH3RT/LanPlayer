@@ -139,6 +139,7 @@ REQUIRED = [
     "app/macos/Podfile",
     "app/macos/Runner/MainFlutterWindow.swift",
     "app/macos/Runner/Runner-Bridging-Header.h",
+    "app/macos/Runner/Configs/AppInfo.xcconfig",
     "scripts/build_apple_deps.sh",
     "scripts/gen_windows_runner.ps1",
     "scripts/patch_flutter_tools.ps1",
@@ -453,6 +454,16 @@ def check_player_layout() -> None:
                  "bottom row")
 
 
+def _ver_tuple(text: str) -> tuple[int, ...]:
+    """Turn "12.0" / "10.14" into a comparable tuple.
+
+    Deployment targets are dotted numbers; comparing them as strings puts
+    "10.14" above "9.0" but below "12.0" only by accident. Tuples compare
+    element-wise, which is what Xcode does.
+    """
+    return tuple(int(part) for part in text.split(".") if part.isdigit())
+
+
 def check_apple_wiring() -> None:
     """Guard the iOS / macOS wiring.
 
@@ -547,9 +558,37 @@ def check_apple_wiring() -> None:
     # Swift cannot see lp_* without the bridging header in the build settings.
     macos_pbx = APP / "macos" / "Runner.xcodeproj" / "project.pbxproj"
     if macos_pbx.exists():
-        if "SWIFT_OBJC_BRIDGING_HEADER" not in macos_pbx.read_text(encoding="utf-8"):
+        pbx_text = macos_pbx.read_text(encoding="utf-8")
+        if "SWIFT_OBJC_BRIDGING_HEADER" not in pbx_text:
             problems.append("app/macos/Runner.xcodeproj: SWIFT_OBJC_BRIDGING_HEADER is "
                             "not set, so MainFlutterWindow.swift cannot call lp_*")
+        # Xcode 26 (macOS SDK 27) refuses anything below 12.0:
+        #   error: The macOS deployment target 'MACOSX_DEPLOYMENT_TARGET' is set to
+        #   11.0, but the range of supported deployment target versions is 12.0 to 27.0.x
+        # A stale 11.0 in the pbxproj silently breaks `flutter build macos`, so pin
+        # every occurrence to the same floor the shell script builds with.
+        for target in re.findall(r'MACOSX_DEPLOYMENT_TARGET = "?([0-9.]+)"?;', pbx_text):
+            if min_macos and _ver_tuple(target) < _ver_tuple(min_macos):
+                problems.append(f"app/macos/Runner.xcodeproj: MACOSX_DEPLOYMENT_TARGET = "
+                                f"{target} is below {min_macos}; Xcode 26 rejects it")
+                break
+    # The xcconfig is the second line of defence: a target-level setting wins over
+    # an inherited project one, so keep the floor here too.
+    app_info = APP / "macos" / "Runner" / "Configs" / "AppInfo.xcconfig"
+    if app_info.exists() and min_macos:
+        if f"MACOSX_DEPLOYMENT_TARGET = {min_macos}" not in app_info.read_text(encoding="utf-8"):
+            problems.append(f"app/macos/Runner/Configs/AppInfo.xcconfig does not pin "
+                            f"MACOSX_DEPLOYMENT_TARGET = {min_macos}")
+    # Pods.xcodeproj is generated, so the only way to guarantee every pod ends up
+    # on the floor is the post_install hook. path_provider_foundation ships 10.14
+    # and flutter_macos_podfile_setup only deletes the key below 10.14, so without
+    # this loop `pod install` succeeds but xcodebuild fails.
+    if macos_podfile.exists() and min_macos:
+        podfile_text = macos_podfile.read_text(encoding="utf-8")
+        if "config.build_settings['MACOSX_DEPLOYMENT_TARGET']" not in podfile_text:
+            problems.append("app/macos/Podfile post_install does not raise every pod's "
+                            "MACOSX_DEPLOYMENT_TARGET; third-party pods ship 10.14 and "
+                            "Xcode 26 rejects it")
     if not (APP / "macos" / "Runner" / "MainFlutterWindow.swift").exists():
         problems.append("app/macos/Runner/MainFlutterWindow.swift missing; the macOS "
                         "build would have no lanplayer/video channel")

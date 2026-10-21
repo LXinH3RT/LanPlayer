@@ -7,6 +7,16 @@
 // The application's name. By default this is also the title of the Flutter window.
 PRODUCT_NAME = lanplayer
 
+// 最低系统版本。必须是 12.0 或更高：Xcode 26（macOS SDK 27）只接受
+// 12.0 ~ 27.0.x 这个区间，写 11.0 / 10.14 会直接报
+//   error: The macOS deployment target 'MACOSX_DEPLOYMENT_TARGET' is set to
+//   11.0, but the range of supported deployment target versions is 12.0 to 27.0.x
+// 工程文件（project.pbxproj）的 project 级也写了 12.0，这里是第二层保险：
+// xcconfig 里的值会覆盖 target 继承来的设置。要和
+// app/macos/Podfile 的 platform、packages/lanplayer_core/macos 的
+// osx.deployment_target、scripts/build_apple_deps.sh 的 MIN_MACOS 保持一致。
+MACOSX_DEPLOYMENT_TARGET = 12.0
+
 // The application's bundle identifier
 PRODUCT_BUNDLE_IDENTIFIER = dev.lanplayer.lanplayer
 

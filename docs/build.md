@@ -364,9 +364,11 @@ FFmpeg 编完会缓存（`build/deps/ff-<slice>/lib/libavcodec.a` 存在就跳�
 - `app/ios/Podfile` 与 `app/macos/Podfile` 已存在（`platform :ios, '13.0'` / `platform :osx, '12.0'`，
   与 `build_apple_deps.sh` 的 `MIN_IOS`/`MIN_MACOS` 对齐），里面没有手写 `pod` 行——
   Flutter 会读 `.flutter-plugins-dependencies`，自动把 `lanplayer_core` 装上。
-  macOS 侧 `post_install` 里还会把**每个 pod** 的 `MACOSX_DEPLOYMENT_TARGET`
-  统一抬到 12.0：第三方插件的 podspec 自带更低数字（`path_provider_foundation`
-  写的是 10.14），Xcode 26 不支持低于 12.0。
+  macOS 侧 `post_install` 里还会把**每个 pod**（以及 `Pods.xcodeproj` 的项目级）
+  的 `MACOSX_DEPLOYMENT_TARGET` 统一抬到 12.0：第三方插件的 podspec 自带更低
+  数字（`path_provider_foundation` 写的是 10.14），Xcode 26 不支持低于 12.0。
+  `app/macos/Runner/Configs/AppInfo.xcconfig` 也钉了 `MACOSX_DEPLOYMENT_TARGET = 12.0`
+  作为 target 级保险。
 - 四个 xcconfig（`app/ios/Flutter/{Debug,Release}.xcconfig`、
   `app/macos/Flutter/Flutter-{Debug,Release}.xcconfig`）第一行是
   `#include? "Pods/Target Support Files/Pods-Runner/Pods-Runner.<mode>.xcconfig"`，

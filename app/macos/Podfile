@@ -58,6 +58,13 @@ target 'Runner' do
 end
 
 post_install do |installer|
+  # 项目级也设一遍。target 级通常能盖住项目级，但 Pods.xcodeproj 自己是
+  # 按 Xcode 默认模板生成的，项目级可能带着 10.14，留着会让某些 target
+  # 在没显式声明时又继承回去。
+  installer.pods_project.build_configurations.each do |config|
+    config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = MACOS_DEPLOYMENT_TARGET
+  end
+
   installer.pods_project.targets.each do |target|
     flutter_additional_macos_build_settings(target)
 
