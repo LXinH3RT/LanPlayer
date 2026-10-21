@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 
 import '../data/lan_scan.dart';
@@ -121,7 +123,13 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
         _scanning = false;
         _scanned = hosts;
         if (hosts.isEmpty) {
-          _status = '这个网段没有开放 445 端口的主机';
+          // iOS / Android 在拒绝「本地网络」权限时，连接是静默失败的，
+          // 扫出来就是 0 台 —— 看起来跟「网段里真没有服务器」一样。
+          // 这里把两种可能都提示出来，免得用户以为软件坏了。
+          _status = Platform.isIOS || Platform.isAndroid
+              ? '这个网段没有开放 445 端口的主机；'
+                  '如果你确定有服务器，请到「设置」里允许 LanPlayer 访问本地网络'
+              : '这个网段没有开放 445 端口的主机';
         }
       });
     } on Object catch (e) {
