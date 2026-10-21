@@ -216,7 +216,7 @@ unzip -q flutter.zip && rm flutter.zip
 #    这一步可以【跳过】。从镜像 curl 下来的 zip 通常不带 quarantine 属性，
 #    而且 SDK 的 bin/cache 里有些产物是只读/签名过的，xattr 会刷一屏
 #    "Permission denied"，那是正常的，不影响 flutter 运行。
-#    只有在真的弹 "flutter 已损坏" 时才需要跑（见 4.7 报错表）。
+#    只有在真的弹 "flutter 已损坏" 时才需要跑（见 4.8 报错表）。
 #    xattr -dr com.apple.quarantine ~/development/flutter
 echo 'export PATH="$HOME/development/flutter/bin:$PATH"' >> ~/.zshrc
 echo 'export PUB_HOSTED_URL=https://pub.flutter-io.cn' >> ~/.zshrc
@@ -420,7 +420,41 @@ flutter build ipa --release           # 打包（需要签名）
 iPad 与 iPhone 是同一个 iOS 包；`TARGETED_DEVICE_FAMILY = "1,2"` 已包含 iPad。
 模拟器不能测 SMB 的真实吞吐，但能测 UI、字幕、界面交互。
 
-### 4.7 macOS 上首次构建会遇到的错误（按出现顺序）
+**iOS 侧已经实测跑通的部分**（iPad 模拟器，iPadOS 27.1）：
+VideoToolbox 硬解、AudioQueue 48 kHz 立体声、外挂 SRT 字幕、纹理上屏。
+这台 Mac 没连实体 iPad，所以真机只差一步签名。
+
+模拟器上的验证钩子要注意：iOS 的 app 由 launchd 拉起，Dart 侧的
+`Platform.environment` **永远是空表**，`SIMCTL_CHILD_LANPLAYER_OPEN=...`
+虽然确实进了进程环境（`ps eww -p <pid>` 能看到），但 Dart 读不到。
+所以 iOS 上要改用编译期注入：
+
+```bash
+cd app
+flutter build ios --simulator --debug \
+  --dart-define=LANPLAYER_OPEN=/Users/me/lptest/clip.mp4 \
+  --dart-define=LANPLAYER_STATE_DIR=/Users/me/lptest/state
+xcrun simctl install <dev> build/ios/iphonesimulator/Runner.app
+xcrun simctl launch --console-pty <dev> dev.lanplayer.lanplayer   # 内核日志走这里
+```
+
+`--console-pty` 是关键：内核的 `[LanPlayer I ...]` 日志只出现在 app 的
+stdout/stderr，`xcrun simctl spawn <dev> log show` 只能看到 `flutter:` 那些。
+另外模拟器截图是可用的（`xcrun simctl io <dev> screenshot --type=png out.png`），
+这点和 macOS 桌面端相反。
+
+### 4.7 iOS 上会遇到的错误（按出现顺序）
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| 启动即 SIGTRAP，日志里有 `_UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption` | iOS 26/27 SDK 要求 app 采用 UIScene 生命周期 | 已修：`Info.plist` 声明 `UIApplicationSceneManifest` 并去掉 `UIMainStoryboardFile`，`AppDelegate` 自己持有 `FlutterEngine`，由 `SceneDelegate` 建窗口。更新仓库即可 |
+| 一打开视频就 SIGABRT，栈顶 `-[FlutterEngine registrarForPlugin:]` + `NSAssertionHandler` | `registrarForPlugin:` 对同名插件只能调一次，第二次直接 abort | 已修：`AppDelegate` 在 `attach()` 里取一次 `registrar` / `textures` 缓存复用。更新仓库即可 |
+| `SIMCTL_CHILD_LANPLAYER_OPEN` 设了但 app 不自动打开视频 | iOS 上 Dart 的 `Platform.environment` 是空表 | 改用 `--dart-define=LANPLAYER_OPEN=...`（见 4.6） |
+| `Target debug_unpack_ios failed: Binary .../Flutter.framework/Flutter does not contain architectures "arm64 x86_64"` | Mac 上 Flutter SDK 的 iOS 模拟器切片架构与工程 `ARCHS` 不匹配 | 已修：`app/ios/Flutter/*.xcconfig` 收紧到 `ARCHS = arm64` |
+| `error: The iOS Simulator deployment target 'IPHONEOS_DEPLOYMENT_TARGET' is set to 13.0, but the range ... is 15.0 to 27.1.x` | Xcode 27 把 iOS 最低部署目标抬到 15.0 | 已修：`Podfile` / `project.pbxproj` / `AppFrameworkInfo.plist` / podspec 四处统一到 15.0，`post_install` 再兜一层。更新仓库即可 |
+| `vf_scale_vt.c: 'VTPixelTransferSessionCreate' is only available on iOS 16.0 or newer` | `--enable-videotoolbox` 会自动拉进 `scale_vt` 滤镜，它用的 API 在 iOS 16 才有，FFmpeg 6.1.1 没加可用性保护 | 已修：`build_apple_deps.sh` 加 `-Wno-error=unguarded-availability-new` 并显式裁剪滤镜列表。更新仓库即可 |
+
+### 4.8 macOS 上首次构建会遇到的错误（按出现顺序）
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |

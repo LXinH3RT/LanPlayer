@@ -362,7 +362,7 @@ Xcode 26 的 SDK 受支持下限），macOS 的
 `MainFlutterWindow.swift` 注册
 `lanplayer/video` 通道把 `CVPixelBuffer` 交给 Flutter 引擎。
 
-在真 Mac 上第一次动手前，`docs/build.md` 的 4.1 与 4.7 值得先看一遍，那里记了三条本机没有、
+在真 Mac 上第一次动手前，`docs/build.md` 的 4.1、4.6 与 4.8 值得先看一遍，那里记了三条本机没有、
 但 macOS 上一定会撞到的事实：
 
 - CocoaPods 要用 `brew install cocoapods`，`sudo gem install cocoapods` 会因为没有
