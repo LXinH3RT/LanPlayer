@@ -77,8 +77,8 @@ Pod::Spec.new do |s|
   s.source = { :git => 'https://github.com/LXinH3RT/LanPlayer.git', :tag => s.version.to_s }
 
   # 内核用 arm64 与 x86_64 都在编，最低系统跟着 scripts/build_apple_deps.sh
-  # 的 MIN_MACOS 走（脚本里是 11.0）。
-  s.osx.deployment_target = '11.0'
+  # 的 MIN_MACOS 走（脚本里是 12.0）。Xcode 26 不再接受 12.0 以下的目标。
+  s.osx.deployment_target = '12.0'
   s.osx.dependency 'FlutterMacOS'
 
   # 必须静态进 app 二进制：Dart 侧在 macOS 上用 DynamicLibrary.process()

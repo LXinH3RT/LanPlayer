@@ -1,15 +1,26 @@
 # LanPlayer 的 macOS Podfile。
 #
-# 与 `flutter create` 生成的模板基本一致，只有一处改动：
-#   platform 写成 11.0 —— native/third_party 里的 FFmpeg / libsmb2 是
-#   scripts/build_apple_deps.sh 用 MIN_MACOS=11.0 编的，工程目标低于它会在链接时
-#   报 "building for macOS 10.14, but linking in object file built for macOS 11.0"。
+# 与 `flutter create` 生成的模板有两处改动：
+#   1. platform 写成 12.0 —— 有两个下限共同决定这个数字：
+#      a) native/third_party 里的 FFmpeg / libsmb2 是 scripts/build_apple_deps.sh
+#         用 MIN_MACOS=12.0 编的，工程目标低于它会在链接时报
+#         "building for macOS 11.0, but linking in object file built for macOS 12.0"；
+#      b) Xcode 26（macOS SDK 27）不再接受 12.0 以下的部署目标：
+#         error: The macOS deployment target 'MACOSX_DEPLOYMENT_TARGET' is set to
+#         11.0, but the range of supported deployment target versions is 12.0 to 27.0.x
+#   2. post_install 里把每个 pod 的 MACOSX_DEPLOYMENT_TARGET 统一抬到 12.0。
+#      第三方插件的 podspec 自带更低的数字（path_provider_foundation 写的是
+#      10.14），Flutter 的 podhelper 只在低于 10.14 时才删掉它，所以 10.14 会
+#      原样留下并被 Xcode 26 判为非法。逐个改比删更稳。
 #
 # lanplayer_core（C 内核 + FFmpeg + libsmb2）同样不需要手写 pod 行：
 # 它是 app/pubspec.yaml 里的 dart:ffi 插件，flutter_install_all_macos_pods
 # 会自动装上。
 
-platform :osx, '11.0'
+platform :osx, '12.0'
+
+# 与 Podfile 的 platform 保持一致；pod 的部署目标低于工程目标时链接会告警。
+MACOS_DEPLOYMENT_TARGET = '12.0'
 
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
@@ -49,5 +60,14 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_macos_build_settings(target)
+
+    # Flutter 的 podhelper 只在部署目标低于 10.14 时才会删掉这个键；而 Xcode 26
+    # （macOS SDK 27）要求最低 12.0，所以 10.14 / 11.0 这些老数字必须就地抬上来，
+    # 否则报：
+    #   error: The macOS deployment target 'MACOSX_DEPLOYMENT_TARGET' is set to
+    #   10.14, but the range of supported deployment target versions is 12.0 to 27.0.x
+    target.build_configurations.each do |config|
+      config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = MACOS_DEPLOYMENT_TARGET
+    end
   end
 end

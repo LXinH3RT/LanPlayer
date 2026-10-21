@@ -361,9 +361,12 @@ FFmpeg 编完会缓存（`build/deps/ff-<slice>/lib/libavcodec.a` 存在就跳�
   加进 `OTHER_LDFLAGS`，并链接 `VideoToolbox CoreMedia CoreVideo AudioToolbox
   CoreFoundation Security` 与 `z bz2 lzma iconv`。
 - `app/pubspec.yaml` 里已声明 `lanplayer_core: {path: ../packages/lanplayer_core}`。
-- `app/ios/Podfile` 与 `app/macos/Podfile` 已存在（`platform :ios, '13.0'` / `platform :osx, '11.0'`，
+- `app/ios/Podfile` 与 `app/macos/Podfile` 已存在（`platform :ios, '13.0'` / `platform :osx, '12.0'`，
   与 `build_apple_deps.sh` 的 `MIN_IOS`/`MIN_MACOS` 对齐），里面没有手写 `pod` 行——
   Flutter 会读 `.flutter-plugins-dependencies`，自动把 `lanplayer_core` 装上。
+  macOS 侧 `post_install` 里还会把**每个 pod** 的 `MACOSX_DEPLOYMENT_TARGET`
+  统一抬到 12.0：第三方插件的 podspec 自带更低数字（`path_provider_foundation`
+  写的是 10.14），Xcode 26 不支持低于 12.0。
 - 四个 xcconfig（`app/ios/Flutter/{Debug,Release}.xcconfig`、
   `app/macos/Flutter/Flutter-{Debug,Release}.xcconfig`）第一行是
   `#include? "Pods/Target Support Files/Pods-Runner/Pods-Runner.<mode>.xcconfig"`，
@@ -433,7 +436,8 @@ iPad 与 iPhone 是同一个 iOS 包；`TARGETED_DEVICE_FAMILY = "1,2"` 已包�
 | `[!] The 'lanplayer_core' pod failed to validate due to 1 error: - ERROR \| File Patterns: File patterns must be relative and cannot start with a slash (preserve_paths)` | podspec 里用 `preserve_paths` 声明了 `native/` 下的头文件与 `.a`，但 CocoaPods 校验要求每条 pattern 都是相对 pod 目录的路径，绝对路径直接判死，`pod install` 还没开始就退出 | 已修：删掉 `preserve_paths`（头文件与 `.a` 在 pod 目录之外，CocoaPods 本来也不会删；链接靠 `user_target_xcconfig` 的 `LIBRARY_SEARCH_PATHS` / `HEADER_SEARCH_PATHS`）。更新仓库即可 |
 | `WARN \| [OSX] keys: Missing primary key for \`source\` attribute. The acceptable ones are: git, hg, http, svn` | `s.source = { :path => '.' }` 没有主键；本地 path 依赖时 CocoaPods 只当警告，但它和上面那条 ERROR 一起出现时容易看漏 | 已修：`s.source` 改成 `{ :git => '…LanPlayer.git', :tag => s.version.to_s }`（这个 pod 实际由 `app/*/Podfile` 的 path 依赖引入，source 只为过校验） |
 | `library not found for -llanplayer` | 4.2 没成功（`native/third_party/lanplayer/apple/lib` 不存在） | 重跑 `SLICES=macosx ./scripts/build_apple_deps.sh` |
-| `building for macOS 11.0, but linking in object file built for macOS 14.0` | 依赖用了更高的部署目标 | `MIN_MACOS=11.0` 重编，或把 `app/macos/Podfile` 与工程目标一起调高 |
+| `building for macOS 12.0, but linking in object file built for macOS 14.0` | 依赖用了更高的部署目标 | `MIN_MACOS=12.0` 重编，或把 `app/macos/Podfile` 与工程目标一起调高 |
+| `error: The macOS deployment target 'MACOSX_DEPLOYMENT_TARGET' is set to 10.14/11.0, but the range of supported deployment target versions is 12.0 to 27.0.x` | Xcode 26（macOS SDK 27）把最低部署目标抬到了 12.0；第三方 pod（如 `path_provider_foundation` 10.14）与旧工程设置（11.0）都被判非法 | 已修：`app/macos/Podfile` 的 `platform` 改 12.0，并在 `post_install` 里把每个 pod 的 `MACOSX_DEPLOYMENT_TARGET` 统一设为 12.0；`Runner.xcodeproj` 的三处 11.0 也已改成 12.0。更新仓库后 `pod install` 会自动重生成 |
 | `brew install --cask flutter` 慢到只有几十 KB/s | cask 直接去 `storage.googleapis.com` 拉 1.3 GB，Homebrew 本身不走国内镜像 | 按 4.1 第 5 步手动从 `storage.flutter-io.cn` 下载解压 |
 | `xattr -dr com.apple.quarantine` 输出一屏 `Permission denied` | SDK 的 `bin/cache/artifacts` 与 `.git/objects` 里有只读/已签名文件，xattr 改不动 | **正常现象，忽略即可**。这条命令本来就可以跳过；只有真弹 "flutter 已损坏" 时才需要执行 |
 | `"flutter" 已损坏，无法打开` / Gatekeeper 拦截 | 手动解压的 SDK 带 quarantine 属性 | `xattr -dr com.apple.quarantine ~/development/flutter`（有 Permission denied 不影响结果） |

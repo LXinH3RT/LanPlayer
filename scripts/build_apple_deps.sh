@@ -23,7 +23,12 @@ WORK="${WORK:-$ROOT/build/deps}"
 FFMPEG_VERSION="${FFMPEG_VERSION:-6.1.1}"
 LIBSMB2_VERSION="${LIBSMB2_VERSION:-v4.0.0}"
 MIN_IOS="${MIN_IOS:-13.0}"
-MIN_MACOS="${MIN_MACOS:-11.0}"
+# 12.0 是 Xcode 26（macOS SDK 27）允许的最低部署目标下限：
+#   error: The macOS deployment target 'MACOSX_DEPLOYMENT_TARGET' is set to
+#   11.0, but the range of supported deployment target versions is 12.0 to
+#   27.0.x.
+# 旧版 Xcode 也接受 12.0，所以统一抬到 12.0 不会影响更早的工具链。
+MIN_MACOS="${MIN_MACOS:-12.0}"
 # One platform family per run.  On Apple silicon iphoneos, iphonesimulator and
 # macosx are all arm64, and lipo refuses to pack two slices with the same
 # architecture into one fat archive ("have the same architectures (arm64)")
