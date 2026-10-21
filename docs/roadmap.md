@@ -60,7 +60,10 @@
 
 * Windows：~~D3D11VA 硬解~~（已完成，`native/src/platform/win32/d3d11va_decoder.c`）+ GPU 直出纹理 + WASAPI；macOS 同步
 * Apple：~~iOS / macOS 工程接线~~（已完成：`packages/lanplayer_core` 两个 podspec + 两个 Podfile + macOS 纹理通道 + 部署目标对齐 + 每个平台族独立的静态库目录，见 `docs/build.md` 第 4 节）。**macOS 桌面 bundle 已在 Mac（macOS 27 / Xcode 27.1）上真跑通**——VideoToolbox 硬解、AudioQueue、外挂字幕、SMB 浏览全部实测（`docs/verification.md` §3.18）；**iPad 模拟器同样跑通**（§3.19）。iOS 也在 CI 的 `apple` job 上真编译。待办：实体 iPad 需要一次性签名（Team + 开发者模式）
-* SMB 局域网自动发现（mDNS `_smb._tcp` + 代理广播）；共享名由用户填写，不做列表枚举
+* ~~SMB 局域网自动发现~~ 已完成（改成了更可靠的做法）：`app/lib/data/lan_scan.dart`
+  并发探测本机所在 /24 的 **445 端口**，命中后反查主机名，结果点一下填进「IP 地址」。
+  **没有**做 mDNS `_smb._tcp`：实测家用 NAS 与 Windows 共享都不广播这条记录（`docs/verification.md` §3.21）。
+  共享名仍由用户填写，不做列表枚举
 * 缩略图/海报（解第一帧，缓存到本地）
 
 **v0.4 — 画质与音频**

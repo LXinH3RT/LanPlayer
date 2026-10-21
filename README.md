@@ -176,6 +176,8 @@ New-SmbShare -Name Movies -Path D:\Movies -ReadAccess lanplay
 
 **2. 手机上连**：`添加 → 填地址、共享名、用户名、密码 → 连接并浏览`。
 共享名就是 Windows 上「属性 → 共享」里填的那个名字；客户端不会去枚举服务器的共享列表。
+不知道服务器 IP 时，点「扫描局域网」——它会并发探测本机所在网段的 445 端口，
+把开放的主机列出来，点一行就自动填进地址框（只填地址，共享名仍要自己填）。
 
 **3. 播放**：点视频即播。字幕默认自动加载同目录同名文件（`S01E01.zh-CN.srt` 之类），
 播放页可切音轨、切字幕、调字幕延迟、切倍速。
@@ -418,6 +420,7 @@ iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字�
 |SMB 协议栈|✅ 链接 libsmb2 4.0.0；不可达主机返回可读错误而非崩溃|
 |SMB 目录浏览|✅ 真实共享 192.168.1.10「共享」→ 9 项；「电影」→ 31 项（13 目录 / 9 视频）；可逐层进入|
 |SMB 凭据校验|✅ 只给主机 + 账号密码时连 `IPC$` 验证登录：`{"server":"192.168.1.10","authenticated":true}`；密码错误报 `login failed … wrong user name or password`；共享名由用户自己填，不做枚举|
+|局域网扫描|✅ 并发探测本机所在 `/24` 的 445 端口：`tool/lan_scan_probe.dart` 1.45 秒扫完 254 个地址，命中 NAS `192.168.1.10` 与本机；真实 Release 程序里点「扫描局域网」同样得到 2 台（`LanPlayer lan host: 192.168.1.10 name=192.168.1.10` / `…5.8 name=me0512`）|
 |SMB 直接播放|✅ 1920×820 h264 经 SMB 流式解码，waveOut 48 kHz 立体声，字幕侧挂自动加载|
 |服务器列表持久化|✅ 重启后自动读回 `servers.json`（`LanPlayer loaded: servers=1`），不再丢服务器|
 |Flutter 桌面端构建|✅ CMake + MSBuild（VS 18）产出 `lanplayer.exe` 55 KiB + 插件 106 KiB，INSTALL 后可直接运行；官方 `flutter build windows --release` 也已跑通（24 秒出包）|

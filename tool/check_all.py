@@ -162,11 +162,17 @@ REQUIRED = [
     "scripts/send_keys.ps1",
     "scripts/capture_playback_ui.ps1",
     "scripts/hover_probe.ps1",
+    "scripts/click_window.ps1",
+    "scripts/capture_lanscan.ps1",
     "tool/image_stats.ps1",
     "tool/make_pgs_fixture.py",
     "tool/pgs_probe.c",
     "app/lib/data/progress.dart",
+    "app/lib/data/lan_scan.dart",
+    "app/tool/lan_scan_probe.dart",
     "app/tool/browse_smoke.dart",
+    "app/test/lan_scan_test.dart",
+    "app/test/server_edit_screen_test.dart",
     "docs/images/desktop-home.png",
     "docs/images/desktop-player.png",
     "docs/images/desktop-browse.png",
@@ -229,6 +235,64 @@ def check_required_files() -> None:
         if not (ROOT / rel).exists():
             problems.append(f"missing required file: {rel}")
     notes.append(f"required files: {len(REQUIRED)}")
+
+def check_lan_scan() -> None:
+    """Guard the LAN discovery contract.
+
+    Two things must stay true or the feature silently degrades:
+      * it probes TCP 445 (the only port that tells us "SMB lives here");
+      * the UI offers it as an optional button and does not pretend to know
+        the share name (share enumeration was deliberately dropped).
+    Bounding the concurrency matters too: a naive 254-way connect at once is
+    what makes the scan fast, but removing the cap would open a socket per
+    address on every interface and can trip the OS.
+    """
+    scan = ROOT / "app" / "lib" / "data" / "lan_scan.dart"
+    ui = ROOT / "app" / "lib" / "ui" / "server_edit_screen.dart"
+    if not scan.exists():
+        problems.append("missing app/lib/data/lan_scan.dart (LAN discovery)")
+        return
+    code = scan.read_text(encoding="utf-8")
+    body = "\n".join(l for l in code.splitlines()
+                     if not l.strip().startswith("//"))
+    if "445" not in body:
+        problems.append("lan_scan.dart must probe TCP 445, not another port")
+    if "Socket.connect" not in body:
+        problems.append("lan_scan.dart must use Socket.connect for the probe")
+    if "169.254" not in body:
+        problems.append("lan_scan.dart must skip 169.254.0.0/16 link-local "
+                        "(virtual adapters report those and would be scanned)")
+    m = re.search(r"int\s+concurrency\s*=\s*(\d+)", body)
+    if not m:
+        problems.append("lan_scan.dart must cap concurrency "
+                        "(scanSubnet(concurrency: N))")
+    elif not (8 <= int(m.group(1)) <= 512):
+        problems.append(f"scanSubnet concurrency = {m.group(1)} is "
+                        "unreasonable (8..512)")
+    if "shouldStop" not in body:
+        problems.append("scanSubnet must accept shouldStop so a page can "
+                        "abort a scan it no longer needs")
+
+    if not ui.exists():
+        problems.append("missing app/lib/ui/server_edit_screen.dart")
+        return
+    ui_code = "\n".join(l for l in ui.read_text(encoding="utf-8").splitlines()
+                        if not l.strip().startswith("//"))
+    if "扫描局域网" not in ui_code:
+        problems.append("the add-server screen lost its 扫描局域网 button")
+    if "LanHostPicker" not in ui_code:
+        problems.append("the add-server screen must render LanHostPicker")
+    # The page must not open the native core while building: a missing
+    # lanplayer.dll used to make the whole screen unrenderable.
+    eager = [l for l in ui_code.splitlines()
+             if re.search(r"\bfinal\b", l) and re.search(r"\b_repo\s*=", l)
+             and "late" not in l]
+    if eager:
+        problems.append("ServerEditScreen must lazily create MediaRepository "
+                        "(late final), otherwise a missing lanplayer.dll "
+                        f"breaks the whole page: {eager[0].strip()}")
+    notes.append("lan scan: probes TCP 445 with capped concurrency, "
+                 "optional UI step, share name still user-supplied")
 
 def run(cmd: list[str], env: dict[str, str] | None = None,
         cwd: Path | None = None) -> tuple[int, str]:
@@ -746,6 +810,7 @@ def main() -> int:
     check_dart_tests()
     check_windows_plugin()
     check_texture_colors()
+    check_lan_scan()
     check_player_layout()
     check_apple_wiring()
     check_hw_decode()

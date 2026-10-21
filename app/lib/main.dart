@@ -11,6 +11,7 @@ import 'player/playlist.dart';
 import 'ui/browser_screen.dart';
 import 'ui/home_screen.dart';
 import 'ui/player_screen.dart';
+import 'ui/server_edit_screen.dart';
 import 'ui/theme.dart';
 
 final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
@@ -39,6 +40,12 @@ String? _probe(String name) {
       return v.isEmpty ? null : v;
     case 'LANPLAYER_PASS':
       const v = String.fromEnvironment('LANPLAYER_PASS');
+      return v.isEmpty ? null : v;
+    case 'LANPLAYER_UI':
+      const v = String.fromEnvironment('LANPLAYER_UI');
+      return v.isEmpty ? null : v;
+    case 'LANPLAYER_AUTOSCAN':
+      const v = String.fromEnvironment('LANPLAYER_AUTOSCAN');
       return v.isEmpty ? null : v;
   }
   return null;
@@ -89,6 +96,27 @@ Future<void> main() async {
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _openLocation(autoBrowse));
   }
+
+  // 打开「添加服务器」页，并在需要时自动跑一次局域网扫描 —— 这样桌面端
+  // 的扫描界面可以在没有人点鼠标的情况下被验证（截图 / 日志）。
+  //   LANPLAYER_UI=add-server  LANPLAYER_AUTOSCAN=1
+  if (_probe('LANPLAYER_UI') == 'add-server') {
+    WidgetsBinding.instance.addPostFrameCallback((_) => _openAddServer());
+  }
+}
+
+/// 打开「添加 SMB 服务器」页。`LANPLAYER_AUTOSCAN=1` 时进去后自动扫描一次。
+Future<void> _openAddServer() async {
+  final navigator = appNavigatorKey.currentState;
+  if (navigator == null) {
+    // ignore: avoid_print
+    print('LanPlayer add-server skipped: navigator not ready');
+    return;
+  }
+  final autoScan = _probe('LANPLAYER_AUTOSCAN') == '1';
+  await navigator.push(MaterialPageRoute<void>(
+    builder: (_) => ServerEditScreen(autoScan: autoScan),
+  ));
 }
 
 Future<void> _openLocation(String url) async {
