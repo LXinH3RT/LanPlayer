@@ -55,5 +55,6 @@ app/android/app/build/
 *.iml
 .DS_Store
 
-# Local debug notes
-build/acl-recovery/
+# Python bytecode (tool/*.py gets imported by the check scripts)
+__pycache__/
+*.pyc
