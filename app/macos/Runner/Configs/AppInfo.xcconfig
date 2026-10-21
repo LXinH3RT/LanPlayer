@@ -17,6 +17,25 @@ PRODUCT_NAME = lanplayer
 // osx.deployment_target、scripts/build_apple_deps.sh 的 MIN_MACOS 保持一致。
 MACOSX_DEPLOYMENT_TARGET = 12.0
 
+// 只编 arm64。
+//
+// scripts/build_apple_deps.sh 的 ARCHS 默认就是 arm64，所以 native/third_party
+// 下的 FFmpeg / libsmb2 / liblanplayer.a 全是单架构 arm64 归档。
+// Xcode 的 ARCHS 默认是 $(ARCHS_STANDARD)，在 macOS 上等于 "arm64 x86_64"，
+// 于是 ld 会按 x86_64 去这些 .a 里找符号，逐个报
+//   ld: warning: ignoring file '.../libavcodec.a': fat file missing arch 'x86_64'
+// 最后连内核的符号都找不到：
+//   Undefined symbols for architecture x86_64:
+//     "_lp_player_copy_pixel_buffer", referenced from PlayerTexture.copyPixelBuffer()
+//     "_lp_player_install_frame_callback", referenced from installVideoChannel()
+// 这里把目标架构收紧成 arm64，和静态库对齐。
+//
+// 要出 Intel 版本的话，用 ARCHS="x86_64" 重编依赖：
+//   ARCHS="x86_64" ./scripts/build_apple_deps.sh
+// 然后把下面这行改成 ARCHS = x86_64，或者写成 ARCHS = arm64 x86_64
+// （前提是两套架构的 .a 都齐了，lipo 会把它们合成 fat 归档）。
+ARCHS = arm64
+
 // The application's bundle identifier
 PRODUCT_BUNDLE_IDENTIFIER = dev.lanplayer.lanplayer
 

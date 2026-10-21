@@ -8,9 +8,13 @@
 
 // LanPlayer native core (see docs/build.md section 4).
 //
-// SRCDIR resolves to app/macos, so the repo's native/ tree is two levels up.
-// The static libraries are produced by scripts/build_apple_deps.sh.
-LP_NATIVE = $(SRCDIR)/../../native
+// SRCROOT 是 Xcode 内置变量，指向包含 .xcodeproj 的目录，也就是 app/macos，
+// 所以仓库根的 native/ 在它上面两级。
+// 注意不能写成 $(SRCDIR)：Xcode 没有这个变量，宏展开后会留下字面量，路径被
+// 规约成 /native/third_party/... ，ld 只给三条
+//   ld: warning: search path '/native/third_party/...' not found
+// 然后把静态库一律当成"没提供符号"，最终报 Undefined symbols。
+LP_NATIVE = $(SRCROOT)/../../native
 
 HEADER_SEARCH_PATHS = $(inherited) $(LP_NATIVE)/include
 LIBRARY_SEARCH_PATHS = $(inherited) \
