@@ -33,7 +33,9 @@ mkdir -p "$WORK" "$OUT/ffmpeg/android" "$OUT/libsmb2/android"
 fetch() { # url dest
   if [[ ! -e "$2" ]]; then
     echo "== fetching $1"
-    curl -fsSL "$1" -o "$2"
+    # GitHub runners occasionally fail to resolve ffmpeg.org; retry instead of
+    # failing the whole job on one DNS hiccup.
+    curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "$1" -o "$2"
   fi
 }
 

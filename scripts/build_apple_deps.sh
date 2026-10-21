@@ -24,7 +24,16 @@ FFMPEG_VERSION="${FFMPEG_VERSION:-6.1.1}"
 LIBSMB2_VERSION="${LIBSMB2_VERSION:-v4.0.0}"
 MIN_IOS="${MIN_IOS:-13.0}"
 MIN_MACOS="${MIN_MACOS:-11.0}"
-SLICES="${SLICES:-iphoneos iphonesimulator macosx}"
+# One platform family per run.  On Apple silicon iphoneos, iphonesimulator and
+# macosx are all arm64, and lipo refuses to pack two slices with the same
+# architecture into one fat archive ("have the same architectures (arm64)")
+# - and the podspecs all point at native/third_party/*/apple/lib, so there is
+# only room for one family's archives at a time.  Re-run with a different
+# SLICES value to switch target:
+#   SLICES=macosx          macOS (default: the usual desktop build)
+#   SLICES=iphoneos        iOS device
+#   SLICES=iphonesimulator iOS simulator
+SLICES="${SLICES:-macosx}"
 # Simulator slices: arm64 for Apple-silicon Macs, x86_64 for Intel ones.
 # Override with ARCHS="arm64 x86_64" to build a fat simulator archive.
 ARCHS="${ARCHS:-arm64}"
@@ -32,7 +41,12 @@ ARCHS="${ARCHS:-arm64}"
 mkdir -p "$WORK" "$OUT/ffmpeg/apple" "$OUT/libsmb2/apple"
 
 fetch() {
-  [[ -e "$2" ]] || { echo "== fetching $1"; curl -fsSL "$1" -o "$2"; }
+  # GitHub runners occasionally fail to resolve ffmpeg.org / github.com; retry
+  # a few times instead of failing the whole job on one DNS hiccup.
+  [[ -e "$2" ]] || {
+    echo "== fetching $1"
+    curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "$1" -o "$2"
+  }
 }
 fetch "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" "$WORK/ffmpeg.tar.xz"
 [[ -d "$WORK/ffmpeg-${FFMPEG_VERSION}" ]] || tar xf "$WORK/ffmpeg.tar.xz" -C "$WORK"
@@ -209,13 +223,25 @@ for LIB in avformat avcodec avutil swresample swscale avfilter; do
 done
 merge smb2 "$OUT/libsmb2/apple/lib"
 
-# Our own core: one liblanplayer.a per slice, merged the same way.
+# Our own core: one liblanplayer.a per slice, merged the same way (arch-deduped,
+# so iphoneos arm64 wins over iphonesimulator arm64).
 LP_INPUTS=()
+LP_SEEN=" "
 for SLICE in $SLICES; do
   f="$WORK/lp-$SLICE/liblanplayer.a"
-  [[ -f "$f" ]] && LP_INPUTS+=("$f")
+  [[ -f "$f" ]] || continue
+  arch=$(lipo -archs "$f" 2>/dev/null | tr ' ' '\n' | head -n1)
+  if [[ -n "$arch" && "$LP_SEEN" == *" $arch "* ]]; then
+    echo "== lipo liblanplayer.a: skipping $SLICE (duplicate $arch)" >&2
+    continue
+  fi
+  [[ -n "$arch" ]] && LP_SEEN+="$arch "
+  LP_INPUTS+=("$f")
 done
-if [[ ${#LP_INPUTS[@]} -gt 0 ]]; then
+if [[ ${#LP_INPUTS[@]} -eq 1 ]]; then
+  cp "${LP_INPUTS[0]}" "$OUT/lanplayer/apple/lib/liblanplayer.a"
+  echo "== copy liblanplayer.a <- 1 slice"
+elif [[ ${#LP_INPUTS[@]} -gt 1 ]]; then
   lipo -create "${LP_INPUTS[@]}" -output "$OUT/lanplayer/apple/lib/liblanplayer.a"
   echo "== lipo liblanplayer.a <- ${#LP_INPUTS[@]} slice(s)"
 else

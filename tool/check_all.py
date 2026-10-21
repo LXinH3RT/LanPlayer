@@ -285,8 +285,11 @@ def check_hw_decode() -> None:
     env = dict(os.environ)
     env["PATH"] = str(out_dir) + os.pathsep + env.get("PATH", "")
     code, out = run([str(exe), str(red), "--expect-red"], env=env, cwd=str(out_dir))
-    if code == 3 or "d3d11va" not in out:
-        # No hardware decoder in this environment is not a code problem.
+    if code == 3 or "no hardware device" in out:
+        # A runner/VM without a GPU has no D3D11 device at all: the core says so
+        # on stderr and falls back to software.  That is not a code problem, so
+        # do not fail the suite here - but say it out loud, because "software" in
+        # a job that is supposed to exercise d3d11va is otherwise misleading.
         notes.append("hw decode: no D3D11 device here, software path only")
         return
     if code != 0 or "hw decode OK" not in out:

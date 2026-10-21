@@ -121,7 +121,12 @@ jobs:
       - name: build ffmpeg + libsmb2 for Apple
         # `bash <script>`: see the note in the android job - the executable bit
         # is not reliable in this repository's history.
-        run: bash scripts/build_apple_deps.sh
+        #
+        # SLICES=iphoneos only: on Apple silicon iphoneos / iphonesimulator /
+        # macosx are all arm64, and lipo refuses to pack two slices with the same
+        # architecture into one fat archive.  This job only builds the iOS app,
+        # so the device slice is all it needs.
+        run: SLICES=iphoneos bash scripts/build_apple_deps.sh
       - name: analyze + test
         working-directory: app
         run: |

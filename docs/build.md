@@ -65,7 +65,8 @@ no media given: library smoke test passed
 
 ```bash
 ANDROID_NDK_HOME=\~/android-ndk-r26 ./scripts/build_android_deps.sh
-./scripts/build_apple_deps.sh
+./scripts/build_apple_deps.sh                 # 默认只做 macosx 切片
+SLICES=iphoneos ./scripts/build_apple_deps.sh # 要编 iOS App 时再跑一次
 ```
 
 脚本产物直接落在 `native/third_party/`，布局与第 0 节一致。下面手写步骤便于排错。
@@ -301,10 +302,19 @@ CocoaPods 首次跑 `pod install` 要拉 Specs 仓库（约 250 MB，`~/.cocoapo
 
 ```bash
 cd /path/to/LanPlayer
-./scripts/build_apple_deps.sh                 # 三切片：iphoneos / iphonesimulator / macosx
-SLICES=macosx ./scripts/build_apple_deps.sh   # 只做 macOS，快很多
+./scripts/build_apple_deps.sh                 # 默认只做 macosx（桌面构建用这个）
+SLICES=iphoneos ./scripts/build_apple_deps.sh # 做 iOS 真机切片
+SLICES=iphonesimulator ./scripts/build_apple_deps.sh  # 做 iOS 模拟器切片
 ARCHS="arm64 x86_64" ./scripts/build_apple_deps.sh   # Intel Mac 再加 x86_64
 ```
+
+> **一次只能做一个平台族。** Apple silicon 上 `iphoneos` / `iphonesimulator` /
+> `macosx` 都是 arm64，`lipo` 不允许把两个同架构的切片塞进同一个 fat 归档
+> （`have the same architectures (arm64) and can't be in the same fat output file`），
+> 而三个 podspec 都指向同一个 `native/third_party/*/apple/lib` 目录，一次只放得下
+> 一个族的产物。脚本在开头就会检查 `SLICES` 跨族并直接报错退出（不会白编二十分钟）。
+> 默认值从「三切片」改成 `macosx`：桌面构建只要 macOS 切片，而 iOS 真机/模拟器
+> 需要时显式指定。要换目标就重跑一次，FFmpeg 会按切片缓存，只重编不同的那一个。
 
 产出（全部是 universal 静态库，已按切片 `lipo` 合并）：
 
@@ -401,7 +411,8 @@ iPad 与 iPhone 是同一个 iOS 包；`TARGETED_DEVICE_FAMILY = "1,2"` 已包�
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
-| `zsh: permission denied: ./scripts/build_apple_deps.sh` | 仓库里的 `.sh` 是 `100644` | `chmod +x scripts/*.sh`（每次新克隆一次） |
+| `zsh: permission denied: ./scripts/build_apple_deps.sh` | 仓库里的 `.sh` 曾以 `100644` 提交，执行位丢了 | 已修：两个 `.sh` 在 git 里改成 `100755`；旧克隆上直接 `bash scripts/build_apple_deps.sh` 也行 |
+| `error: SLICES spans more than one platform family` | 一次跑了 `iphoneos` + `iphonesimulator` + `macosx`，三者都是 arm64，`lipo` 不允许多个同架构切片进同一个 fat 归档；三个 podspec 又都指向同一个 `native/third_party/*/apple/lib` | 一次只做一个族：`SLICES=macosx`（默认）/ `SLICES=iphoneos` / `SLICES=iphonesimulator`，需要另一个目标时重跑一次 |
 | `zsh: command not found: flutter` | 装 Xcode / Homebrew / CocoaPods 都不会顺手装 Flutter | 按 4.1 第 5 步从镜像装，再确认新终端里 `flutter --version` 可用 |
 | `flutter --version` 停在 `Building flutter tool...` 不动 | 首次运行要编 flutter tool（`pub upgrade` + 编快照），这期间没有任何进度输出 | 正常，本机实测 179 s；另开终端 `ps aux \| grep dart` 能看到进程就是在干活 |
 | `flutter --version` 卡 30 s 以上才回 | 默认每 3 天做一次版本检查（`git fetch` 官方仓库 + 访问 `storage.googleapis.com`），国内常 35 s 超时 | `flutter --version --no-version-check`，或 export `FLUTTER_SUPPRESS_ANALYTICS=true` |
