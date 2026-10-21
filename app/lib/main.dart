@@ -15,8 +15,42 @@ import 'ui/theme.dart';
 
 final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 
+/// 读一个验证用的开关。
+///
+/// 桌面端（Windows / macOS）直接从进程环境变量取；iOS / Android 上
+/// `Platform.environment` 永远是空表（app 由系统 launchd 拉起，Dart 拿不到
+/// `environ`），所以再退一步查编译期 `--dart-define`。
+/// 两者都支持，方便同一套脚本在三个平台跑。
+String? _probe(String name) {
+  final fromEnv = Platform.environment[name];
+  if (fromEnv != null && fromEnv.isNotEmpty) return fromEnv;
+  switch (name) {
+    case 'LANPLAYER_OPEN':
+      const v = String.fromEnvironment('LANPLAYER_OPEN');
+      return v.isEmpty ? null : v;
+    case 'LANPLAYER_STATE_DIR':
+      const v = String.fromEnvironment('LANPLAYER_STATE_DIR');
+      return v.isEmpty ? null : v;
+    case 'LANPLAYER_BROWSE':
+      const v = String.fromEnvironment('LANPLAYER_BROWSE');
+      return v.isEmpty ? null : v;
+    case 'LANPLAYER_USER':
+      const v = String.fromEnvironment('LANPLAYER_USER');
+      return v.isEmpty ? null : v;
+    case 'LANPLAYER_PASS':
+      const v = String.fromEnvironment('LANPLAYER_PASS');
+      return v.isEmpty ? null : v;
+  }
+  return null;
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 状态目录优先：必须在任何 store 读取之前设好。
+  final pinnedDir = _probe('LANPLAYER_STATE_DIR');
+  if (pinnedDir != null) {
+    AppStorage.directoryOverride = Directory(pinnedDir);
+  }
   try {
     final dir = await AppStorage.directory();
     // ignore: avoid_print
@@ -27,9 +61,8 @@ Future<void> main() async {
     print("LanPlayer storage error: $e");
     // Losing saved servers is worse than using a less pretty default, so fall
     // back to the folder the data actually loads from.
-    final fallback = Platform.environment['LANPLAYER_STATE_DIR'];
-    if (fallback != null && fallback.isNotEmpty) {
-      AppStorage.directoryOverride = Directory(fallback);
+    if (pinnedDir != null) {
+      AppStorage.directoryOverride = Directory(pinnedDir);
     }
   }
   await ServerStore.instance.load();
@@ -42,7 +75,7 @@ Future<void> main() async {
   // Convenience hook for desktop testing (and for the CI screenshot check):
   //   set LANPLAYER_OPEN=D:\video.mkv
   // opens that file in the player right after startup.
-  final autoOpen = Platform.environment['LANPLAYER_OPEN'];
+  final autoOpen = _probe('LANPLAYER_OPEN');
   if (autoOpen != null && autoOpen.isNotEmpty) {
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _openLocalFile(autoOpen));
@@ -51,7 +84,7 @@ Future<void> main() async {
   // Same idea for the browser: jumps straight into a share so the desktop
   // build can be verified (and screenshotted) without clicking through the UI.
   //   LANPLAYER_BROWSE=smb://host/share  LANPLAYER_USER=u  LANPLAYER_PASS=p
-  final autoBrowse = Platform.environment['LANPLAYER_BROWSE'];
+  final autoBrowse = _probe('LANPLAYER_BROWSE');
   if (autoBrowse != null && autoBrowse.isNotEmpty) {
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _openLocation(autoBrowse));
@@ -62,8 +95,8 @@ Future<void> _openLocation(String url) async {
   // ignore: avoid_print
   print('LanPlayer browse requested: $url');
   final options = <String, dynamic>{
-    'user': Platform.environment['LANPLAYER_USER'] ?? '',
-    'password': Platform.environment['LANPLAYER_PASS'] ?? '',
+    'user': _probe('LANPLAYER_USER') ?? '',
+    'password': _probe('LANPLAYER_PASS') ?? '',
     'timeout_ms': 15000,
   };
   final repo = MediaRepository();
