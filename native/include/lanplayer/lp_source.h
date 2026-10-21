@@ -74,6 +74,26 @@ LP_EXPORT int32_t lp_source_probe(const char *url, const char *options_json, cha
 /* JSON array of schemes this build supports: ["smb","file","http"] */
 LP_EXPORT int32_t lp_source_schemes(char **out_json);
 
+/*
+ * 取一帧缩略图（列表里的封面）。
+ *
+ * url / options_json 与 lp_source_list 同义（账号密码可以写在 options_json，
+ * 也可以嵌在 URL 里）。max_width 是期望宽度：1..640，超过按 640 算，<=0 按 320。
+ *
+ * 成功时 *out_pixels 是 malloc 出来的一块 RGBA8888（每个像素 R,G,B,A 各一字节，
+ * 行间无 padding，尺寸 *out_width × *out_height），用 lp_pixels_free 释放。
+ * 失败返回负数，原因用 lp_source_last_error 取。
+ *
+ * 实现说明：这是同步调用，会真的解码一帧，SMB 上通常 100~400 ms。
+ * 调用方应该在后台 isolate/线程里调，不要放在 UI 线程上。
+ */
+LP_EXPORT int32_t lp_source_thumbnail(const char *url, const char *options_json,
+                                      int32_t max_width, void **out_pixels,
+                                      int32_t *out_width, int32_t *out_height);
+
+/* 释放 lp_source_thumbnail 返回的像素缓冲。 */
+LP_EXPORT void lp_pixels_free(void *pixels);
+
 /* Free a string returned by this library. */
 LP_EXPORT void lp_string_free(char *s);
 

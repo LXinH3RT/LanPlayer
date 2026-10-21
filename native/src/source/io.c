@@ -327,6 +327,11 @@ const LpTransport *lp_transport_find(const char *scheme)
 
 static _Thread_local char g_last_error[256];
 
+void lp_source_set_last_error(const char *msg)
+{
+    snprintf(g_last_error, sizeof(g_last_error), "%s", msg ? msg : "");
+}
+
 void lp_string_free(char *s)
 {
     free(s);

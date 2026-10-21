@@ -9,6 +9,7 @@ import '../player/playlist.dart';
 import '../util/format.dart';
 import 'feedback.dart';
 import 'player_screen.dart';
+import 'widgets/thumbnail_tile.dart';
 
 /// 媒体文件夹浏览屏幕，用于浏览 SMB 或本地文件夹中的内容。
 ///
@@ -207,14 +208,22 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
                 return ListTile(
                   enabled: playable,
-                  leading: Icon(
-                    e.isVideo
-                        ? Icons.movie_outlined
-                        : Icons.insert_drive_file_outlined,
-                    color: playable
-                        ? Theme.of(context).colorScheme.primary
-                        : Theme.of(context).disabledColor,
-                  ),
+                  // 视频显示真实封面（解一帧并缓存），音频只显示图标：
+                  // 音频文件取一帧封面图没有意义，还会白花一次网络往返。
+                  leading: e.isVideo
+                      ? ThumbnailTile(
+                          url: e.path,
+                          options: widget.location.options,
+                          fallback: Icons.movie_outlined,
+                        )
+                      : Icon(
+                          e.kind == 'audio'
+                              ? Icons.audiotrack_outlined
+                              : Icons.insert_drive_file_outlined,
+                          color: playable
+                              ? Theme.of(context).colorScheme.primary
+                              : Theme.of(context).disabledColor,
+                        ),
                   title: Text(e.name,
                       maxLines: 1, overflow: TextOverflow.ellipsis),
                   subtitle: Column(

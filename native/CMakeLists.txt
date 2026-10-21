@@ -57,6 +57,7 @@ set(LP_CORE_SOURCES
     src/core/video.c
     src/core/audio.c
     src/core/subtitle.c
+    src/core/thumb.c
     src/core/player.c
     src/source/url.c
     src/source/io.c

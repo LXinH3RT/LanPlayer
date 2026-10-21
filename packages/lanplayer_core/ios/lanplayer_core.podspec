@@ -83,6 +83,7 @@ LP_EXPORTED_SYMBOLS = %w[
   lp_log_get_level
   lp_log_set_callback
   lp_log_set_level
+  lp_pixels_free
   lp_player_add_subtitle
   lp_player_close
   lp_player_copy_pixel_buffer
@@ -116,6 +117,7 @@ LP_EXPORTED_SYMBOLS = %w[
   lp_source_options_parse
   lp_source_probe
   lp_source_schemes
+  lp_source_thumbnail
   lp_string_free
   lp_url_normalize
 ].freeze

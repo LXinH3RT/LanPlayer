@@ -169,10 +169,17 @@ REQUIRED = [
     "tool/pgs_probe.c",
     "app/lib/data/progress.dart",
     "app/lib/data/lan_scan.dart",
+    "app/lib/data/thumbs.dart",
+    "app/lib/ui/widgets/thumbnail_tile.dart",
     "app/tool/lan_scan_probe.dart",
     "app/tool/browse_smoke.dart",
     "app/test/lan_scan_test.dart",
     "app/test/server_edit_screen_test.dart",
+    "app/test/thumbnail_cache_test.dart",
+    "app/test/thumbnail_tile_test.dart",
+    "native/src/core/thumb.c",
+    "tool/thumb_probe.py",
+    "tool/smb_ls_probe.py",
     "docs/images/desktop-home.png",
     "docs/images/desktop-player.png",
     "docs/images/desktop-browse.png",
@@ -293,6 +300,63 @@ def check_lan_scan() -> None:
                         f"breaks the whole page: {eager[0].strip()}")
     notes.append("lan scan: probes TCP 445 with capped concurrency, "
                  "optional UI step, share name still user-supplied")
+
+
+def check_thumbnails() -> None:
+    """Guard the cover-art contract.
+
+    Three failure modes are cheap to reintroduce and expensive to notice,
+    because the UI just shows a placeholder icon and the log stays quiet:
+      * the cache file layout and the reader drift apart (a v1 file wrote only
+        the width, so every read threw and covers never appeared);
+      * the key stops being a plain hex name, producing unwritable filenames;
+      * the list renders covers for audio files too, paying a network round
+        trip for a frame nobody wants.
+    """
+    thumbs = ROOT / "app" / "lib" / "data" / "thumbs.dart"
+    tile = ROOT / "app" / "lib" / "ui" / "widgets" / "thumbnail_tile.dart"
+    browser = ROOT / "app" / "lib" / "ui" / "browser_screen.dart"
+    for path, what in ((thumbs, "cover cache"), (tile, "cover tile"),
+                       (browser, "browser list")):
+        if not path.exists():
+            problems.append(f"missing {path.relative_to(ROOT).as_posix()} ({what})")
+            return
+
+    code = "\n".join(l for l in thumbs.read_text(encoding="utf-8").splitlines()
+                     if not l.strip().startswith("//"))
+    # The header must carry both dimensions: 4 magic + 4 width + 4 height.
+    if "0x4C, 0x50, 0x54, 0x32" not in code:
+        problems.append("thumbs.dart magic must be LPT2 (LPT1 wrote no height "
+                        "and every read threw RangeError)")
+    if "12 + w * h * 4" not in code:
+        problems.append("thumbs.dart must validate the 12-byte header against "
+                        "the pixel payload length")
+    if "bytes.length < 12" not in code:
+        problems.append("decodeThumb must reject short bytes before "
+                        "ByteData.sublistView (otherwise RangeError escapes)")
+    if "toUnsigned(64)" in code or "toRadixString(16).padLeft(16" in code:
+        problems.append("keyFor must not rely on a signed 64-bit toRadixString "
+                        "(negative hashes produce a leading '-' in the filename)")
+    if "hi.toRadixString(16)" not in code:
+        problems.append("keyFor must split the hash into two 32-bit halves so "
+                        "the cache name is always plain hex")
+
+    tile_code = "\n".join(l for l in tile.read_text(encoding="utf-8").splitlines()
+                          if not l.strip().startswith("//"))
+    if "didUpdateWidget" not in tile_code:
+        problems.append("ThumbnailTile must refetch in didUpdateWidget, "
+                        "otherwise list recycling shows the previous cover")
+    if "dispose()" in tile_code and "_image?.dispose" in tile_code:
+        problems.append("ThumbnailTile must not dispose the ui.Image: the "
+                        "cache owns it and would hand out a dead handle")
+
+    browser_code = "\n".join(
+        l for l in browser.read_text(encoding="utf-8").splitlines()
+        if not l.strip().startswith("//"))
+    if "e.isVideo" not in browser_code:
+        problems.append("the browser list must only request covers for videos")
+    notes.append("thumbnails: LPT2 header round-trips, hex cache key, "
+                 "covers only for video rows")
 
 def run(cmd: list[str], env: dict[str, str] | None = None,
         cwd: Path | None = None) -> tuple[int, str]:
@@ -811,6 +875,7 @@ def main() -> int:
     check_windows_plugin()
     check_texture_colors()
     check_lan_scan()
+    check_thumbnails()
     check_player_layout()
     check_apple_wiring()
     check_hw_decode()

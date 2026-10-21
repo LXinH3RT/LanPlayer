@@ -6,10 +6,21 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
 const int abiVersion = 1;
+
+/// 一帧缩略图：[rgba] 是每像素 4 字节的 RGBA8888，行间无 padding。
+class ThumbnailResult {
+  const ThumbnailResult(
+      {required this.width, required this.height, required this.rgba});
+
+  final int width;
+  final int height;
+  final Uint8List rgba;
+}
 
 typedef _ResultInt32C = Int32 Function();
 typedef _ResultInt32D = int Function();
@@ -89,6 +100,24 @@ typedef _SourceListD = int Function(
 
 typedef _SourceErrC = Int32 Function(Pointer<Pointer<Utf8>> out);
 typedef _SourceErrD = int Function(Pointer<Pointer<Utf8>> out);
+
+typedef _ThumbC = Int32 Function(
+    Pointer<Utf8> url,
+    Pointer<Utf8> options,
+    Int32 maxWidth,
+    Pointer<Pointer<Void>> outPixels,
+    Pointer<Int32> outWidth,
+    Pointer<Int32> outHeight);
+typedef _ThumbD = int Function(
+    Pointer<Utf8> url,
+    Pointer<Utf8> options,
+    int maxWidth,
+    Pointer<Pointer<Void>> outPixels,
+    Pointer<Int32> outWidth,
+    Pointer<Int32> outHeight);
+
+typedef _FreeBufferC = Void Function(Pointer<Void> buf);
+typedef _FreeBufferD = void Function(Pointer<Void> buf);
 
 typedef _FreeC = Void Function(Pointer<Utf8> s);
 typedef _FreeD = void Function(Pointer<Utf8> s);
@@ -179,6 +208,10 @@ class NativeCore {
       _lib.lookupFunction<_SourceListC, _SourceListD>('lp_source_probe');
   late final _FreeD _freeString =
       _lib.lookupFunction<_FreeC, _FreeD>('lp_string_free');
+  late final _ThumbD _thumbnail =
+      _lib.lookupFunction<_ThumbC, _ThumbD>('lp_source_thumbnail');
+  late final _FreeBufferD _freeBuffer =
+      _lib.lookupFunction<_FreeBufferC, _FreeBufferD>('lp_pixels_free');
   late final _SourceErrD _lastError =
       _lib.lookupFunction<_SourceErrC, _SourceErrD>('lp_source_last_error');
 
@@ -358,6 +391,41 @@ class NativeCore {
       calloc.free(u);
       calloc.free(o);
       calloc.free(out);
+    }
+  }
+
+  /// 取一帧缩略图（RGBA8888）。失败返回 null，原因用 [lastSourceError] 取。
+  ///
+  /// 这是同步 FFI 调用，会真的解码一帧（SMB 上通常几百毫秒），
+  /// 调用方必须放到后台 isolate 或至少不要放在 build 里。
+  ThumbnailResult? thumbnail(
+      String url, Map<String, dynamic> options, int maxWidth) {
+    final u = url.toNativeUtf8();
+    final o = _jsonToNative(options);
+    final outPixels = calloc<Pointer<Void>>();
+    final outWidth = calloc<Int32>();
+    final outHeight = calloc<Int32>();
+    try {
+      final rc = _thumbnail(u, o, maxWidth, outPixels, outWidth, outHeight);
+      if (rc != 0 || outPixels.value == nullptr) {
+        return null;
+      }
+      final w = outWidth.value;
+      final h = outHeight.value;
+      if (w <= 0 || h <= 0) {
+        _freeBuffer(outPixels.value);
+        return null;
+      }
+      final bytes =
+          Uint8List.fromList(outPixels.value.cast<Uint8>().asTypedList(w * h * 4));
+      _freeBuffer(outPixels.value);
+      return ThumbnailResult(width: w, height: h, rgba: bytes);
+    } finally {
+      calloc.free(u);
+      calloc.free(o);
+      calloc.free(outPixels);
+      calloc.free(outWidth);
+      calloc.free(outHeight);
     }
   }
 

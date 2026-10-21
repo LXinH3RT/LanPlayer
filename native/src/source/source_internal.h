@@ -26,6 +26,10 @@ int lp_url_parse(const char *url, LpUrl *out);
 /* Builds "<scheme>://[user@]host/share/path/name" without credentials. */
 void lp_url_join(const LpUrl *u, const char *name, char *out, size_t outlen);
 
+/* 记录「调用线程上一次失败的原因」，供 lp_source_last_error() 取。
+ * 和 lp_source_list / lp_source_probe 共用同一份线程局部缓冲。 */
+void lp_source_set_last_error(const char *msg);
+
 typedef struct LpIo LpIo;
 
 typedef struct LpTransport {

@@ -206,6 +206,7 @@ for SLICE in $SLICES; do
     "$ROOT/native/src/core/video.c"
     "$ROOT/native/src/core/audio.c"
     "$ROOT/native/src/core/subtitle.c"
+    "$ROOT/native/src/core/thumb.c"
     "$ROOT/native/src/core/player.c"
     "$ROOT/native/src/source/url.c"
     "$ROOT/native/src/source/io.c"

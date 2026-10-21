@@ -64,7 +64,10 @@
   并发探测本机所在 /24 的 **445 端口**，命中后反查主机名，结果点一下填进「IP 地址」。
   **没有**做 mDNS `_smb._tcp`：实测家用 NAS 与 Windows 共享都不广播这条记录（`docs/verification.md` §3.21）。
   共享名仍由用户填写，不做列表枚举
-* 缩略图/海报（解第一帧，缓存到本地）
+* ~~缩略图/海报~~（已完成）：`native/src/core/thumb.c` 只解一帧、缩放到 128 宽，RGBA 交给
+  `app/lib/data/thumbs.dart` 落盘缓存（`LPT2` 头：魔数 + 宽 + 高，坏文件直接丢弃重取）；
+  列表用 `ThumbnailTile` 显示，**只对视频行**请求封面，取不到就退回图标、不报错。
+  实测 SMB 上取一张封面约 0.7 s（`docs/verification.md` §3.23）
 
 **v0.4 — 画质与音频**
 

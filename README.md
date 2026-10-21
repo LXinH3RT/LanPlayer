@@ -26,6 +26,7 @@
 |-|-|-|
 |1 连接与浏览|服务器增删改、保存 IP/端口/账号密码|`app/lib/data/stores.dart`、`ui/server_edit_screen.dart`|
 ||连接后以文件列表浏览共享目录|`native/src/source/smb.c`、`ui/browser_screen.dart`|
+||列表每行带封面缩略图（只解第一帧、本地缓存、只对视频行请求）|`native/src/core/thumb.c`（`lp_source_thumbnail`）、`app/lib/data/thumbs.dart`、`ui/widgets/thumbnail_tile.dart`|
 |2 播放内核|libavformat 打开网络流、解析音视频字幕轨道|`native/src/core/demux.c`|
 ||硬解：Android MediaCodec / Apple VideoToolbox / Windows D3D11VA|`platform/android/media_codec_decoder.c`、`platform/apple/videotoolbox_decoder.c`、`platform/win32/d3d11va_decoder.c`|
 ||主时钟音画同步|`core/audio_ring.c`（时钟映射）、`core/video.c`（排期与丢帧）|
@@ -76,9 +77,9 @@
 | `packages/lanplayer_core/` | 8 | iOS / macOS 的 FFI 插件：两个 podspec 把 `liblanplayer.a` + FFmpeg + libsmb2 链进 Runner |
 | `packages/lanplayer_core/ios/` | 3 | iOS podspec + `Classes/` 里一个编译期锚点（验证头文件搜索路径） |
 | `packages/lanplayer_core/macos/` | 3 | macOS podspec + 同款锚点 |
-| `native/` | 47 | C11 播放内核，三个平台共用一套 |
+| `native/` | 48 | C11 播放内核，三个平台共用一套 |
 | `native/include/lanplayer/` | 4 | 公共 ABI 头（`lp_types/lp_player/lp_source/lp_log`），Dart 只认这四个文件 |
-| `native/src/core/` | 7 | 内核心脏：`demux.c` 解封装、`video.c`/`audio.c` 解码与同步、`audio_ring.c` 主时钟、`queue.c` 包队列、`subtitle.c` 字幕（含 ASS 富文本与 PGS 位图）、`player.c` 状态机 |
+| `native/src/core/` | 8 | 内核心脏：`demux.c` 解封装、`video.c`/`audio.c` 解码与同步、`audio_ring.c` 主时钟、`queue.c` 包队列、`subtitle.c` 字幕（含 ASS 富文本与 PGS 位图）、`thumb.c` 只解一帧生成列表封面、`player.c` 状态机 |
 | `native/src/source/` | 5 | `LpSource` 抽象：`smb.c`（libsmb2）、`file.c`、`url.c` 解析、`io.c` 自定义 AVIO |
 | `native/src/util/` | 2 | `lp_str.c` 字符串/JSON 拼装、`lp_log.c` 分级日志 |
 | `native/src/platform/` | 12 | 平台适配层，同一份内核换平台只换这个目录 |
@@ -421,6 +422,7 @@ iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字�
 |SMB 目录浏览|✅ 真实共享 192.168.1.10「共享」→ 9 项；「电影」→ 31 项（13 目录 / 9 视频）；可逐层进入|
 |SMB 凭据校验|✅ 只给主机 + 账号密码时连 `IPC$` 验证登录：`{"server":"192.168.1.10","authenticated":true}`；密码错误报 `login failed … wrong user name or password`；共享名由用户自己填，不做枚举|
 |局域网扫描|✅ 并发探测本机所在 `/24` 的 445 端口：`tool/lan_scan_probe.dart` 1.45 秒扫完 254 个地址，命中 NAS `192.168.1.10` 与本机；真实 Release 程序里点「扫描局域网」同样得到 2 台（`LanPlayer lan host: 192.168.1.10 name=192.168.1.10` / `…5.8 name=me0512`）|
+|列表封面缩略图|✅ 只解第一帧、缩到 128 宽、`LPT2` 头落盘缓存（魔数+宽+高，坏文件丢弃重取）：`tool/thumb_probe.py` 对 SMB 上 1.8 GB 的 `movie-01.mp4` 取到 `320x136`、非黑像素 99.7%；列表只对视频行请求，取不到就退回图标且不抛异常（`flutter test` 两条用例锁住）|
 |SMB 直接播放|✅ 1920×820 h264 经 SMB 流式解码，waveOut 48 kHz 立体声，字幕侧挂自动加载|
 |服务器列表持久化|✅ 重启后自动读回 `servers.json`（`LanPlayer loaded: servers=1`），不再丢服务器|
 |Flutter 桌面端构建|✅ CMake + MSBuild（VS 18）产出 `lanplayer.exe` 55 KiB + 插件 106 KiB，INSTALL 后可直接运行；官方 `flutter build windows --release` 也已跑通（24 秒出包）|
