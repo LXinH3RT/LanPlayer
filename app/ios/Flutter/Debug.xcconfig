@@ -25,3 +25,15 @@ LIBRARY_SEARCH_PATHS = $(inherited) \
     $(LP_NATIVE)/third_party/lanplayer/apple/lib \
     $(LP_NATIVE)/third_party/ffmpeg/apple/lib \
     $(LP_NATIVE)/third_party/libsmb2/apple/lib
+
+// Flutter 在 iOS 上默认给模拟器编 "arm64 x86_64" 双架构
+// （ARCHS 继承自 ARCHS_STANDARD），而 scripts/build_apple_deps.sh 默认
+// ARCHS=arm64，产出的 liblanplayer.a / FFmpeg / libsmb2 只有 arm64。
+// 结果是链接 x86_64 那半边时 ld 报一屏
+//   ld: warning: ignoring file '.../liblanplayer.a(...)': found architecture
+//       'arm64', required architecture 'x86_64'
+// 然后所有 lp_* 变成 Undefined symbols（macOS 上同名问题已用同样的办法解决）。
+//
+// 这里把架构收紧成 arm64，与静态库对齐。要出 Intel 模拟器版本的话，
+// 用 ARCHS="x86_64" 重编依赖，再把这里改成 ARCHS = arm64 x86_64。
+ARCHS = arm64

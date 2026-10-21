@@ -21,3 +21,8 @@ LIBRARY_SEARCH_PATHS = $(inherited) \
     $(LP_NATIVE)/third_party/lanplayer/apple/lib \
     $(LP_NATIVE)/third_party/ffmpeg/apple/lib \
     $(LP_NATIVE)/third_party/libsmb2/apple/lib
+
+// 同 Debug.xcconfig：Flutter 默认给模拟器编 "arm64 x86_64"，而
+// scripts/build_apple_deps.sh 默认只产 arm64 静态库，x86_64 半边会被 ld
+// 整个忽略、所有 lp_* 变成 Undefined symbols。这里收紧成 arm64。
+ARCHS = arm64

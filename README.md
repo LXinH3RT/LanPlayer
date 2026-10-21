@@ -419,9 +419,9 @@ Xcode 26 的 SDK 受支持下限），macOS 的
 
 |项|原因|
 |-|-|
-|Android / iOS / macOS 构建|本机没有 NDK / Xcode / CocoaPods，只能在 Windows 上做静态检查|
-|Apple 端真机验证|`packages/lanplayer_core` 的两个 podspec、两个 `Podfile`、macOS 纹理通道都已写好，`tool/check_all.py` 的 `apple wiring` 一项会在静态层面守护它们（podspec 必须链 `-llanplayer`、Podfile 的部署目标必须等于 `build_apple_deps.sh` 的 `MIN_IOS`/`MIN_MACOS`）。一台 Apple Silicon Mac 上已推进到：Xcode 命令行工具 / Homebrew / CocoaPods 1.17 / cmake 4.4 就绪，FFmpeg 6.1.1 编过，libsmb2 段因 macOS 自带的 GSSAPI 头缺 MIT 扩展失败（18 errors on `krb5-wrapper.c`）——脚本已修，但**还没在 Mac 上跑到 `flutter build macos` 成功**|
-|真机硬解（MediaCodec / VideoToolbox）|需要设备；桌面只有 stub 输出。Windows D3D11VA 已在本机真 GPU 上跑通并接进 `tool/check_all.py`|
+|Android / iOS / macOS 构建|本机没有 NDK / Xcode / CocoaPods，只能在 Windows 上做静态检查；Android 与 iOS 的编译产物已在 CI 的 `android` / `apple` 两个 job 上验过|
+|Apple 端真机验证|**macOS 已实测通过**：Mac（macOS 27.0.1 / Xcode 27.1）上 `flutter build macos --release` → `✓ Built lanplayer.app (61.7MB)`，运行后 `libsmb2` 浏览 NAS、`VideoToolbox` 硬解 640x360 h264、`AudioQueue` 48 kHz 立体声出声、外挂 SRT 载入 3 条 cue，日志零 error（详见 `docs/verification.md` 3.18）。iPadOS 侧工程接线（podspec / Podfile / `AppDelegate.swift` 纹理通道 / 部署目标 15.0）已就绪，**还差一台真机做最终验证**|
+|真机硬解（MediaCodec / VideoToolbox）|`VideoToolbox` 已在 macOS 真机跑通（日志 `hardware decode videotoolbox`）；`MediaCodec` 需要在 Android 设备上验（CI 只保证编译）|
 |Flutter `analyze`|Dart 侧用 `flutter test` + kernel 编译两重检查（都已接进 `tool/check_all.py`）；`flutter analyze` 需要完整依赖解析，未在本机跑|
 |视频区域的截图验证|`PrintWindow` 读不到 Flutter 合成结果（客户区全黑）；`CopyFromScreen` 按窗口矩形抓也会因为缩放显示器上合成位置与 `GetWindowRect` 不一致而整个错过客户区。**改用整屏抓取**（`capture_screen.ps1 -WholeScreen`）后视频区域可见并已用于颜色顺序验证；字幕渲染仍以 `flutter test` 金色文件为准|
 
