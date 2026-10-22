@@ -45,8 +45,17 @@ int main(int argc, char **argv)
 {
     if (argc < 2) {
         fprintf(stderr, "usage: %s <media>...\n", argv[0]);
+        fprintf(stderr, "       LANPLAYER_USER / LANPLAYER_PASS 提供 SMB 凭据\n");
         return 2;
     }
+
+    /* SMB 需要凭据：从环境变量取，避免把账号写进命令行（也别写死进源码）。 */
+    char options[512];
+    const char *user = getenv("LANPLAYER_USER");
+    const char *pass = getenv("LANPLAYER_PASS");
+    snprintf(options, sizeof(options),
+             "{\"user\":\"%s\",\"password\":\"%s\",\"timeout_ms\":15000}",
+             user ? user : "", pass ? pass : "");
 
     int failures = 0;
     for (int i = 1; i < argc; i++) {
@@ -54,7 +63,7 @@ int main(int argc, char **argv)
         void *pixels = NULL;
         int32_t w = 0, h = 0;
         int64_t t0 = now_ms();
-        int32_t rc = lp_source_thumbnail(path, NULL, 128, &pixels, &w, &h);
+        int32_t rc = lp_source_thumbnail(path, options, 128, &pixels, &w, &h);
         int64_t dt = now_ms() - t0;
 
         if (dt > LP_THUMB_TEST_BUDGET_MS) {
