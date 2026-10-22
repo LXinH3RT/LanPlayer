@@ -75,6 +75,11 @@
   两个都做了静默安装/卸载与「装完真能播」的实测（`docs/verification.md` §3.24）。
   尚未做：代码签名证书（Windows Authenticode / Apple Developer ID + 公证），
   未签名时 SmartScreen 与 Gatekeeper 都会提示
+* ~~上传到 GitHub Release~~（已完成）：`v0.1.0` 两个附件已发在
+  <https://github.com/LXinH3RT/LanPlayer/releases/tag/v0.1.0>；
+  从远端用 API 下载回来与本机文件比过 SHA256，字节一致。
+  仓库是 private，所以公开直链对未登录访问者 404（**不是**上传失败，
+  见 `docs/build.md` 7.3）
 
 **v0.4 — 画质与音频**
 

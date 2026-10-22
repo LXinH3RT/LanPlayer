@@ -524,6 +524,7 @@ iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字�
 |Dart 测试|✅ `flutter test` 44 个用例（字幕 span 树 + 光栅化像素计数 + 设置项默认值 + 局域网扫描 + 封面缓存/控件 + 服务器编辑页）全部通过|
 |Windows 安装包|✅ NSIS 3.10 出 `dist\LanPlayer-0.1.0-windows-x64-setup.exe`（55.4 MB）；静默安装落地 17 个文件 200.2 MB，装出来的 `lanplayer.exe` 起窗正常（`hwnd=1049060 title=[lanplayer]`），静默卸载只剩 `state\`（用户数据按设计保留）|
 |macOS dmg|✅ `dist/LanPlayer-0.1.0-macos-arm64.dmg`（25.8 MB，59 MB app 压到 25.8 MB）；`hdiutil verify` 校验有效，`codesign --verify --deep --strict` 通过；拖进 `/Applications` 后启动即播（VideoToolbox 硬解 + 外挂字幕）|
+|GitHub Release|✅ `v0.1.0` 两个附件已发布（<https://github.com/LXinH3RT/LanPlayer/releases/tag/v0.1.0>）；用 API 下载回来算 SHA256 与本机文件完全一致（`8FBEC026…9D43` / `5178A09B…EAB1`）。仓库是 private，公开直链对未登录访问者为 404，属正常|
 
 仍需在别的机器上完成：
 

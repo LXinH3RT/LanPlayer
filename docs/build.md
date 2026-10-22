@@ -838,7 +838,7 @@ curl -sS -X POST \
 > 要么让获邀协作者登录后从 Release 页面下载，要么把仓库改成 public。
 > 把仓库改 public 还会顺带解决 GitHub Actions 免费额度用完的问题（见 6.6）。
 
-## 7.5 构建后自检
+## 7.4 构建后自检
 
 ```bash
 python tool/check_all.py            # 一把梭：C 语法/符号、Dart 解析、原生冒烟、Dart 测试
