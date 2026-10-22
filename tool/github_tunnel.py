@@ -6,7 +6,7 @@ addresses answer normally.  TLS stays end to end, so the certificate still
 matches github.com; only the TCP destination is rewritten.
 
 Usage:
-    python tool/github_tunnel.py [--port 8899] [--ip 140.82.112.3]
+    python tool/github_tunnel.py [--port 8899] [--ip 140.82.112.3 ...]
 then point git at it:
     git config --local http.proxy http://127.0.0.1:8899
 """
@@ -21,9 +21,34 @@ import threading
 
 PINNED = {"github.com", "www.github.com"}
 
+# github.com is served from several anycast addresses. On this network the one
+# DNS hands back is frequently black-holed while others answer, so try them in
+# order and keep whichever connects.
+DEFAULT_IPS = (
+    "140.82.112.3",
+    "140.82.113.3",
+    "20.27.177.113",
+    "4.237.22.38",
+    "20.205.243.166",
+)
+
 
 class Tunnel(socketserver.BaseRequestHandler):
-    upstream_ip = "140.82.112.3"
+    upstream_ips = DEFAULT_IPS
+
+    def _connect_pinned(self, host: str, port: int):
+        """Return (socket, ip) for the first candidate that accepts a connection."""
+        last = None
+        for ip in self.upstream_ips:
+            try:
+                return socket.create_connection((ip, port), timeout=8), ip
+            except OSError as exc:
+                last = exc
+                sys.stderr.write(f"tunnel: {host} via {ip} failed: {exc}\n")
+                sys.stderr.flush()
+        if last is not None:
+            raise last
+        raise OSError("no candidate address")
 
     def handle(self) -> None:
         client = self.request
@@ -46,18 +71,15 @@ class Tunnel(socketserver.BaseRequestHandler):
             return
         host, _, port_text = target.rpartition(":")
         port = int(port_text or "443")
-        dest = self.upstream_ip if host.lower() in PINNED else None
-        if dest is None:
-            try:
-                dest = socket.gethostbyname(host)
-            except OSError:
-                client.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
-                client.close()
-                return
+        pinned = host.lower() in PINNED
         try:
-            upstream = socket.create_connection((dest, port), timeout=20)
+            if pinned:
+                upstream, dest = self._connect_pinned(host, port)
+            else:
+                dest = socket.gethostbyname(host)
+                upstream = socket.create_connection((dest, port), timeout=20)
         except OSError as exc:
-            sys.stderr.write(f"tunnel: {host}:{port} via {dest} failed: {exc}\n")
+            sys.stderr.write(f"tunnel: {host}:{port} failed: {exc}\n")
             client.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
             client.close()
             return
@@ -111,11 +133,15 @@ class Server(socketserver.ThreadingTCPServer):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8899)
-    ap.add_argument("--ip", default="140.82.112.3")
+    ap.add_argument("--ip", action="append", default=None,
+                    help="candidate address for pinned hosts (repeatable; defaults to a built-in list)")
     args = ap.parse_args()
-    Tunnel.upstream_ip = args.ip
+    if args.ip:
+        Tunnel.upstream_ips = tuple(args.ip)
     with Server(("127.0.0.1", args.port), Tunnel) as srv:
-        sys.stderr.write(f"github tunnel on 127.0.0.1:{args.port} pinning github.com -> {args.ip}\n")
+        sys.stderr.write(
+            f"github tunnel on 127.0.0.1:{args.port} pinning github.com -> {', '.join(Tunnel.upstream_ips)}\n"
+        )
         sys.stderr.flush()
         srv.serve_forever()
     return 0
