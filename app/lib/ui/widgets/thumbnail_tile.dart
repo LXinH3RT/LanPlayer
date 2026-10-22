@@ -38,6 +38,10 @@ class _ThumbnailTileState extends State<ThumbnailTile> {
   ui.Image? _image;
   bool _loading = true;
 
+  /// 请求序号：`didUpdateWidget` 换文件后，上一个请求的迟到结果必须丢弃，
+  /// 否则会把 A 的封面画到 B 那一行上。
+  int _seq = 0;
+
   @override
   void initState() {
     super.initState();
@@ -57,8 +61,11 @@ class _ThumbnailTileState extends State<ThumbnailTile> {
   }
 
   Future<void> _fetch() async {
+    final seq = ++_seq;
     final image = await ThumbnailCache.instance.load(widget.url, widget.options);
-    if (!mounted || _image == image) return;
+    // 这一行已经被复用去显示别的文件了，本次结果作废。
+    if (!mounted || seq != _seq) return;
+    if (_image == image && !_loading) return;
     setState(() {
       _image = image;
       _loading = false;

@@ -115,6 +115,8 @@ void lp_io_close(LpIo *io)
 
 static int io_refill(LpIo *io, int64_t pos)
 {
+    /* 注意边界用 <= ：pos 正好等于 cache_start + cache_len 时缓存里
+     * 一个字节都不剩，必须重新填充，否则调用方会拿到 avail=0 空转。 */
     if (io->cache_valid && pos >= io->cache_start && pos < io->cache_start + io->cache_len) {
         return LP_OK;
     }
@@ -134,6 +136,9 @@ static int io_refill(LpIo *io, int64_t pos)
         return LP_ERR_END_OF_STREAM;
     }
     int got = io->tp->read(io, io->cache, want);
+    if (io->dbg_reads <= 5 || io->dbg_reads % 1000 == 0) {
+        LP_DEBUG("io", "refill pos=%lld want=%d got=%d", (long long)pos, want, got);
+    }
     if (got < 0) {
         io->cache_valid = 0;
         return LP_ERR_IO;
@@ -157,7 +162,13 @@ int lp_io_read(LpIo *io, uint8_t *buf, int size)
         return LP_ERR_INTERRUPTED;
     }
     int done = 0;
+    long spins = 0;
     while (done < size) {
+        if (++spins > 100000) {
+            LP_ERROR("io", "read spin guard: pos=%lld size=%d done=%d cache[%lld,%d]",
+                     (long long)io->pos, size, done, (long long)io->cache_start, io->cache_len);
+            break;
+        }
         int64_t pos = io->pos + done;
         int r = io_refill(io, pos);
         if (r == LP_ERR_END_OF_STREAM) {
@@ -171,6 +182,30 @@ int lp_io_read(LpIo *io, uint8_t *buf, int size)
         int chunk = size - done;
         if (chunk > avail) {
             chunk = avail;
+        }
+        /* avail 可能为 0：pos 正好落在缓存末尾（cache_start + cache_len）。
+         * 这时 memcpy 复制 0 字节，done 不前进，下面又回到同一个 pos —— 
+         * 一个纯空转的死循环。FLV 的 demuxer 恰好会跨过缓存边界连续读，
+         * 于是「打开含 flv 的文件夹」就卡死在这里（mp4 因为读了正好一段
+         * 就够解析，碰不到这个边界，所以之前一直是绿的）。
+         * 重新 refill 一次把 pos 拉进新缓存；若仍然没有数据就当作 EOF。 */
+        if (chunk <= 0) {
+            io->cache_valid = 0;
+            if (io_refill(io, pos) != LP_OK) {
+                break;
+            }
+            off = (int)(pos - io->cache_start);
+            avail = io->cache_len - off;
+            if (avail <= 0) {
+                break;
+            }
+            chunk = size - done;
+            if (chunk > avail) {
+                chunk = avail;
+            }
+            if (chunk <= 0) {
+                break;
+            }
         }
         memcpy(buf + done, io->cache + off, (size_t)chunk);
         done += chunk;
@@ -228,6 +263,11 @@ static int avio_read_cb(void *opaque, uint8_t *buf, int size)
 {
     LpIo *io = opaque;
     int r = lp_io_read(io, buf, size);
+    io->dbg_reads++;
+    if (io->dbg_reads <= 3 || io->dbg_reads % 500 == 0) {
+        LP_DEBUG("io", "read #%ld pos=%lld size=%d -> %d", (long)io->dbg_reads,
+                 (long long)io->pos, size, r);
+    }
     if (r == LP_ERR_INTERRUPTED) {
         return AVERROR_EXIT;
     }
@@ -236,6 +276,17 @@ static int avio_read_cb(void *opaque, uint8_t *buf, int size)
     }
     if (r < 0) {
         return AVERROR(EIO);
+    }
+    /* 读到 0 字节也是 EOF。
+     *
+     * lp_io_read 在文件末尾会返回 done=0（既不是错误也不是 END_OF_STREAM，
+     * 因为它用 break 跳出循环后无条件返回 done）。以前这里直接把 0 交给
+     * FFmpeg，而 AVIO 的约定是「返回 0 表示这次没拿到数据」——demuxer 于是
+     * 反复重试，形成永远退不出来的循环：日志里是 read #500/#1000/…#6500
+     * 全是 size=64543 -> 0。FLV 的 demuxer 读满整个文件后还要继续读，正好
+     * 撞上这个边界；mp4 读够 moov 就停了，所以一直没暴露。 */
+    if (r == 0) {
+        return AVERROR_EOF;
     }
     return r;
 }
@@ -248,13 +299,17 @@ static int64_t avio_seek_cb(void *opaque, int64_t offset, int whence)
         return s < 0 ? AVERROR(ENOSYS) : s;
     }
     whence &= ~AVSEEK_FORCE;
+    io->dbg_seeks++;
+    if (io->dbg_seeks % 100 == 1) {
+        LP_DEBUG("io", "seek #%ld off=%lld whence=%d", (long)io->dbg_seeks,
+                 (long long)offset, whence);
+    }
     int64_t r = lp_io_seek(io, offset, whence);
     if (r < 0) {
         return AVERROR(EIO);
     }
     return r;
 }
-
 int lp_io_interrupt(void *user)
 {
     LpIo *io = user;
