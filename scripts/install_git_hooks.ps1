@@ -47,15 +47,40 @@ fi
 # "SSL certificate problem: unable to get local issuer certificate". The
 # machine-wide Git for Windows install has both, so retry with it.
 export GIT_TERMINAL_PROMPT=0
-if git push origin HEAD >/dev/null 2>&1; then
-    echo "[auto-push] pushed $(git rev-parse --short HEAD) to $remote"
-elif [ -x "/c/Program Files/Git/cmd/git.exe" ] && \
-     "/c/Program Files/Git/cmd/git.exe" push origin HEAD >/dev/null 2>&1; then
-    echo "[auto-push] pushed $(git rev-parse --short HEAD) to $remote (Git for Windows)"
-else
-    echo "[auto-push] push failed; run scripts/sync_github.ps1 manually"
+
+push_with() {
+    if [ "$1" = "tunnel" ]; then
+        "$2" -c http.proxy=http://127.0.0.1:8899 \
+             -c https.proxy=http://127.0.0.1:8899 push origin HEAD >/dev/null 2>&1
+    else
+        "$2" push origin HEAD >/dev/null 2>&1
+    fi
+}
+
+git_bin=git
+if [ -x "/c/Program Files/Git/cmd/git.exe" ]; then
+    git_bin="/c/Program Files/Git/cmd/git.exe"
 fi
 
+if push_with direct "$git_bin"; then
+    echo "[auto-push] pushed $(git rev-parse --short HEAD) to $remote"
+    exit 0
+fi
+
+# Second chance through the local CONNECT tunnel. On this network DNS often
+# returns a github.com address that is unreachable; tool/github_tunnel.py
+# rewrites only the TCP destination so TLS still matches the certificate.
+root=$(git rev-parse --show-toplevel 2>/dev/null)
+ensure="$root/scripts/ensure_github_tunnel.ps1"
+if [ -f "$ensure" ]; then
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$ensure" 2>/dev/null || echo "$ensure")" >/dev/null 2>&1
+    if push_with tunnel "$git_bin"; then
+        echo "[auto-push] pushed $(git rev-parse --short HEAD) to $remote (tunnel)"
+        exit 0
+    fi
+fi
+
+echo "[auto-push] push failed; run scripts/sync_github.ps1 manually"
 exit 0
 '@
 
