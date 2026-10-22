@@ -91,7 +91,7 @@
 | `native/src/app/` | 1 | `lp_preview.c`：不依赖 Flutter 的原生窗口播放器（调试用） |
 | `native/platform/` | 8 | 第三方库在 Windows 上的编译补丁 |
 | `native/platform/win32/smb2/` | 8 | libsmb2 在 mingw 下缺的头（`poll.h`、`sys/socket.h`、`netdb.h` 等） |
-| `native/tests/` | 5 | 五个测试可执行文件：冒烟、纹理/颜色、D3D11VA 端到端、硬解能力探针、封面回归（`lp_thumb_test.exe`） |
+| `native/tests/` | 6 | 六个测试可执行文件：冒烟、纹理/颜色、D3D11VA 端到端、硬解能力探针、封面回归（`lp_thumb_test.exe`）、目录元数据过滤（`lp_junk_test.exe`） |
 | `scripts/` | 24 | 所有构建与验证脚本（含两个平台的安装包脚本，见下方脚本表） |
 | `tool/` | 13 | 静态检查与依赖下载（见下方工具表） |
 | `docs/` | 16 | 6 篇文档 + 10 张验证截图 |
@@ -151,7 +151,7 @@ LanPlayer/
 
 | 脚本 | 作用 |
 |-|-|
-| `build_windows.ps1` | 编 C 内核：`lanplayer.dll`、`lanplayer_stub.dll`、`lp_smoke_test.exe`、`lp_thumb_test.exe`、`lanplayer_preview.exe`、`lp_win32_texture_test.exe`、`lp_hw_decode_test.exe`；先编 48 个 libsmb2 源文件；`-DeployTo <dir>` 把 DLL 复制到目标目录 |
+| `build_windows.ps1` | 编 C 内核：`lanplayer.dll`、`lanplayer_stub.dll`、`lp_smoke_test.exe`、`lp_thumb_test.exe`、`lp_junk_test.exe`、`lanplayer_preview.exe`、`lp_win32_texture_test.exe`、`lp_hw_decode_test.exe`；先编 48 个 libsmb2 源文件；`-DeployTo <dir>` 把 DLL 复制到目标目录 |
 | `build_windows_desktop.ps1` | 一条命令出桌面端：建 junction → 解 Dart 依赖 → VS 自带 cmake/MSBuild 构建 → INSTALL → 复制 DLL |
 | `build_windows_app.ps1` | 不用 `flutter` CLI 直接编桌面端的备用通道（flutter CLI 需要管道 stdio） |
 | `msvc_chain.bat` | 纯 MSVC 直编（无 CMake、无 flutter 工具）的最小链路 |
@@ -499,6 +499,14 @@ iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字�
   编 `krb5-wrapper.c` 并失败 18 个 error；脚本已用
   `-DCMAKE_DISABLE_FIND_PACKAGE_GSSAPI/OpenSSL=TRUE` 关掉（我们只用 NTLM）。
 - 仓库里的 `scripts/*.sh` 是 `100644`，克隆后先 `chmod +x scripts/*.sh`。
+- **macOS 会往网络共享里写 `.DS_Store`，那是 Finder 干的，不是本 app。** 内核访问 SMB 只有
+  `O_RDONLY`。要在 Mac 上关掉这个行为（用户级，不需要 root，**`killall Finder` 不能省**）：
+  ```bash
+  defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool true
+  killall Finder
+  ```
+  详见 `docs/build.md` 4.6.5。播放器另外会把 `.DS_Store`、`._*`、`desktop.ini`、
+  `Thumbs.db` 这类元数据从列表里过滤掉，不显示也不参与播放。
 - **Flutter 要单独装**：装 Xcode、Homebrew、CocoaPods 都不会顺带装 Flutter，没装时
   `cd app && flutter build macos` 只会得到 `zsh: command not found: flutter`。
   用 `brew install --cask flutter`（或从
