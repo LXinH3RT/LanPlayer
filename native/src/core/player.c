@@ -590,6 +590,10 @@ int32_t lp_player_set_volume(LpPlayer *p, float volume)
     if (p->audio.ring.buf) {
         lp_ring_set_gain(&p->audio.ring, p->muted ? 0.0 : (double)volume);
     }
+    /* 打一条 info 级日志：音量是用户可感知但看不见的状态，出问题时
+     * 「到底有没有调下去」只能靠日志判断（UI 上只显示百分比）。 */
+    LP_INFO("audio", "volume %.2f (%d%%)%s", (double)volume,
+            (int)(volume * 100.0f + 0.5f), p->muted ? " [muted]" : "");
     return LP_OK;
 }
 

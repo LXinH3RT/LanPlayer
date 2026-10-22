@@ -39,6 +39,7 @@
 ||记忆播放进度：重开续播，列表显示进度条与百分比；设置里可关（默认开）|`app/lib/data/progress.dart`、`data/models.dart`（`rememberProgress`）、`ui/player_screen.dart`、`ui/browser_screen.dart`|
 ||手势（双击 ±10s / 上下滑音量亮度 / 长按 2x）与桌面键盘快捷键、真全屏|`ui/player_screen.dart`、`ui/video_texture.dart`（`setFullscreen`）、`packages/lanplayer_video`（改窗口样式）|
 ||播放页控件：返回键左上角，画面/速度/字幕/音轨/音量在底部操作行，鼠标移动即显、静止 2s 收起|`ui/player_screen.dart`（`_topBar` / `_bottomBar` / `_autoHideDelay`）|
+||音量可调（不是只能静音）：滑杆 0–200% + 静音开关 + 六个档位|`ui/widgets/volume_sheet.dart`（`VolumeSheet`）、`core/player.c`（`lp_player_set_volume` → `lp_ring_set_gain`）|
 |4 解码设置|硬解开关、软件解码兜底|`settings_screen.dart`、`core/video.c`（自动回退）|
 ||渲染模式（缩放策略/像素格式转换）|`platform/android/egl_renderer.c`、`scale_mode`|
 ||去隔行（yadif）|`core/video.c`（libavfilter 图）|
@@ -59,7 +60,7 @@
 | `app/lib/data/` | 7 | 数据层：`models.dart`（服务器/媒体/字幕模型）、`stores.dart` + `progress.dart`（JSON 持久化）、`repository.dart`（媒体源仓库）、`location.dart`（平台路径）、`lan_scan.dart`（扫 445 找主机）、`thumbs.dart`（封面缓存） |
 | `app/lib/player/` | 1 | `playlist.dart`：播放列表与剧集识别（文件名里的集数解析） |
 | `app/lib/ui/` | 10 | 五个界面（首页/浏览/播放/服务器编辑/设置）+ 主题、反馈文案、`video_texture.dart` 纹理桥、`lan_host_picker.dart` |
-| `app/lib/ui/widgets/` | 2 | `subtitle_overlay.dart`：字幕气泡，纯 Flutter `Text.rich` 渲染，带描边层；`thumbnail_tile.dart`：列表里的封面格 |
+| `app/lib/ui/widgets/` | 3 | `subtitle_overlay.dart`：字幕气泡，纯 Flutter `Text.rich` 渲染，带描边层；`thumbnail_tile.dart`：列表里的封面格；`volume_sheet.dart`：音量面板（滑杆 0–200% + 静音 + 档位） |
 | `app/lib/util/` | 1 | `format.dart`：时长、体积、码率等格式化 |
 | `app/test/` | 6 | `flutter test` 用例：字幕 span 树断言 + 真实光栅化的像素计数、设置项默认值、局域网扫描、服务器编辑页、封面缓存与封面格（另有 `goldens/` 里的基准图） |
 | `app/tool/` | 2 | `browse_smoke.dart`：不开 UI 直接跑一遍 SMB 浏览；`lan_scan_probe.dart`：命令行扫网段 |
@@ -252,6 +253,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_deskto
 
 播放页的控件位置：返回键在**左上角**，文件名在它右边；画面设置（缩放方式/解码统计/媒体信息）
 和「速度」「字幕」「音轨」「音量」一起放在**底部操作行**，右上角不再有孤立的按钮。
+
+**音量**点开是一个面板，不是一个只能静音的开关：滑杆 **0–200%**（每档 5%，1.0 以上是增强）、
+静音开关、以及 25% / 50% / 75% / 100% / 150% / 200% 六个常用档位。静音状态下拖滑杆会
+自动取消静音，调过的音量写进 `settings.json`，下次开片沿用。
+（内核 `lp_player_set_volume` 的增益范围就是 0–2，`lp_ring_set_gain` 直接作用在音频环形缓冲上。）
+面板实现在 `app/lib/ui/widgets/volume_sheet.dart`，有 8 个 widget 测试锁住「拖滑杆能改变音量」。
 
 实测画面（`docs/images/`）：
 
