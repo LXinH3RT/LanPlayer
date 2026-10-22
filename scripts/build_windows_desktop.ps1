@@ -39,7 +39,12 @@ param(
     # machines where the profile directories are not writable (this dev box);
     # on a CI runner the real ones work and PUB_CACHE must keep pointing at the
     # cache the action already populated.
-    [switch]$NoEnvRedirect
+    [switch]$NoEnvRedirect,
+    # Extra --dart-define values, e.g. -DartDefines "LANPLAYER_UI=add-server".
+    # They have to reach tool_backend.bat through generated_config.cmake: we
+    # drive CMake ourselves, so `flutter build windows --dart-define=...` is
+    # never in the loop.  See the DART_DEFINES block below for the encoding.
+    [string[]]$DartDefines = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -155,6 +160,21 @@ if (-not (Test-Path (Join-Path $eph 'flutter_windows.dll'))) {
 # the same set of variables flutter_tools writes (lib/src/cmake.dart,
 # writeGeneratedCmakeConfig).  Always rewrite it: its content embeds absolute
 # paths, so a stale copy from another checkout is wrong.
+# DART_DEFINES is a comma-separated list where EACH entry is base64 of one
+# "key=value" string -- not base64 of a JSON list.  See
+# flutter_tools/lib/src/build_info.dart: encodeDartDefines() maps _defineEncoder
+# (utf8.fuse(base64)) over the list and joins on ','.  Encoding the whole list
+# as JSON is the obvious-looking mistake and fails silently: the tool decodes
+# one garbage entry, the define never reaches String.fromEnvironment, and the
+# app just starts normally with no indication that the flag was dropped.
+$dartDefinesB64 = ''
+if ($DartDefines.Count -gt 0) {
+    $dartDefinesB64 = ($DartDefines | ForEach-Object {
+        [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_))
+    }) -join ','
+    Write-Host "`n== dart-define: $($DartDefines -join ' ')"
+}
+
 $cfgText = @"
 # Generated code do not commit.
 file(TO_CMAKE_PATH "$($fs -replace '\\','/')" FLUTTER_ROOT)
@@ -172,7 +192,7 @@ list(APPEND FLUTTER_TOOL_ENVIRONMENT
   "PROJECT_DIR=$($app -replace '\\','/')"
   "FLUTTER_EPHEMERAL_DIR=$($eph -replace '\\','/')"
   "FLUTTER_TARGET=lib/main.dart"
-  "DART_DEFINES="
+  "DART_DEFINES=$dartDefinesB64"
   "DART_OBFUSCATION=false"
   "TRACK_WIDGET_CREATION=true"
   "TREE_SHAKE_ICONS=true"

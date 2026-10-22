@@ -19,7 +19,7 @@ class MediaLocation {
   final bool isLocal;
 
   factory MediaLocation.fromProfile(ServerProfile p) => MediaLocation(
-        label: p.name,
+        label: p.displayName,
         rootUrl: p.rootUrl,
         options: p.transportOptions(),
         profile: p,
