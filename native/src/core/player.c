@@ -324,7 +324,15 @@ static void *player_open_fn(void *arg)
     if (info) {
         emit_owned_json(p, LP_EVENT_MEDIA_INFO, 0, info);
     }
-    lp_emit_event(p, LP_EVENT_TRACKS, "{}");
+    /* LP_EVENT_TRACKS carries the same media JSON as MEDIA_INFO (the host parses
+     * both with the same code). It used to be an empty "{}", which the host
+     * faithfully parsed into "this file has no audio and no subtitles tracks" --
+     * the track sheets then said "0 embedded subtitles" on a file that had one,
+     * because nothing re-sent the real list unless a track switch happened. */
+    char *tracks_info = lp_media_info_json(p);
+    if (tracks_info) {
+        emit_owned_json(p, LP_EVENT_TRACKS, 0, tracks_info);
+    }
     LP_INFO("trace", "open: tracks emitted");
 
     int autoplay = 1;

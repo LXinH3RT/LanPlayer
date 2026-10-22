@@ -1044,6 +1044,22 @@ cd app && flutter analyze && flutter test # 有 Flutter SDK 时的完整检查
 并顺带跑一遍 Windows 上已编译的 `build\win-x64\lp_smoke_test.exe`。
 实测输出记录在 [verification.md](verification.md)。
 
+**Windows 上 `flutter test`/`flutter analyze` 要包一层**：这台机器上
+`%APPDATA%` 与 `%LOCALAPPDATA%` 不可写，flutter_tools 会失败在
+
+```
+Error: Flutter failed to write to a file at "C:\Users\...\AppData\Roaming\.flutter_tool_state"
+```
+
+（`analyze` 还会额外在 `%LOCALAPPDATA%\.dartServer` 上报 `PathAccessException`）。
+`scripts/run_flutter_tests.sh` 把 `TMP`/`TEMP`/`APPDATA`/`PUB_CACHE` 和
+`LOCALAPPDATA` 重定向到仓库内的 `.tools/`，用法：
+
+```bash
+./scripts/run_flutter_tests.sh              # 等价于 flutter test
+./scripts/run_flutter_tests.sh analyze      # 透传给任意 flutter 子命令
+```
+
 ### 哪些中间产物可以安全删除
 
 下面这些都不在 git 里，删了不影响源码，需要时按最后一列重建：

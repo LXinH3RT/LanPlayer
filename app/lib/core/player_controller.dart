@@ -229,6 +229,13 @@ class PlayerController extends ChangeNotifier {
         break;
       case 3: // media info
       case 10: // tracks
+        // An empty payload means "the core had nothing to say", not "this file
+        // has no tracks". Older cores emitted exactly that on open, which wiped
+        // the list MEDIA_INFO had just delivered and made the sheets claim the
+        // file had 0 embedded subtitles. Keep the previous list in that case.
+        if (map.isEmpty) {
+          break;
+        }
         media = MediaInfo.fromJson(map);
         if (media.durationUs > 0) durationUs = media.durationUs;
         hwActive = media.hw;
