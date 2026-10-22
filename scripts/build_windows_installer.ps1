@@ -17,7 +17,7 @@
 # the parser. Keep every comment and string here in plain ASCII.
 [CmdletBinding()]
 param(
-    [string]$Version = '0.1.0',
+    [string]$Version = '0.1.2',
     [string]$Release = '',
     [string]$OutDir = '',
     [switch]$KeepStage,

@@ -16,7 +16,7 @@ param(
 # folder. Installing into a scratch dir also leaves a desktop shortcut pointing
 # at the scratch dir, so skipping that restore quietly breaks the real install.
 #
-# Six traps, all learned the hard way:
+# Seven traps, all learned the hard way:
 #
 #  1. Integrity label. Files this shell creates carry a Low integrity
 #     label, and a Low-label exe cannot write to a Medium-label directory: the
@@ -39,6 +39,11 @@ param(
 #     deletes everything already in $INSTDIR, so a pre-seeded tree vanishes and
 #     "was the exe replaced" turns into a comparison against a missing file.
 #     Install 0.1.1 properly instead -- that also produces uninstall.exe.
+#  7. Run this from a Medium-integrity shell (the host pwsh window), not from
+#     the MSYS shell session. Its children inherit Low integrity, and
+#     requestExecutionLevel=user keeps that label, so the installer again
+#     exits 0 having done nothing: exe_replaced=False, old_still_alive=True.
+#     Same script, same packages, opposite verdict -- the environment matters.
 #
 # ASCII only: Windows PowerShell 5.1 decodes a BOM-less .ps1 as cp936, and a
 # Chinese comment then becomes a garbled string literal that eats the next line.

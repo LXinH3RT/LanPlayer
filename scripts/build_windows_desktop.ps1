@@ -175,16 +175,39 @@ if ($DartDefines.Count -gt 0) {
     Write-Host "`n== dart-define: $($DartDefines -join ' ')"
 }
 
+# The version lives in app/pubspec.yaml (major.minor.patch+build).  Read it
+# rather than hard-coding: Runner.rc turns FLUTTER_VERSION into the exe's
+# FileVersion/ProductVersion, so a stale literal makes every release claim the
+# previous one in the Explorer properties sheet and in the installer's
+# "currently installed" check.  A regex is enough here -- pubspec.yaml is two
+# fields, not YAML we need to interpret.
+$pubVersion = '0.1.0+1'
+$pubspecPath = Join-Path $app 'pubspec.yaml'
+if (Test-Path $pubspecPath) {
+    foreach ($line in Get-Content -Path $pubspecPath -Encoding UTF8) {
+        if ($line -match '^\s*version:\s*([0-9]+)\.([0-9]+)\.([0-9]+)(?:\+([0-9]+))?\s*$') {
+            $vMajor = $Matches[1]; $vMinor = $Matches[2]; $vPatch = $Matches[3]
+            $vBuild = if ($Matches[4]) { $Matches[4] } else { '0' }
+            $pubVersion = "$vMajor.$vMinor.$vPatch+$vBuild"
+            break
+        }
+    }
+}
+if (-not (Get-Variable vMajor -ErrorAction SilentlyContinue)) {
+    $vMajor = 0; $vMinor = 1; $vPatch = 0; $vBuild = 1
+}
+Write-Host "`n== version: $pubVersion (from app/pubspec.yaml)"
+
 $cfgText = @"
 # Generated code do not commit.
 file(TO_CMAKE_PATH "$($fs -replace '\\','/')" FLUTTER_ROOT)
 file(TO_CMAKE_PATH "$($app -replace '\\','/')" PROJECT_DIR)
 
-set(FLUTTER_VERSION "0.1.0+1" PARENT_SCOPE)
-set(FLUTTER_VERSION_MAJOR 0 PARENT_SCOPE)
-set(FLUTTER_VERSION_MINOR 1 PARENT_SCOPE)
-set(FLUTTER_VERSION_PATCH 0 PARENT_SCOPE)
-set(FLUTTER_VERSION_BUILD 1 PARENT_SCOPE)
+set(FLUTTER_VERSION "$pubVersion" PARENT_SCOPE)
+set(FLUTTER_VERSION_MAJOR $vMajor PARENT_SCOPE)
+set(FLUTTER_VERSION_MINOR $vMinor PARENT_SCOPE)
+set(FLUTTER_VERSION_PATCH $vPatch PARENT_SCOPE)
+set(FLUTTER_VERSION_BUILD $vBuild PARENT_SCOPE)
 
 # Environment variables to pass to tool_backend.bat
 list(APPEND FLUTTER_TOOL_ENVIRONMENT
@@ -227,6 +250,20 @@ Write-Host "`n== ready" -ForegroundColor Green
 Write-Host "   $bundle\lanplayer.exe"
 Get-ChildItem $bundle -File | Sort-Object Name |
     ForEach-Object { Write-Host ("   {0,-30} {1,9:N0} KiB" -f $_.Name, ($_.Length / 1KB)) }
+
+# ------------------------------------------------- 9. publish to the standard bundle
+# Everything else in the repo looks for the runnable bundle in
+# app\build\windows\x64\runner\Release: build_windows_installer.ps1 stages the
+# installer from there, and the verify scripts launch the app from there.  We
+# build in app\windows\out\build\... instead (see the header), so without this
+# copy the installer silently keeps packaging the PREVIOUS build -- the exe's
+# version string stays at the old value and the installer's sha256 never moves,
+# which looks like the installer build "did nothing".
+$publishDir = Join-Path $app 'build\windows\x64\runner\Release'
+if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
+New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
+Copy-Item (Join-Path $bundle '*') $publishDir -Recurse -Force
+Write-Host "`n== published to $publishDir" -ForegroundColor Green
 
 if ($Run) {
     Write-Host "`n== launching"
