@@ -966,6 +966,31 @@ curl -sS -X POST \
 > 要么让获邀协作者登录后从 Release 页面下载，要么把仓库改成 public。
 > 把仓库改 public 还会顺带解决 GitHub Actions 免费额度用完的问题（见 6.6）。
 
+#### 7.3.1 v0.1.1 的发布记录
+
+0.1.1 是修「打开含视频的文件夹卡死」的版本（缺陷细节见 `verification.md` 3.28），
+两个平台都重新出了包：
+
+| 平台 | 文件 | 大小 | SHA256 |
+|-|-|-:|-|
+| Windows 10/11 x64 | `LanPlayer-0.1.1-windows-x64-setup.exe` | 55.4 MB | `8f2ff76c…d95c64` |
+| macOS 12+ (Apple Silicon) | `LanPlayer-0.1.1-macos-arm64.dmg` | 25.7 MB | `602243cf…365c1d0f` |
+
+- Release id `420674952`，tag `v0.1.1` 指向 `f578a44`（含全部修复）。
+- asset id：Windows `665760452`、macOS `665761260`。
+- 两个包都下载回来重算 SHA256，与本地完全一致。
+
+Windows 包要先用 `flutter build windows --release` 把产物放到
+`app/build/windows/x64/runner/Release/`（安装脚本只认这个路径），再
+`build_windows.ps1 -DeployTo` 把新内核 DLL 覆盖进去——**这一步不能漏**，
+否则打出来的还是旧 DLL。macOS 侧先 `flutter build macos --release`
+（要在这台 Mac 上跑，静态库得是重编过的那份），再 `VERSION=0.1.1 ./scripts/build_macos_dmg.sh`。
+
+> 静默安装到自定义目录时 `/D=` 必须是**最后一个参数**且不能带引号；
+> PowerShell 里更稳的写法是
+> `Start-Process -ArgumentList '/S','/D=D:\path' -Wait`。
+> 若上一个安装器还停在模态框上，新的一次会卡在同一个弹窗，先 `taskkill` 掉。
+
 ## 7.4 构建后自检
 
 ```bash
