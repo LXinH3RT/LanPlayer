@@ -583,6 +583,48 @@ stdout/stderr，`xcrun simctl spawn <dev> log show` 只能看到 `flutter:` 那�
 另外模拟器截图是可用的（`xcrun simctl io <dev> screenshot --type=png out.png`），
 这点和 macOS 桌面端相反。
 
+#### 4.6.5 macOS 往共享里写 `.DS_Store`：不是本 app 干的
+
+现象：Mac 访问过 NAS 上的共享之后，服务端文件夹里多出 `.DS_Store`。
+
+**先分清是谁写的。** LanPlayer 的内核访问 SMB 只有两种调用：
+`smb2_open(..., O_RDONLY)` 与 `smb2_opendir()`（`native/src/source/smb.c`），
+全仓库搜不到 `smb2_write` / `smb2_create` / `smb2_unlink` / `O_CREAT`。
+所以写入者是 **Finder / macOS 的 SMB 客户端**，不是播放器。
+
+物证：排查时共享上有 4 个 `.DS_Store`，其中
+`电视剧/侠探杰克/.DS_Store` 的时间是 **10-15 23:01**，比这个 app 存在还早，
+而且那两级目录从没在 app 里打开过。
+
+**正解是在 Mac 上关掉这个行为**（用户级，不需要 root）：
+
+```bash
+defaults write com.apple.desktopservices DSDontWriteNetworkStores -bool true
+defaults write com.apple.desktopservices DSDontWriteUSBStores -bool true
+killall Finder          # 必须重启 Finder，否则旧的偏好还在内存里
+```
+
+**`killall Finder` 不能省。** 实测：只写 defaults 不重启 Finder，用
+`open <挂载点>` 让它打开一个目录，根目录立刻又冒出 `.DS_Store`（20:32:43）；
+`killall Finder` 之后再试同样的动作，根目录与子目录都干净，计数保持 4 不变。
+
+验证挂载点要 URL 转义中文共享名：
+
+```bash
+mount_smbfs "//user:pass@192.168.1.10/%E5%A4%9A%E5%AA%92%E4%BD%93%E6%96%87%E4%BB%B6" ~/mnt
+```
+
+设置生效后，`ls` 与 `open`（Finder）都不会再新增；已有的历史文件需要单独删。
+
+> 顺带说明：这个开关只影响**这台 Mac**。别的 Mac、Windows 资源管理器
+> （`Thumbs.db`/`desktop.ini`）会各写各的，服务端没法一次性禁掉。
+> 所以内核另外做了一层过滤：列表里不显示 `.DS_Store`、`._*`、
+> `desktop.ini`、`Thumbs.db`、`.Trashes` 等元数据文件
+> （`lp_is_os_junk_name()`，SMB 与本地路径都走），
+> 免得它们混进媒体列表被误当成「播放器真在往服务器写东西」。
+> 回归测试 `native/tests/lp_junk_test.c`：负向对照去掉过滤后立刻报
+> `entries=6 leaked=5`。
+
 ### 4.7 iOS 上会遇到的错误（按出现顺序）
 
 | 现象 | 原因 | 处理 |

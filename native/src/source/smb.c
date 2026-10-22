@@ -284,6 +284,12 @@ static int smb_transport_list(const LpUrl *u, const LpSourceOptions *opts,
         if (!ent->name || strcmp(ent->name, ".") == 0 || strcmp(ent->name, "..") == 0) {
             continue;
         }
+        /* 跳过 macOS / Windows 的目录元数据（.DS_Store、._foo、desktop.ini …）。
+         * 这些文件是客户端系统写的，对播放没有意义，列出来只会干扰用户；
+         * 而且 .DS_Store 常被误认成「本 app 往服务器写了东西」。 */
+        if (lp_is_os_junk_name(ent->name)) {
+            continue;
+        }
         if (count == cap) {
             cap *= 2;
             LpDirItem *grown = realloc(items, (size_t)cap * sizeof(LpDirItem));

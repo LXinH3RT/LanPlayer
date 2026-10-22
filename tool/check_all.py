@@ -147,6 +147,7 @@ REQUIRED = [
     "native/tests/lp_hw_decode_test.c",
     "native/tests/lp_hw_probe.c",
     "native/tests/lp_thumb_test.c",
+    "native/tests/lp_junk_test.c",
     "native/src/platform/win32/d3d11va_decoder.c",
     "packages/lanplayer_video/windows/include/lanplayer_video/pixel_swizzle.h",
     "app/lib/ui/widgets/subtitle_overlay.dart",
@@ -397,9 +398,32 @@ def check_thumbnails() -> None:
         problems.append("ThumbnailTile must guard against stale results after "
                         "the row is recycled")
 
+    # OS metadata must never be listed. Both transports have to apply the same
+    # filter, otherwise .DS_Store shows up over SMB but not locally (or worse,
+    # users conclude the app is writing to their server - it never does:
+    # smb.c only opens with O_RDONLY).
+    smb_c = ROOT / "native" / "src" / "source" / "smb.c"
+    file_c = ROOT / "native" / "src" / "source" / "file.c"
+    url_c = ROOT / "native" / "src" / "source" / "url.c"
+    for path in (smb_c, file_c, url_c):
+        if not path.exists():
+            problems.append(f"missing {path.relative_to(ROOT).as_posix()}")
+    if smb_c.exists() and "lp_is_os_junk_name" not in smb_c.read_text(encoding="utf-8"):
+        problems.append("smb listing must skip .DS_Store / ._* / desktop.ini")
+    if file_c.exists() and "lp_is_os_junk_name" not in file_c.read_text(encoding="utf-8"):
+        problems.append("local listing must skip .DS_Store / ._* / desktop.ini")
+    if url_c.exists():
+        url_code = url_c.read_text(encoding="utf-8")
+        if "lp_is_os_junk_name" not in url_code:
+            problems.append("lp_is_os_junk_name must live in url.c")
+        if "O_RDWR" in (smb_c.read_text(encoding="utf-8") if smb_c.exists() else ""):
+            problems.append("smb.c must never open a share read-write")
+
     notes.append("thumbnails: LPT2 header round-trips, hex cache key, "
                  "covers only for video rows, decoding is throttled and "
                  "cannot spin or seek past the end")
+    notes.append("source: listing hides OS metadata (.DS_Store/._*/desktop.ini), "
+                 "SMB transport is read-only")
 
 def check_installers() -> None:
     """Guard the two release installers.

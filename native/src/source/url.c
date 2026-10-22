@@ -236,6 +236,44 @@ int lp_is_subtitle_name(const char *name)
     return strcmp(lp_kind_for_name(name), "subtitle") == 0;
 }
 
+/* 系统/桌面环境留下的元数据文件：不该出现在播放器的文件列表里。
+ *
+ *   .DS_Store           macOS Finder 的目录布局缓存（**由 Finder 写入服务器**，
+ *                       不是本 app 写的 —— 内核打开共享一律 O_RDONLY）
+ *   ._foo              AppleDouble 资源分支（macOS 拷文件到非 HFS+ 卷时产生）
+ *   desktop.ini/.Thumbs.db/.directory   Windows/Linux 的同类文件
+ *   .Trashes/.Spotlight-V100/.fseventsd  macOS 在共享根上建的隐藏目录
+ *
+ * 用户反馈「macbook 访问共享后服务端多出 .DS_Store」，那是 Finder 的行为，
+ * 正解是在 Mac 上 `defaults write com.apple.desktopservices
+ * DSDontWriteNetworkStores -bool true`（见 docs/build.md 4.9）；
+ * 这里做的是另一件事：即使服务器上已经有这些文件，也别把它们列进列表。 */
+int lp_is_os_junk_name(const char *name)
+{
+    if (!name || !*name) {
+        return 0;
+    }
+    if (strcmp(name, ".DS_Store") == 0 || strcmp(name, "desktop.ini") == 0 ||
+        strcmp(name, "Thumbs.db") == 0 || strcmp(name, ".directory") == 0 ||
+        strcmp(name, ".localized") == 0) {
+        return 1;
+    }
+    /* 以 "._" 开头的 AppleDouble 旁文件 */
+    if (name[0] == '.' && name[1] == '_') {
+        return 1;
+    }
+    static const char *hidden_dirs[] = {
+        ".Trashes", ".Spotlight-V100", ".fseventsd", ".TemporaryItems",
+        ".DocumentRevisions-V100", ".AppleDouble", "System Volume Information",
+        "$RECYCLE.BIN", NULL};
+    for (int i = 0; hidden_dirs[i]; i++) {
+        if (strcmp(name, hidden_dirs[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Natural order: "E2" sorts before "E10", directories first. */
 static int natural_cmp(const char *a, const char *b)
 {

@@ -251,6 +251,14 @@ $thumbTestObj = Join-Path $out 'lp_thumb_test.o'
 if (-not (Invoke-Zig (@('cc') + $baseFlags + $defines + $includes + @('-c', (Join-Path $native 'tests\lp_thumb_test.c'), '-o', $thumbTestObj)) 'thumb test')) { exit 1 }
 if (-not (Invoke-Zig ($dllStubLink + @($thumbTestObj, '-o', (Join-Path $out 'lp_thumb_test.exe'), '-Wl,--subsystem,console')) 'lp_thumb_test.exe')) { exit 1 }
 
+# Junk filter: .DS_Store / ._foo / desktop.ini must never show up in a listing.
+# Those are written by the client OS (Finder, Windows Explorer), not by the core,
+# but they used to be listed as if they were media.
+Write-Host "   lp_junk_test.exe"
+$junkTestObj = Join-Path $out 'lp_junk_test.o'
+if (-not (Invoke-Zig (@('cc') + $baseFlags + $defines + $includes + @('-c', (Join-Path $native 'tests\lp_junk_test.c'), '-o', $junkTestObj)) 'junk test')) { exit 1 }
+if (-not (Invoke-Zig ($dllStubLink + @($junkTestObj, '-o', (Join-Path $out 'lp_junk_test.exe'), '-Wl,--subsystem,console')) 'lp_junk_test.exe')) { exit 1 }
+
 # Loads lanplayer.dll at runtime and drives the texture path, exactly like the
 # Flutter Windows plugin does.  It also compiles the plugin's own BGRA->RGBA
 # header, so a regression in that conversion fails here instead of turning the

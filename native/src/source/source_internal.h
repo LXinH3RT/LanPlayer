@@ -92,6 +92,9 @@ int lp_is_video_name(const char *name);
 int lp_is_subtitle_name(const char *name);
 int lp_path_parent(const char *path, char *out, size_t outlen);
 
+/* 系统/桌面环境写进目录、与媒体无关的元数据文件，列表里一律不显示。 */
+int lp_is_os_junk_name(const char *name);
+
 #ifdef __cplusplus
 }
 #endif

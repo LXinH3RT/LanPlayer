@@ -108,6 +108,10 @@ static int file_transport_list(const LpUrl *u, const LpSourceOptions *opts,
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
             continue;
         }
+        /* 与 SMB 侧同一套过滤：.DS_Store / ._foo / desktop.ini 不进列表。 */
+        if (lp_is_os_junk_name(ent->d_name)) {
+            continue;
+        }
         char full[1600];
         snprintf(full, sizeof(full), "%s/%s", u->path, ent->d_name);
         struct stat st;
