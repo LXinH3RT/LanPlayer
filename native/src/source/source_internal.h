@@ -68,6 +68,11 @@ struct LpIo {
 
     AVIOContext *avio;
     uint8_t *avio_buf;
+
+    /* 诊断计数：排查「某些容器打开时长时间不返回」用（见 thumb.c）。
+     * 正常路径不看它，成本只是一次自增。 */
+    long dbg_reads;
+    long dbg_seeks;
 };
 
 /* Shared helper: entries JSON from a list of names. */

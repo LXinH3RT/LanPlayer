@@ -14,6 +14,11 @@
  *     pixel_swizzle.h）。
  */
 #include <stdlib.h>
+#include <time.h>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 #include "player_internal.h"
 #include "source/source_internal.h"
@@ -24,15 +29,46 @@
 #define LP_THUMB_SEEK_CAP_US (30LL * 1000000LL)
 
 /* 中断标志：截图是同步调用，用户可能在 UI 上取消或者切走页面，
- * 这里只用一个本地原子标志，不牵扯播放器的 abort_request。 */
+ * 这里只用一个本地原子标志，不牵扯播放器的 abort_request。
+ *
+ * 同时带一个**墙钟截止**：只有 abort 标志是不够的 —— 没有任何人会在
+ * 同步调用里来置它，等于没有超时。FLV 这类容器在 open 阶段会先扫一段
+ * 数据估时长，遇到慢盘/慢网络就会长时间不返回，界面表现为卡死。
+ * 有了 deadline，中断回调真正能把它掐断。 */
 typedef struct LpThumbCtx {
     atomic_int abort;
+    int64_t deadline_ms; /* 0 = 不限 */
 } LpThumbCtx;
+
+static int64_t thumb_now_ms(void)
+{
+#if defined(_WIN32)
+    return (int64_t)GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+#endif
+}
+
+/* 一次封面最多允许花多久。超过就放弃这一帧、退回图标 —— 宁可没有封面，
+ * 也不能让「打开文件夹」卡住。 */
+#define LP_THUMB_BUDGET_MS 4000
 
 static int thumb_interrupt_cb(void *opaque)
 {
     LpThumbCtx *ctx = opaque;
-    return ctx && atomic_load(&ctx->abort) ? 1 : 0;
+    if (!ctx) {
+        return 0;
+    }
+    if (atomic_load(&ctx->abort)) {
+        return 1;
+    }
+    if (ctx->deadline_ms > 0 && thumb_now_ms() > ctx->deadline_ms) {
+        atomic_store(&ctx->abort, 1);
+        return 1;
+    }
+    return 0;
 }
 
 /* 打开输入。返回 0 表示成功；失败时 err 里有原因。
@@ -77,7 +113,10 @@ static int thumb_open_input(const char *url, const char *options_json, LpThumbCt
         }
         fmt->interrupt_callback.callback = thumb_interrupt_cb;
         fmt->interrupt_callback.opaque = ctx;
-        int r = avformat_open_input(&fmt, url, NULL, &dict);
+        /* 自定义 IO 时 url 传 NULL：fmt->pb 已经挂好了我们自己的 AVIO，
+         * 再传 url 会让 FFmpeg 有机会按协议重新打开一次，绕开下面设置的
+         * 超时与中断回调（demux.c 的播放路径也是这么传的）。 */
+        int r = avformat_open_input(&fmt, NULL, NULL, &dict);
         av_dict_free(&dict);
         if (r < 0) {
             avformat_free_context(fmt);
@@ -156,6 +195,7 @@ int32_t lp_source_thumbnail(const char *url, const char *options_json, int32_t m
 
     LpThumbCtx ctx;
     atomic_init(&ctx.abort, 0);
+    ctx.deadline_ms = thumb_now_ms() + LP_THUMB_BUDGET_MS;
 
     char err[256] = {0};
     AVFormatContext *fmt = NULL;
@@ -199,6 +239,8 @@ int32_t lp_source_thumbnail(const char *url, const char *options_json, int32_t m
     }
     avctx->pkt_timebase = st->time_base;
     avctx->thread_count = 1; /* 只要一帧，多线程解码反而是纯开销 */
+    LP_DEBUG("thumb", "stage=codec %s %dx%d", codec->name,
+             st->codecpar->width, st->codecpar->height);
     if (avcodec_open2(avctx, codec, NULL) < 0) {
         char msg[128];
         snprintf(msg, sizeof(msg), "avcodec_open2(%s) failed", codec->name);
@@ -216,12 +258,31 @@ int32_t lp_source_thumbnail(const char *url, const char *options_json, int32_t m
     if (target_us > LP_THUMB_SEEK_CAP_US) {
         target_us = LP_THUMB_SEEK_CAP_US;
     }
+    LP_DEBUG("thumb", "stage=seek target=%lld us", (long long)target_us);
     if (target_us > 0) {
-        int64_t ts = target_us;
+        /* av_seek_frame 的第 3 个参数是 **stream 时间基**，不是微秒。
+         *
+         * 以前直接把微秒传进去：对 time_base = 1/1000（mp4 常见）的流，
+         * 30 秒的位置会被当成 30000000 个 tick（≈ 8.3 小时），seek 于是
+         * 落到文件末尾，一帧都解不出来；FLV 的 time_base 是 1/1000 且没有
+         * 索引，av_seek_frame 只能按字节粗略估算，于是跳到 242 MB 的
+         * offset（文件总长正好也是 242 MB），返回 rc=-12「no decodable
+         * frame」—— 用户看到的就是「这个文件夹里的视频都没有封面」。 */
+        int64_t ts = av_rescale_q(target_us, (AVRational){1, 1000000}, st->time_base);
         if (fmt->start_time != AV_NOPTS_VALUE) {
-            ts += fmt->start_time;
+            int64_t start_ts =
+                av_rescale_q(fmt->start_time, (AVRational){1, 1000000}, st->time_base);
+            ts += start_ts;
         }
+        LP_DEBUG("thumb", "seek ts=%lld (tb=%d/%d)", (long long)ts,
+                 st->time_base.num, st->time_base.den);
         if (av_seek_frame(fmt, vindex, ts, AVSEEK_FLAG_BACKWARD) >= 0) {
+            avcodec_flush_buffers(avctx);
+        } else {
+            /* 没有索引的容器（FLV 常见）seek 可能直接失败：老实从头解，
+             * 封面会偏片头一点，但总比没有强。 */
+            LP_DEBUG("thumb", "seek failed, decoding from start");
+            av_seek_frame(fmt, -1, 0, AVSEEK_FLAG_BACKWARD);
             avcodec_flush_buffers(avctx);
         }
     }
@@ -242,10 +303,24 @@ int32_t lp_source_thumbnail(const char *url, const char *options_json, int32_t m
         return LP_ERR_NOMEM;
     }
 
-    while (!atomic_load(&ctx.abort) && packets < LP_THUMB_MAX_PACKETS) {
+    /* guard：draining 阶段 packets 不再递增，光靠它做上限会变成死循环。
+     * FLV（以及任何「解码器要吃掉多个包才吐一帧」的容器）一旦在 drain 时
+     * 反复拿到 AVERROR(EAGAIN)，这里就会空转 —— 实测本地 66 KB 的小 flv
+     * 也能卡满 25 秒以上不返回，用户看到的就是「打开文件夹卡死」。
+     * 所以再加一个硬迭代上限，保证这个函数一定会返回。 */
+    const int max_iters = LP_THUMB_MAX_PACKETS * 2;
+    int iters = 0;
+    LP_DEBUG("thumb", "stage=decode-loop begin");
+
+    while (!atomic_load(&ctx.abort) && packets < LP_THUMB_MAX_PACKETS &&
+           iters++ < max_iters) {
         int send_rc;
         if (draining) {
             send_rc = avcodec_send_packet(avctx, NULL);
+            /* drain 阶段再送 EOF 就是「解码器已经空了」，没有更多帧可拿。 */
+            if (send_rc == AVERROR_EOF) {
+                break;
+            }
         } else {
             int r = av_read_frame(fmt, pkt);
             if (r < 0) {
@@ -287,7 +362,9 @@ int32_t lp_source_thumbnail(const char *url, const char *options_json, int32_t m
         } else if (recv_rc != AVERROR(EAGAIN)) {
             break;
         }
-        if (draining && packets >= LP_THUMB_MAX_PACKETS) {
+
+        /* draining 且这一轮既没送出包也没取到帧：再转下去也没有意义。 */
+        if (draining && send_rc == AVERROR_EOF) {
             break;
         }
     }

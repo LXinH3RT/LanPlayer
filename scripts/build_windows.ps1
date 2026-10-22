@@ -242,6 +242,15 @@ $testObj = Join-Path $out 'lp_smoke_test.o'
 if (-not (Invoke-Zig (@('cc') + $baseFlags + $defines + $includes + @('-c', (Join-Path $native 'tests\lp_smoke_test.c'), '-o', $testObj)) 'smoke test')) { exit 1 }
 if (-not (Invoke-Zig ($dllStubLink + @($testObj, '-o', (Join-Path $out 'lp_smoke_test.exe'), '-Wl,--subsystem,console')) 'lp_smoke_test.exe')) { exit 1 }
 
+# Thumbnail path regression: opening a folder full of .flv used to hang forever
+# (cache-boundary spin in lp_io_read + av_seek_frame given microseconds instead
+# of stream ticks).  This binary asserts every cover comes back in bounded time
+# and with real pixels.
+Write-Host "   lp_thumb_test.exe"
+$thumbTestObj = Join-Path $out 'lp_thumb_test.o'
+if (-not (Invoke-Zig (@('cc') + $baseFlags + $defines + $includes + @('-c', (Join-Path $native 'tests\lp_thumb_test.c'), '-o', $thumbTestObj)) 'thumb test')) { exit 1 }
+if (-not (Invoke-Zig ($dllStubLink + @($thumbTestObj, '-o', (Join-Path $out 'lp_thumb_test.exe'), '-Wl,--subsystem,console')) 'lp_thumb_test.exe')) { exit 1 }
+
 # Loads lanplayer.dll at runtime and drives the texture path, exactly like the
 # Flutter Windows plugin does.  It also compiles the plugin's own BGRA->RGBA
 # header, so a regression in that conversion fails here instead of turning the

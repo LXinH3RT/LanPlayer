@@ -50,6 +50,19 @@ class ThumbnailCache {
   /// 封面宽度。列表里的缩略图是 56×56 的圆角方块，取 2 倍图足够。
   static const int width = 128;
 
+  /// 同时真正解码的封面数上限。
+  ///
+  /// **这是「打开视频多的文件夹会卡死」的修复核心。** 每个封面都要在 SMB 上
+  /// 打开一次文件、读 probe 数据、解一帧，单次几百毫秒到一秒多。以前每次
+  /// `ListView.builder` 建出一行就起一个 `Isolate.run`，一屏十几行就是十几路
+  /// 并发：libsmb2 每路各开一条独立连接，服务器侧互相争抢，实测单次耗时从
+  /// 0.6s 放大到 5.0s（`build/probe_thumb_conc.py`，11 个视频：串行 6.87s /
+  /// 并发 5.00s 且最慢一次 4.99s），表现为整页转圈、进度条不动、看起来像卡死。
+  ///
+  /// 限制成 1 之后总耗时反而更短，而且 UI 一直是响应的：第一行封面马上出来，
+  /// 其余按顺序补齐。想调大可改这里，但四路以上在机械硬盘的 NAS 上没有收益。
+  static const int maxConcurrent = 1;
+
   // "LPT2"：v1 的 "LPT1" 只写了宽没写高，读回必定失败。
   static const List<int> _magic = [0x4C, 0x50, 0x54, 0x32];
 
@@ -57,6 +70,11 @@ class ThumbnailCache {
 
   /// 正在解码的请求，避免同一行被 build 多次时重复解码。
   final Map<String, Future<ui.Image?>> _inflight = <String, Future<ui.Image?>>{};
+
+  /// 全局解码闸门：取值 1..[maxConcurrent]。所有封面共用，跨页面也共用，
+  /// 因为底层争抢的是同一台 NAS 的 SMB 会话，不是某个页面的资源。
+  /// 用 `ConcurrencyGate` 而不是自己数信号量，是为了在异常路径上也一定还回去。
+  final ConcurrencyGate _gate = ConcurrencyGate(max: maxConcurrent);
 
   Directory? _dir;
 
@@ -127,9 +145,26 @@ class ThumbnailCache {
       var bytes = await _readCache(file);
       final fromDisk = bytes != null;
       if (bytes == null) {
-        // 内核调用是同步阻塞的，放到后台 isolate，避免卡住滚动。
-        final decoded = await Isolate.run(() => extractThumbnail(url, options, width));
-        if (decoded == null) return null;
+        // 「这个文件解不出封面」也要记住，否则每次滚回来都重新走一遍
+        // SMB + 解码。目录里混着 .flv / 坏文件 / .docx 改名成 .mp4 时，
+        // 这类必然失败的请求会一直占着闸门。
+        final marker = File('${dir.path}${Platform.pathSeparator}$key.none');
+        if (await marker.exists()) {
+          if (_verbose) {
+            // ignore: avoid_print
+            print('LanPlayer thumb: $key skipped (known failure) $url');
+          }
+          return null;
+        }
+
+        // 内核调用是同步阻塞的，放到后台 isolate，避免卡住滚动；
+        // 同时整个解码过程排在全局闸门后面 —— 一屏十几行不应该同时去敲 NAS。
+        final decoded = await _gate.run(
+            () => Isolate.run(() => extractThumbnail(url, options, width)));
+        if (decoded == null) {
+          unawaited(_writeMarker(marker));
+          return null;
+        }
         bytes = encodeThumb(decoded);
         // 写盘失败不影响这次显示，下次再试。
         unawaited(_writeCache(file, bytes));
@@ -179,6 +214,13 @@ class ThumbnailCache {
     } catch (_) {
       // 缓存写不进去只是慢一点，不该影响播放列表。
     }
+  }
+
+  /// 记下「这个 URL 解不出封面」，内容为空文件，只靠存在与否判断。
+  static Future<void> _writeMarker(File marker) async {
+    try {
+      await marker.writeAsBytes(const <int>[], flush: true);
+    } catch (_) {}
   }
 
   static bool _hasMagic(Uint8List bytes) {
@@ -266,5 +308,53 @@ class ThumbnailCache {
     } catch (_) {
       return 0;
     }
+  }
+}
+
+/// 限流的异步闸门：最多同时放行 [max] 个任务，其余按提交顺序排队。
+///
+/// 为什么不用 `Future.wait` 或信号量包：这里只需要「串行化对同一台 NAS 的
+/// 解码请求」这一件事，自带实现十几行，且能在任务抛异常/挂掉时把名额还回去
+/// （`_active` 的递减放在 finally 里）。队列用 FIFO，保证用户先看到的行先出图。
+class ConcurrencyGate {
+  ConcurrencyGate({required this.max}) : assert(max > 0);
+
+  final int max;
+  int _active = 0;
+  final List<Completer<void>> _waiters = <Completer<void>>[];
+
+  /// 排队等待时就能知道前面还有几个，便于测试与调试。
+  @visibleForTesting
+  int get pending => _waiters.length;
+
+  @visibleForTesting
+  int get active => _active;
+
+  Future<T> run<T>(Future<T> Function() task) async {
+    await _acquire();
+    try {
+      return await task();
+    } finally {
+      _release();
+    }
+  }
+
+  Future<void> _acquire() {
+    if (_active < max) {
+      _active++;
+      return Future<void>.value();
+    }
+    final waiter = Completer<void>();
+    _waiters.add(waiter);
+    return waiter.future;
+  }
+
+  void _release() {
+    if (_waiters.isNotEmpty) {
+      // 直接把名额转交给队首，_active 保持不变。
+      _waiters.removeAt(0).complete();
+      return;
+    }
+    _active--;
   }
 }

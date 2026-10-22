@@ -146,6 +146,7 @@ REQUIRED = [
     "native/tests/lp_win32_texture_test.c",
     "native/tests/lp_hw_decode_test.c",
     "native/tests/lp_hw_probe.c",
+    "native/tests/lp_thumb_test.c",
     "native/src/platform/win32/d3d11va_decoder.c",
     "packages/lanplayer_video/windows/include/lanplayer_video/pixel_swizzle.h",
     "app/lib/ui/widgets/subtitle_overlay.dart",
@@ -361,8 +362,44 @@ def check_thumbnails() -> None:
         if not l.strip().startswith("//"))
     if "e.isVideo" not in browser_code:
         problems.append("the browser list must only request covers for videos")
+
+    # Regression guards for the "opening a folder full of .flv hangs" bug.
+    # Each of these was a real defect (see docs/verification.md 3.28):
+    #   * lp_io_read spinning at the cache boundary,
+    #   * avio_read_cb handing 0 back to FFmpeg instead of AVERROR_EOF,
+    #   * av_seek_frame given microseconds instead of stream ticks,
+    #   * one Isolate.run per list row hammering the NAS.
+    io_c = ROOT / "native" / "src" / "source" / "io.c"
+    thumb_c = ROOT / "native" / "src" / "core" / "thumb.c"
+    if not io_c.exists() or not thumb_c.exists():
+        problems.append("missing source/source io.c or core/thumb.c")
+    else:
+        io_code = io_c.read_text(encoding="utf-8")
+        if "if (r == 0) {\n        return AVERROR_EOF;\n    }" not in io_code:
+            problems.append("avio_read_cb must map a 0-byte read to "
+                            "AVERROR_EOF, otherwise the demuxer retries forever")
+        if "chunk <= 0" not in io_code:
+            problems.append("lp_io_read must handle chunk <= 0 at the cache "
+                            "boundary, otherwise it spins without progress")
+
+        thumb_code = thumb_c.read_text(encoding="utf-8")
+        if "av_rescale_q(target_us" not in thumb_code:
+            problems.append("thumb seek must rescale microseconds into the "
+                            "stream time base (a raw use seeks to EOF)")
+        if "LP_THUMB_BUDGET_MS" not in thumb_code:
+            problems.append("thumb must carry a wall-clock budget so a slow "
+                            "container cannot hang the caller forever")
+
+    if "maxConcurrent" not in code or "ConcurrencyGate" not in code:
+        problems.append("thumbs.dart must throttle cover decoding; without a "
+                        "gate every visible row decodes concurrently")
+    if "_seq" not in tile_code:
+        problems.append("ThumbnailTile must guard against stale results after "
+                        "the row is recycled")
+
     notes.append("thumbnails: LPT2 header round-trips, hex cache key, "
-                 "covers only for video rows")
+                 "covers only for video rows, decoding is throttled and "
+                 "cannot spin or seek past the end")
 
 def check_installers() -> None:
     """Guard the two release installers.

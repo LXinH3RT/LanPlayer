@@ -91,7 +91,7 @@
 | `native/src/app/` | 1 | `lp_preview.c`：不依赖 Flutter 的原生窗口播放器（调试用） |
 | `native/platform/` | 8 | 第三方库在 Windows 上的编译补丁 |
 | `native/platform/win32/smb2/` | 8 | libsmb2 在 mingw 下缺的头（`poll.h`、`sys/socket.h`、`netdb.h` 等） |
-| `native/tests/` | 4 | 四个测试可执行文件：冒烟、纹理/颜色、D3D11VA 端到端、硬解能力探针 |
+| `native/tests/` | 5 | 五个测试可执行文件：冒烟、纹理/颜色、D3D11VA 端到端、硬解能力探针、封面回归（`lp_thumb_test.exe`） |
 | `scripts/` | 24 | 所有构建与验证脚本（含两个平台的安装包脚本，见下方脚本表） |
 | `tool/` | 13 | 静态检查与依赖下载（见下方工具表） |
 | `docs/` | 16 | 6 篇文档 + 10 张验证截图 |
@@ -151,7 +151,7 @@ LanPlayer/
 
 | 脚本 | 作用 |
 |-|-|
-| `build_windows.ps1` | 编 C 内核：`lanplayer.dll`、`lanplayer_stub.dll`、`lp_smoke_test.exe`、`lanplayer_preview.exe`、`lp_win32_texture_test.exe`、`lp_hw_decode_test.exe`；先编 48 个 libsmb2 源文件；`-DeployTo <dir>` 把 DLL 复制到目标目录 |
+| `build_windows.ps1` | 编 C 内核：`lanplayer.dll`、`lanplayer_stub.dll`、`lp_smoke_test.exe`、`lp_thumb_test.exe`、`lanplayer_preview.exe`、`lp_win32_texture_test.exe`、`lp_hw_decode_test.exe`；先编 48 个 libsmb2 源文件；`-DeployTo <dir>` 把 DLL 复制到目标目录 |
 | `build_windows_desktop.ps1` | 一条命令出桌面端：建 junction → 解 Dart 依赖 → VS 自带 cmake/MSBuild 构建 → INSTALL → 复制 DLL |
 | `build_windows_app.ps1` | 不用 `flutter` CLI 直接编桌面端的备用通道（flutter CLI 需要管道 stdio） |
 | `msvc_chain.bat` | 纯 MSVC 直编（无 CMake、无 flutter 工具）的最小链路 |
@@ -524,6 +524,7 @@ iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字�
 |SMB 凭据校验|✅ 只给主机 + 账号密码时连 `IPC$` 验证登录：`{"server":"192.168.1.10","authenticated":true}`；密码错误报 `login failed … wrong user name or password`；共享名由用户自己填，不做枚举|
 |局域网扫描|✅ 并发探测本机所在 `/24` 的 445 端口：`tool/lan_scan_probe.dart` 1.45 秒扫完 254 个地址，命中 NAS `192.168.1.10` 与本机；真实 Release 程序里点「扫描局域网」同样得到 2 台（`LanPlayer lan host: 192.168.1.10 name=192.168.1.10` / `…5.8 name=me0512`）|
 |列表封面缩略图|✅ 只解第一帧、缩到 128 宽、`LPT2` 头落盘缓存（魔数+宽+高，坏文件丢弃重取）：`tool/thumb_probe.py` 对 SMB 上 1.8 GB 的 `movie-01.mp4` 取到 `320x136`、非黑像素 99.7%；列表只对视频行请求，取不到就退回图标且不抛异常（`flutter test` 两条用例锁住）|
+|含 FLV 的文件夹不再卡死|✅ 修掉内核三处缺陷 + 一处并发过载：`lp_io_read` 缓存边界空转、`avio_read_cb` 把 0 当数据、`av_seek_frame` 传微秒（未换算 stream 时间基），以及 Dart 侧改全局串行闸门。`flv-合集`（16 个 `.flv`，3.4 GB）从**单文件无限挂起**变成 **16/16 成功、总 2.86 s、最慢 0.23 s**；`电影` 目录 10/11、4.96 s 无回归；新增 `lp_thumb_test.exe` 回归测试并做负向对照。成品图 `docs/images/desktop-flv-folder.jpg`，详见 `docs/verification.md` 3.28|
 |SMB 直接播放|✅ 1920×820 h264 经 SMB 流式解码，waveOut 48 kHz 立体声，字幕侧挂自动加载|
 |服务器列表持久化|✅ 重启后自动读回 `servers.json`（`LanPlayer loaded: servers=1`），不再丢服务器|
 |Flutter 桌面端构建|✅ CMake + MSBuild（VS 18）产出 `lanplayer.exe` 55 KiB + 插件 106 KiB，INSTALL 后可直接运行；官方 `flutter build windows --release` 也已跑通（24 秒出包）|
