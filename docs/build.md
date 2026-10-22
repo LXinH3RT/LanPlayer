@@ -10,12 +10,23 @@ native/third_party/
 ├─ ffmpeg/
 │  ├─ android/arm64-v8a/{include,lib/arm64-v8a/*.so}
 │  ├─ android/armeabi-v7a/{include,lib/armeabi-v7a/*.so}
-│  ├─ apple/{include,lib/*.a}          # iOS device + simulator + macOS
+│  ├─ apple/macosx/{include,lib/*.a}          # macOS
+│  ├─ apple/iphoneos/{include,lib/*.a}        # iOS 真机
+│  ├─ apple/iphonesimulator/{include,lib/*.a} # iOS / iPadOS 模拟器
+│  ├─ apple/{include,lib/*.a}                 # 最近一次构建的副本（兜底，带 .family 标记）
 │  └─ desktop/{include,lib/*.a}        # 可选：Windows/Linux 本地调试
 └─ libsmb2/
    ├─ android/{include,lib/<abi>/libsmb2.so}
-   └─ apple/{include,lib/libsmb2.a}
+   └─ apple/<family>/{include,lib/libsmb2.a}
 ```
+
+Apple 三个平台族各写**自己的目录**（`<family>` = `macosx` / `iphoneos` / `iphonesimulator`）。
+两个 podspec 用 `$(PLATFORM_NAME)` 自动选目录，所以 macOS 与 iOS 的库可以在同一个工作副本里共存，
+交错构建不会互相覆盖；`apple/lib` 那份扁平副本只是给老路径兜底。
+
+`native/third_party/` 整个目录都是生成物（几百 MB），不进 git。删了重新跑
+`scripts\build_windows.ps1`（Windows）或 `SLICES=macosx ./scripts/build_apple_deps.sh`（Apple）即可。
+README 的「哪些东西删了还能重建」有完整的对照表。
 
 `native/CMakeLists.txt` 通过 `LP_FFMPEG_ROOT` / `LP_SMB2_ROOT` 找到它们；
 Android 由 Gradle 传参，Apple 由 Xcode 传参。
@@ -800,6 +811,26 @@ cd app && flutter analyze && flutter test # 有 Flutter SDK 时的完整检查
 `tool/check_all.py` 会自动跳过缺失的工具链（没有 Flutter 就不做 UI 检查），
 并顺带跑一遍 Windows 上已编译的 `build\win-x64\lp_smoke_test.exe`。
 实测输出记录在 [verification.md](verification.md)。
+
+### 哪些中间产物可以安全删除
+
+下面这些都不在 git 里，删了不影响源码，需要时按最后一列重建：
+
+| 路径 | 删掉的代价 | 怎么重建 |
+|-|-|-|
+| `build\media\` | 测试素材没了；`check_all.py` 的硬解一项会自动跳过 | `powershell -File scripts\make_test_media.ps1` |
+| `build\win-x64\` | 内核 DLL 与 4 个测试 exe 没了；`check_all.py` 的原生冒烟/硬解两项自动跳过 | `powershell -File scripts\build_windows.ps1` |
+| `build\dart-check\` | 无所谓，每次自检都会重编 kernel | `python tool\check_all.py` |
+| `build\remote\` | Mac 远程调试用的历史脚本（137 个 `.sh`），0.1 MB，留着当参考 | 无需重建 |
+| `native\third_party\` | 静态库/动态库全没了，任何平台都编不动 | `scripts\build_windows.ps1` 或 `SLICES=<family> ./scripts/build_apple_deps.sh` |
+| `app\build\`、`app\windows\out\`、`app\windows\flutter\ephemeral\` | Flutter 构建缓存与 CMake 中间件 | 重跑 `flutter build windows`（CMake 会重新生成 `ephemeral`） |
+| `app\.dart_tool\flutter_build\` | 编译缓存；`package_config.json` 会留着，`flutter` 命令仍可用 | 重跑一次 `flutter build` |
+| `dist\` | 两个安装包 | `scripts\build_windows_installer.ps1` / `scripts\build_macos_dmg.sh` |
+| `.vs\` | Visual Studio 打开仓库时生成的缓存 | VS 自己会重建 |
+
+**不能删**：`.tools\`（工具链本体，2.7 GB，只能重新 `fetch_deps.py` 下载）、
+`.tools\flutter-sdk\.git`（Flutter 工具会校验它，删了直接报“不是 GitHub 仓库的克隆”）、
+`.tools\flutter-sdk\bin\mingit`（这台机器上唯一可用的 git）。
 
 ## 8\. 常见问题
 

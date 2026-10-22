@@ -53,19 +53,19 @@
 
 | 文件夹 | 文件数 | 作用 |
 |-|-:|-|
-| `app/` | 136 | Flutter 应用整体（Dart UI + 各平台外壳） |
-| `app/lib/` | 19 | 全部 Dart 业务代码，下面五个子目录按职责拆开 |
+| `app/` | 164 | Flutter 应用整体（Dart UI + 各平台外壳） |
+| `app/lib/` | 22 | 全部 Dart 业务代码，下面五个子目录按职责拆开 |
 | `app/lib/core/` | 2 | `bindings.dart` 是 `dart:ffi` 与 C ABI 的唯一契约；`player_controller.dart` 把事件流转成 `ChangeNotifier` |
-| `app/lib/data/` | 5 | 数据层：`models.dart`（服务器/媒体/字幕模型）、`stores.dart` + `progress.dart`（JSON 持久化）、`repository.dart`（媒体源仓库）、`location.dart`（平台路径） |
+| `app/lib/data/` | 7 | 数据层：`models.dart`（服务器/媒体/字幕模型）、`stores.dart` + `progress.dart`（JSON 持久化）、`repository.dart`（媒体源仓库）、`location.dart`（平台路径）、`lan_scan.dart`（扫 445 找主机）、`thumbs.dart`（封面缓存） |
 | `app/lib/player/` | 1 | `playlist.dart`：播放列表与剧集识别（文件名里的集数解析） |
-| `app/lib/ui/` | 9 | 五个界面（首页/浏览/播放/服务器编辑/设置）+ 主题、反馈文案、`video_texture.dart` 纹理桥 |
-| `app/lib/ui/widgets/` | 1 | `subtitle_overlay.dart`：字幕气泡，纯 Flutter `Text.rich` 渲染，带描边层 |
+| `app/lib/ui/` | 10 | 五个界面（首页/浏览/播放/服务器编辑/设置）+ 主题、反馈文案、`video_texture.dart` 纹理桥、`lan_host_picker.dart` |
+| `app/lib/ui/widgets/` | 2 | `subtitle_overlay.dart`：字幕气泡，纯 Flutter `Text.rich` 渲染，带描边层；`thumbnail_tile.dart`：列表里的封面格 |
 | `app/lib/util/` | 1 | `format.dart`：时长、体积、码率等格式化 |
-| `app/test/` | 2 | `flutter test` 用例：字幕 span 树断言 + 真实光栅化的像素计数、设置项默认值 |
-| `app/tool/` | 1 | `browse_smoke.dart`：不开 UI 直接跑一遍 SMB 浏览的脚本 |
-| `app/android/` | 6 | Android 外壳：Gradle、清单、Kotlin `MainActivity`（纹理/JNI）、`cpp/CMakeLists.txt`、生成的插件注册表 |
+| `app/test/` | 6 | `flutter test` 用例：字幕 span 树断言 + 真实光栅化的像素计数、设置项默认值、局域网扫描、服务器编辑页、封面缓存与封面格（另有 `goldens/` 里的基准图） |
+| `app/tool/` | 2 | `browse_smoke.dart`：不开 UI 直接跑一遍 SMB 浏览；`lan_scan_probe.dart`：命令行扫网段 |
+| `app/android/` | 25 | Android 外壳：Gradle 工程（wrapper、settings、属性）、清单、Kotlin `MainActivity`（纹理/JNI）、`cpp/CMakeLists.txt`、生成的插件注册表 |
 | `app/ios/` | 44 | iOS / iPadOS 外壳：`AppDelegate.swift`（纹理桥）、`Info.plist`、Bridging Header、`Runner.xcodeproj`、`Podfile` |
-| `app/macos/` | 30 | macOS 外壳：`MainFlutterWindow.swift`（纹理桥）、`Runner.xcodeproj`、`Podfile`、两个 entitlements（含 `network.client`） |
+| `app/macos/` | 32 | macOS 外壳：`MainFlutterWindow.swift`（纹理桥）、`Runner.xcodeproj`、`Podfile`、两个 entitlements（含 `network.client`） |
 | `app/windows/` | 19 | Windows 桌面外壳：CMake 工程 + Flutter runner |
 | `app/windows/flutter/` | 5 | Flutter 与 CMake 的胶水层；`generated_plugins.cmake` 等文件由工具生成 |
 | `app/windows/runner/` | 12 | 窗口与入口：`main.cpp`、`win32_window.cpp`（建窗/DPI）、`flutter_window.cpp`（纹理宿主） |
@@ -92,13 +92,30 @@
 | `native/platform/` | 8 | 第三方库在 Windows 上的编译补丁 |
 | `native/platform/win32/smb2/` | 8 | libsmb2 在 mingw 下缺的头（`poll.h`、`sys/socket.h`、`netdb.h` 等） |
 | `native/tests/` | 4 | 四个测试可执行文件：冒烟、纹理/颜色、D3D11VA 端到端、硬解能力探针 |
-| `scripts/` | 22 | 所有构建与验证脚本（含两个平台的安装包脚本，见下方脚本表） |
-| `tool/` | 12 | 静态检查与依赖下载（见下方工具表） |
-| `docs/` | 15 | 6 篇文档 + 9 张验证截图 |
-| `docs/images/` | 9 | 界面与硬解验证截图，README 与 `verification.md` 引用 |
+| `scripts/` | 24 | 所有构建与验证脚本（含两个平台的安装包脚本，见下方脚本表） |
+| `tool/` | 13 | 静态检查与依赖下载（见下方工具表） |
+| `docs/` | 16 | 6 篇文档 + 10 张验证截图 |
+| `docs/images/` | 10 | 界面与硬解验证截图，README 与 `verification.md` 引用 |
 | `.github/workflows/` | 1 | CI：五个平台的构建 + 全部静态检查（只改文档不触发，见 `docs/build.md` 6.6） |
-| `.tools/` | — | 下载的工具链（zig / ffmpeg / libsmb2 / flutter-sdk），不进 git |
-| `build/` | — | 构建产物与测试素材，不进 git |
+| `.tools/` | — | 下载的工具链（zig / ffmpeg / libsmb2 / flutter-sdk / nsis / python），不进 git |
+| `build/` | — | 构建产物与测试素材，不进 git；两个子目录删了可以用脚本重生（见下） |
+| `dist/` | — | 打出来的安装包（exe / dmg），不进 git |
+
+### 哪些东西删了还能重建
+
+仓库里有些体积大的东西是**生成物**，删掉不影响源码，需要时用一条命令重建：
+
+| 路径 | 体积 | 重建方式 |
+|-|-:|-|
+| `build/media/`（测试素材） | 约 59 MB | `powershell -File scripts\make_test_media.ps1`（需要 `.tools/ffmpeg`） |
+| `build/win-x64/`（内核 DLL 与 4 个测试 exe） | 约 196 MB | `powershell -File scripts\build_windows.ps1` |
+| `build/media/colortest/red.mp4` | 28 KB | 同上 `make_test_media.ps1`；`check_all.py` 的硬解一项靠它，没有就自动跳过 |
+| `native/third_party/`（FFmpeg / libsmb2 / 核静态库） | 数百 MB | `scripts\build_windows.ps1`（Windows）、`SLICES=macosx ./scripts/build_apple_deps.sh`（Apple） |
+| `app/build/`、`app/windows/out/`、`app/.dart_tool/` | 数百 MB | 重新跑一次 `flutter build windows` / `flutter pub get` |
+| `dist/`（安装包） | 81 MB | `scripts\build_windows_installer.ps1`、`scripts\build_macos_dmg.sh` |
+| `.tools/`（工具链本体） | 2.7 GB | `python tool\fetch_deps.py zig ffmpeg libsmb2 dart flutter nsis` |
+
+**不要删**：`.tools/flutter-sdk/.git`（删了 Flutter 工具直接报“不是 GitHub 仓库的克隆”）、`.tools/flutter-sdk/bin/mingit`（本机唯一可用的 git）。
 
 ### 树状图
 
@@ -106,14 +123,14 @@
 LanPlayer/
 ├─ app/                     Flutter 应用（Android / iOS / macOS / Windows）
 │  ├─ lib/core/             FFI 绑定、播放器控制器
-│  ├─ lib/data/             模型、存储、媒体源仓库
+│  ├─ lib/data/             模型、存储、媒体源仓库、局域网扫描、封面缓存
 │  ├─ lib/player/           播放列表与集数识别
-│  ├─ lib/ui/               五个界面 + 字幕气泡
+│  ├─ lib/ui/               五个界面 + 字幕气泡 + 封面格
 │  ├─ android/…             Kotlin 纹理插件、JNI、Gradle、清单
 │  ├─ ios/Runner/…          Swift 纹理桥、Bridging Header、Info.plist、Runner.xcodeproj
 │  ├─ macos/Runner/…        MainFlutterWindow.swift 纹理桥、entitlements、Runner.xcodeproj
 │  ├─ windows/…             runner + 生成的插件注册表（CMake + MSVC）
-│  └─ test/                 字幕渲染像素测试 + 设置项默认值测试
+│  └─ test/                 字幕渲染像素测试 + 设置/扫描/封面测试 + 基准图
 ├─ packages/lanplayer_video/ Windows 纹理插件（C++，把内核的 BGRA 帧交给 Flutter）
 ├─ packages/lanplayer_core/  iOS / macOS 的 FFI 插件（两个 podspec，把静态库链进 Runner）
 ├─ native/                  C11 播放内核
@@ -122,12 +139,12 @@ LanPlayer/
 │  ├─ src/source/           LpSource：SMB / 本地 / 自定义 AVIO
 │  ├─ src/platform/         android / apple / win32 / stub（CI）
 │  └─ tests/                无依赖冒烟测试
-├─ scripts/                 各平台构建、截图、插件 junction 脚本
+├─ scripts/                 各平台构建、截图、插件 junction、安装包脚本
 ├─ tool/                    C 符号一致性检查、依赖下载、测试素材生成
 └─ docs/                    架构、构建、协议、安全、路线图、验证记录
 ```
 
-### 脚本（`scripts/`，22 个 + `scripts/windows/installer.nsi`）
+### 脚本（`scripts/`，23 个 + `scripts/windows/installer.nsi`）
 
 | 脚本 | 作用 |
 |-|-|
@@ -145,22 +162,26 @@ LanPlayer/
 | `capture_window.ps1` | 同上，更早的窗口版（拿来做 UI 证据） |
 | `capture_screen.ps1` | 按用户视角截图；`-WholeScreen` 抓整屏（窗口矩形在缩放显示器上会错过客户区） |
 | `capture_playback_ui.ps1` | 起播放页、先把光标停进窗口让控制栏出现，再整屏抓取并按客户区裁剪，同时统计四个区域的亮像素 |
+| `capture_lanscan.ps1` | 起桌面端并自动进入「添加服务器」页，触发一次局域网扫描后截图 |
+| `click_window.ps1` | 用真实光标事件 `mouse_event` 点窗口里的坐标（`PostMessage` 不产生 Flutter tap） |
 | `hover_probe.ps1` | 断言「鼠标移动显示控件、静止 2 秒收起」：真实移动系统光标，看 `LanPlayer controls:` 日志序列 |
 | `send_keys.ps1` | 向真实窗口投递按键，验证快捷键/全屏 |
 | `sync_github.ps1` | 一条命令把工作区推到 GitHub：`git add -A` → 有变化才 commit → `git push`；无变化时是空操作 |
 | `install_git_hooks.ps1` | 安装 `.git/hooks/post-commit`（每次 commit 后自动 push）；钩子不在版本库里，新克隆要跑一次 |
+| `ensure_github_tunnel.ps1` | 起本地 CONNECT 隧道（`tool/github_tunnel.py`），供 `github.com` 直连失败时推送用 |
 | `build_windows_installer.ps1` | 出 Windows 安装包：暂存 exe/DLL/data + app-local VC++ CRT → `makensis` → `dist\LanPlayer-<ver>-windows-x64-setup.exe`（每用户安装到 `%LOCALAPPDATA%\Programs\LanPlayer`，不需管理员） |
 | `build_macos_dmg.sh` | 出 macOS dmg：`ditto` 拷 `.app` + `/Applications` 软链 → `hdiutil UDZO` → 校验 → `dist/LanPlayer-<ver>-macos-<arch>.dmg`（ad-hoc 签名） |
 | `windows/installer.nsi` | NSIS 脚本本体（UTF-8 **带 BOM**，否则 `makensis` 报 `Bad text encoding`） |
 
-### 工具（`tool/`，12 个）
+### 工具（`tool/`，13 个）
 
 | 工具 | 作用 |
 |-|-|
 | `check_all.py` | 全项目静态检查的总入口，一条命令跑完下面所有项 |
 | `check_c_syntax.py` | C 源码括号/预处理/`#include` 解析/编码检查（不需要编译器） |
 | `check_symbols.py` | 声明/定义/调用/Dart 绑定四处符号一致性 |
-| `fetch_deps.py` | 下载工具链（zig / ffmpeg / libsmb2 / dart / flutter / ffi / path_provider）到 `.tools/` |
+| `fetch_deps.py` | 下载工具链（zig / ffmpeg / libsmb2 / dart / flutter / nsis）到 `.tools/` |
+| `github_tunnel.py` | 本地 HTTP CONNECT 隧道：把 `github.com` 钉到能连的 IP 上（TLS 仍端到端） |
 | `image_stats.ps1` | `LockBits` 采样图片区域，打印主色、均值，可裁剪另存 |
 | `make_pgs_fixture.py` | 手写 PGS（`.sup`）测试素材，验证位图字幕 |
 | `pgs_probe.c` | 独立解码 PGS，打印矩形/调色板/字节 |
@@ -314,9 +335,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_git_hooks.ps
 `.gitignore` 同时是一份"哪些目录是生成物"的清单：
 `build/`、`.tools/`、`app/windows/out/`、`app/windows/flutter/ephemeral/` 都是几百 MB 级的
 构建产物（单是 `avcodec-63.dll` 就有 **114 MB**，超过 GitHub 100 MB 的单文件上限）。
-按 `.gitignore` 过滤后，实际上传的只有约 **232 个文件 / 3.7 MB**。
+按 `.gitignore` 过滤后，实际上传的只有约 **270 个文件 / 4.4 MB**。
 
 工具链（`.tools/`，含 Flutter SDK）不入库，`python tool\fetch_deps.py` 可以重新拉回。
+
+仓库里**不必留**的东西都清过了：测试素材、内核产物、`.vs`、CI 日志、`flutter_build` 缓存、
+一次性的调试脚本，一共删掉约 **1.3 GB**（4263.9 MB → 2982.9 MB）。留下的 2.9 GB 里
+2.7 GB 是 `.tools/` 工具链本身——它不进 git，只是本机编译要用。每类生成物的重建命令见
+上面「哪些东西删了还能重建」那张表。
 
 ## 构建
 
