@@ -94,7 +94,7 @@
 | `native/platform/` | 8 | 第三方库在 Windows 上的编译补丁 |
 | `native/platform/win32/smb2/` | 8 | libsmb2 在 mingw 下缺的头（`poll.h`、`sys/socket.h`、`netdb.h` 等） |
 | `native/tests/` | 6 | 六个测试可执行文件：冒烟、纹理/颜色、D3D11VA 端到端、硬解能力探针、封面回归（`lp_thumb_test.exe`）、目录元数据过滤（`lp_junk_test.exe`） |
-| `scripts/` | 29 | 所有构建与验证脚本（含两个平台的安装包脚本，见下方脚本表） |
+| `scripts/` | 29 | 所有构建与验证脚本（含两个平台的安装包脚本与覆盖升级/卸载的正负对照，见下方脚本表） |
 | `tool/` | 13 | 静态检查与依赖下载（见下方工具表） |
 | `docs/` | 6 | 6 篇文档 |
 | `docs/images/` | 20 | 界面与硬解验证截图，README 与 `verification.md` 引用 |
@@ -179,7 +179,9 @@ LanPlayer/
 | `build_windows_installer.ps1` | 出 Windows 安装包：暂存 exe/DLL/data + app-local VC++ CRT → `makensis` → `dist\LanPlayer-<ver>-windows-x64-setup.exe`（每用户安装到 `%LOCALAPPDATA%\Programs\LanPlayer`，不需管理员） |
 | `build_macos_dmg.sh` | 出 macOS dmg：`ditto` 拷 `.app` + `/Applications` 软链 → `hdiutil UDZO` → 校验 → `dist/LanPlayer-<ver>-macos-<arch>.dmg`（ad-hoc 签名） |
 | `ios_device_install.sh` | 装到实体 iPad / iPhone：写 `DEVELOPMENT_TEAM` → `flutter build ios --release` → `devicectl device install app` → 启动。`TEAM_ID=<10 位> ./scripts/ios_device_install.sh` |
-| `windows/installer.nsi` | NSIS 脚本本体（UTF-8 **带 BOM**，否则 `makensis` 报 `Bad text encoding`） |
+| `windows/installer.nsi` | NSIS 脚本本体（UTF-8 **带 BOM**，否则 `makensis` 报 `Bad text encoding`）。含 `StopRunningApp` 宏：装/卸前先关掉正在运行的旧版，所以能直接覆盖升级 |
+| `verify_windows_upgrade.ps1` | 覆盖升级的正负对照：装 0.1.1 进 scratch → 往 exe 尾追加标记字节、删一个 DLL → 让旧版跑着 → 静默装 0.1.2 → 断言 exe 被换回 90624 字节、DLL 回来了、旧进程没了。跑完恢复注册表与快捷方式 |
+| `verify_windows_uninstall.ps1` | 卸载的正负对照：装进 scratch → 启动 app → 不关它直接 `/S` 卸载 → 断言无残留文件、进程没了。配合 `mknoun.py` 拆掉卸载段宏的版本应报 FAIL |
 
 ### 工具（`tool/`，13 个）
 
@@ -422,6 +424,11 @@ VERSION=0.1.0 ./scripts/build_macos_dmg.sh
 核心也从不调 `avdevice_*`。用户数据两个包都不碰：Windows 卸载时问一句是否删
 `%APPDATA%\lanplayer`（默认保留），macOS 删 app 就结束，状态在
 `~/Library/Containers/dev.lanplayer.lanplayer/`。
+
+Windows 支持**覆盖升级**：旧版本还在跑也可以直接双击新版安装包，安装器会先把旧
+进程关掉（先发关闭请求，5 秒不退才强制结束）再写文件，不需要先手动卸载。卸载同理，
+应用开着也能卸干净。两条路径都有正负对照脚本（`scripts\verify_windows_upgrade.ps1`、
+`scripts\verify_windows_uninstall.ps1`），细节见 `docs/build.md` 7.1。
 
 ### 下载已发布的安装包
 

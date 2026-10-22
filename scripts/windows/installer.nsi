@@ -43,6 +43,8 @@ SetCompressorDictSize 64
 Name "${APP_NAME} ${APP_VERSION}"
 OutFile "${OUTFILE}"
 InstallDir "$LOCALAPPDATA\Programs\${APP_NAME}"
+; 覆盖升级时的落点：装过一次以后就认注册表里的 InstallDir，
+; 否则用户在安装向导里改过目录的话，新版本会装回默认目录，留下两份。
 InstallDirRegKey HKCU "Software\${APP_ID}" "InstallDir"
 RequestExecutionLevel user
 BrandingText "${APP_NAME} ${APP_VERSION}"
@@ -87,10 +89,62 @@ LangString DESC_Shortcut  ${LANG_ENGLISH}     "Create Desktop and Start Menu sho
 LangString DESC_Assoc     ${LANG_SIMPCHINESE} "把常见视频格式（mp4/mkv/avi/mov/ts/m4v）关联到 LanPlayer。"
 LangString DESC_Assoc     ${LANG_ENGLISH}     "Associate common video files (mp4/mkv/avi/mov/ts/m4v) with LanPlayer."
 
+; ---------------- 覆盖升级：先把旧版请退 ----------------
+; 旧版还在跑的时候 lanplayer.exe 与那几个 DLL 都是已映射的映像，File 写不进去，
+; NSIS 只会弹「无法打开要写入的文件」，用户就得先手动卸载 —— 这就是要修的问题。
+;
+; 做法：先用 taskkill 不带 /F 给它发 WM_CLOSE（等于点窗口右上角的叉，会走正常退出
+; 流程、把设置写盘），最多等 5 秒；还不退才 /F 强杀。装完由完成页的「立即启动」
+; 把它再拉起来（那是 MUI_FINISHPAGE_RUN 的老行为，静默安装不重启）。
+; 按映像名找进程，所以同机另一份 lanplayer.exe 也会一起被关掉 —— 这个程序的
+; 用户数据在 %APPDATA%\lanplayer，卸载/升级从不删，多份并存本来就没意义。
+!macro StopRunningApp
+  ; 先确认它到底在不在。tasklist 用 /FI 过滤映像名，交给 find 找；找不到时
+  ; find 返回非 0，正好当「不存在」用 —— 比拿 taskkill 的退出码可靠：不带 /F 的
+  ; taskkill 对「有窗口但收不到 WM_CLOSE」的进程会返回错误码，而进程其实还活着。
+  nsExec::ExecToStack 'cmd /C tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH | find /I "${APP_EXE}"'
+  Pop $R8
+  Pop $R7   ; 输出（丢掉）
+
+  ${If} $R8 != 0
+    DetailPrint "${APP_NAME} 没在运行，直接安装。"
+  ${Else}
+    ; 先礼后兵：不带 /F 的 taskkill 等于给它发 WM_CLOSE，会走正常退出流程，
+    ; 把设置安稳写盘，也不会有「文件被占用」的残留句柄。
+    nsExec::ExecToStack 'taskkill /IM "${APP_EXE}"'
+    Pop $R8
+    Pop $R7
+    DetailPrint "已通知正在运行的 ${APP_NAME} 退出，等待它收尾。"
+
+    StrCpy $R6 0
+    ${Do}
+      Sleep 500
+      nsExec::ExecToStack 'cmd /C tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH | find /I "${APP_EXE}"'
+      Pop $R8
+      Pop $R7
+      ${If} $R8 != 0
+        ${ExitDo}
+      ${EndIf}
+      IntOp $R6 $R6 + 1
+    ${LoopUntil} $R6 >= 10
+
+    ${If} $R6 >= 10
+      DetailPrint "旧版本 5 秒内没退出，强制结束。"
+      nsExec::ExecToStack 'taskkill /IM "${APP_EXE}" /F'
+      Pop $R8
+      Pop $R7
+      Sleep 600
+    ${EndIf}
+  ${EndIf}
+!macroend
+
 ; ---------------- 主安装段 ----------------
 Section "LanPlayer 主程序" SecCore
   SectionIn RO
   SetShellVarContext current
+
+  !insertmacro StopRunningApp
+
   SetOutPath "$INSTDIR"
   ; 主程序 + 所有 DLL（逐文件打包，便于将来做差分升级）
   File "${STAGE}\${APP_EXE}"
@@ -177,10 +231,13 @@ Function .onInit
     Abort
   ${EndIf}
 FunctionEnd
-
 ; ---------------- 卸载 ----------------
 Section "Uninstall"
   SetShellVarContext current
+  ; 卸载时如果程序还开着，Delete 同样会失败（文件被映像占用）——
+  ; 这里也要先把它请退，否则卸载会留一堆删不掉的 DLL。
+  !insertmacro StopRunningApp
+
   Delete "$INSTDIR\${APP_EXE}"
   Delete "$INSTDIR\lanplayer.dll"
   Delete "$INSTDIR\lanplayer_video_plugin.dll"

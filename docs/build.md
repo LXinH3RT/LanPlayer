@@ -966,6 +966,47 @@ dist\LanPlayer-0.1.0-windows-x64-setup.exe /S /D=D:\some\dir
 D:\some\dir\uninstall.exe /S
 ```
 
+#### 覆盖升级：不要求用户先手动卸载
+
+旧版还在运行的时候直接双击新版安装包，以前会弹「无法打开要写入的文件：
+…\lanplayer.exe」。原因是 `lanplayer.exe` 与 13 个 DLL 当时都是已映射映像，
+Windows 不允许覆盖正在运行的映像 —— 这是文件系统规则，不是安装器脚本的 bug。
+
+`installer.nsi` 因此加了 `!macro StopRunningApp`（第 101 行），在
+`Section "LanPlayer 主程序"` 与 `Section "Uninstall"` 两处各插一次：
+
+- 先 `taskkill /IM lanplayer.exe`（**不带 `/F`**，等于发 `WM_CLOSE`，走正常退出、
+  设置能安稳写盘）；
+- 再用 `tasklist /FI "IMAGENAME eq lanplayer.exe" /NH | find /I lanplayer.exe`
+  每 500 ms 探一次、最多 10 次；`find` 返回非 0 即视为已退出；
+- 5 秒还没退才 `taskkill /F`。
+
+> 别用 `taskkill` 自己的退出码判断「在不在跑」：不带 `/F` 时它对收不到
+> `WM_CLOSE` 的进程返回错误码，而进程其实活着，会走错分支直接去撞被占用的文件。
+
+`InstallDirRegKey HKCU "Software\LanPlayer" "InstallDir"` 也必须保留：
+有它，覆盖升级才认用户改过的安装目录，不会装出第二份。
+
+两条验证脚本（都属 `REQUIRED`，check_all 会盯着它们还在不在）：
+
+```powershell
+powershell -File scripts\verify_windows_upgrade.ps1     # 旧版运行中 -> 装新版
+powershell -File scripts\verify_windows_uninstall.ps1   # 应用运行中 -> 卸载
+```
+
+两个都装到 `D:\lp-upgrade-test` / `D:\lp-uninstall-test` 这类 scratch 目录，跑完
+恢复注册表与快捷方式，不动真实安装。它们做**正负对照**：把宏拆掉的那份安装器
+（`.tools\tmp` 里由 `mknokill.py` / `mknoun.py` 生成）必须让脚本报失败，
+否则说明断言压根没在测东西。详见 `verification.md` 3.33。
+
+跑这两个脚本时注意两点（都踩过）：
+
+- **必须先 `Copy-Item` 到 `%TEMP%` 再执行**。受限会话建出来的文件带
+  `Mandatory Label\Low Mandatory Level` 完整性标签，Low 标签的 exe 写 Medium
+  目录会**静默失败**（exit 0、什么也不做、不报错）。
+- **别用 `Start-Process -PassThru` + `$p.HasExited` 轮询**，在本机受限环境 里会
+  死锁（进程已退出，wrapper 永不返回）。用同步的 `cmd /c "<setup>" /S`。
+
 ### 7.2 macOS（dmg）
 
 ```bash

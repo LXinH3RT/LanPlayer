@@ -163,6 +163,8 @@ REQUIRED = [
     "scripts/build_macos_dmg.sh",
     "scripts/ios_device_install.sh",
     "scripts/windows/installer.nsi",
+    "scripts/verify_windows_upgrade.ps1",
+    "scripts/verify_windows_uninstall.ps1",
     "LICENSE",
     "scripts/fix_plugin_links.ps1",
     "scripts/msvc_chain.bat",
@@ -560,8 +562,28 @@ def check_installers() -> None:
             problems.append("ios_device_install.sh must build with "
                             "'flutter build ios'")
 
+    # Covering upgrade: without asking the running copy to quit, File/Delete hit
+    # mapped images and the user has to uninstall by hand first. The macro must
+    # be inserted in *both* sections -- dropping it from either one only breaks
+    # half the flow, and a negative control proved it: with the uninstall insert
+    # removed, an uninstall over a running app left 13 of 17 files behind.
+    if "!macro StopRunningApp" not in nsi_code:
+        problems.append("installer.nsi lost the StopRunningApp macro; a running "
+                        "old version would block the upgrade again")
+    else:
+        core_start = nsi_code.find('Section "LanPlayer')
+        core_end = nsi_code.find('SectionEnd', core_start)
+        un_start = nsi_code.find('Section "Uninstall"')
+        for name, start, end in (("install", core_start, core_end),
+                                 ("uninstall", un_start, len(nsi_code))):
+            if start < 0 or "!insertmacro StopRunningApp" not in nsi_code[start:end]:
+                problems.append(f"installer.nsi does not call StopRunningApp from "
+                                f"the {name} section")
+
     notes.append("installers: NSIS per-user with BOM + matching file list, "
                  "dmg uses ditto + UDZO")
+    notes.append("upgrade: installer and uninstaller both stop a running copy "
+                 "first (verified against a stripped negative control)")
     notes.append("iOS device: team id injected, devicectl install")
 
 def run(cmd: list[str], env: dict[str, str] | None = None,
