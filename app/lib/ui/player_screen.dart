@@ -50,6 +50,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _showStats = false;
   int? _audioIndex;
 
+  /// 语言偏好只在拿到轨道信息后应用一次，用户手动切换后不再干预。
+  bool _prefsApplied = false;
+
   /// Simulated screen brightness (the app dims its own picture; changing the
   /// real panel brightness needs a platform call that Windows does not expose
   /// to desktop apps).
@@ -80,6 +83,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   final GlobalKey _backKey = GlobalKey();
   final GlobalKey _pictureKey = GlobalKey();
   final GlobalKey _volumeKey = GlobalKey();
+  final GlobalKey _subtitleKey = GlobalKey();
+  final GlobalKey _audioKey = GlobalKey();
 
   /// Set from LANPLAYER_LAYOUT_PROBE: once the transport UI is first up, print the
   /// global rectangles of the back button and the picture button, then stop.
@@ -148,6 +153,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ? ProgressStore.instance.resumablePosition(entry.path, 0)
         : null;
     _resumeHandled = false;
+    // 换片时把「已经按偏好挑过轨道」的标志清掉，否则连播下一集时
+    // 新文件的音轨/字幕再也不会按设置挑。`_audioIndex` 同理：它是上一
+    // 个文件的流索引，留着会让新文件选中一条不存在（或编号不同）的轨。
+    _prefsApplied = false;
+    _audioIndex = null;
     _player.open(url, _settings, extra: widget.location.options);
     if (_subtitleDelay != 0) {
       _player.setSubtitleDelay(_subtitleDelay);
@@ -185,7 +195,72 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _onPlayerChanged() {
     if (!mounted) return;
     _applyPendingResume();
+    _applyTrackPreferences();
     setState(() {});
+  }
+
+  /// 打开后按设置里的语言偏好选一次默认音轨和字幕轨。
+  ///
+  /// 内核默认用 `av_find_best_stream`，只会挑「第一条」——多音轨的片子
+  /// 经常第一条是英语评论轨，用户报的就是这个。这里在轨道信息第一次到手时
+  /// 按偏好重选一次；只做一次（`_prefsApplied`），用户手动切过之后不再干扰。
+  void _applyTrackPreferences() {
+    if (_prefsApplied) return;
+    final info = _player.media;
+    if (info.audio.isEmpty && info.subtitles.isEmpty) return;
+    _prefsApplied = true;
+
+    // 音轨：只在文件真的有多条时才切，避免无谓地重启音频。
+    if (info.audio.length > 1) {
+      final want = pickTrack(
+        [
+          for (final a in info.audio)
+            TrackChoice(
+              index: a.index,
+              lang: a.lang,
+              title: a.title,
+              // 内核没有把 disposition 传上来，用「第一条」近似发行方默认。
+              isDefault: a.index == info.audio.first.index,
+            ),
+        ],
+        _settings.audioPreference,
+      );
+      final current = _currentAudioIndex(info);
+      if (want != null && want != current) {
+        // ignore: avoid_print
+        print('LanPlayer audio pick: $current -> $want '
+            '(${_settings.audioPreference.primary}/${_settings.audioPreference.secondary})');
+        _audioIndex = want;
+        _player.selectAudio(want);
+      }
+    }
+
+    // 字幕：偏好是 auto 时不动（保持内核的「第一条」行为）。
+    final subPref = _settings.subtitlePreference;
+    final wantsSubtitle =
+        subPref.primary != 'auto' || subPref.secondary != 'auto';
+    if (wantsSubtitle && info.subtitles.isNotEmpty) {
+      final want = pickTrack(
+        [
+          for (final s in info.subtitles)
+            TrackChoice(
+              index: s.index,
+              lang: s.lang,
+              title: s.title,
+              isDefault: s.selected,
+              external: s.external,
+            ),
+        ],
+        subPref,
+      );
+      if (want != null && want != _currentSubtitleIndex(info)) {
+        // ignore: avoid_print
+        print(
+            'LanPlayer subtitle pick: ${_currentSubtitleIndex(info)} -> $want '
+            '(${subPref.primary}/${subPref.secondary})');
+        _player.selectSubtitle(want);
+      }
+    }
   }
 
   /// The resume seek needs the real duration (a re-encode can be shorter than
@@ -317,6 +392,51 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _showControls();
   }
 
+  /// 「音轨」面板：只列音频轨，标题是「音轨」。
+  ///
+  /// 以前音轨和字幕共用 [_openTracksSheet]，于是点「音轨」弹出的面板
+  /// 标题写着「字幕」——用户明确报了这个错误。现在拆成两个入口。
+  Future<void> _openAudioSheet() async {
+    _hideTimer?.cancel();
+    final info = _player.media;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => SafeArea(
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              _SheetHeader('音轨（${info.audio.length} 条）'),
+              if (info.audio.isEmpty)
+                const ListTile(
+                  title: Text('这个文件没有音轨'),
+                  subtitle: Text('可能是无声视频'),
+                ),
+              for (final a in info.audio)
+                RadioListTile<int>(
+                  value: a.index,
+                  groupValue: _currentAudioIndex(info),
+                  title: Text(a.label),
+                  subtitle: a.lang.isEmpty && a.title.isEmpty
+                      ? const Text('文件未标注语言', style: TextStyle(fontSize: 11))
+                      : null,
+                  onChanged: (v) {
+                    final picked = v ?? a.index;
+                    setSheet(() => _audioIndex = picked);
+                    _player.selectAudio(picked);
+                  },
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+    _scheduleHide();
+  }
+
+  /// 「字幕」面板：内嵌字幕轨 + 外挂字幕文件 + 同步微调。
   Future<void> _openTracksSheet() async {
     _hideTimer?.cancel();
     final info = _player.media;
@@ -329,20 +449,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           child: ListView(
             shrinkWrap: true,
             children: [
-              if (info.audio.length > 1) ...[
-                const _SheetHeader('音轨'),
-                for (final a in info.audio)
-                  RadioListTile<int>(
-                    value: a.index,
-                    groupValue: _currentAudioIndex(info),
-                    title: Text(a.label),
-                    onChanged: (v) {
-                      setSheet(() => _audioIndex = v ?? a.index);
-                      _player.selectAudio(v ?? a.index);
-                    },
-                  ),
-              ],
-              const _SheetHeader('字幕'),
+              _SheetHeader('字幕（${info.subtitles.length} 条内嵌）'),
               RadioListTile<int>(
                 value: -1,
                 groupValue: _currentSubtitleIndex(info),
@@ -1064,12 +1171,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     label: const Text('画面'),
                   ),
                   TextButton.icon(
+                    key: _subtitleKey,
                     onPressed: _openTracksSheet,
                     icon: const Icon(Icons.subtitles_outlined, size: 18),
                     label: const Text('字幕'),
                   ),
                   TextButton.icon(
-                    onPressed: _openTracksSheet,
+                    key: _audioKey,
+                    onPressed: _openAudioSheet,
                     icon: const Icon(Icons.graphic_eq, size: 18),
                     label: const Text('音轨'),
                   ),

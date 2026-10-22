@@ -94,10 +94,10 @@
 | `native/platform/` | 8 | 第三方库在 Windows 上的编译补丁 |
 | `native/platform/win32/smb2/` | 8 | libsmb2 在 mingw 下缺的头（`poll.h`、`sys/socket.h`、`netdb.h` 等） |
 | `native/tests/` | 6 | 六个测试可执行文件：冒烟、纹理/颜色、D3D11VA 端到端、硬解能力探针、封面回归（`lp_thumb_test.exe`）、目录元数据过滤（`lp_junk_test.exe`） |
-| `scripts/` | 24 | 所有构建与验证脚本（含两个平台的安装包脚本，见下方脚本表） |
+| `scripts/` | 29 | 所有构建与验证脚本（含两个平台的安装包脚本，见下方脚本表） |
 | `tool/` | 13 | 静态检查与依赖下载（见下方工具表） |
-| `docs/` | 16 | 6 篇文档 + 10 张验证截图 |
-| `docs/images/` | 10 | 界面与硬解验证截图，README 与 `verification.md` 引用 |
+| `docs/` | 6 | 6 篇文档 |
+| `docs/images/` | 20 | 界面与硬解验证截图，README 与 `verification.md` 引用 |
 | `.github/workflows/` | 1 | CI：五个平台的构建 + 全部静态检查（只改文档不触发，见 `docs/build.md` 6.6） |
 | `.tools/` | — | 下载的工具链（zig / ffmpeg / libsmb2 / flutter-sdk / nsis / python），不进 git |
 | `build/` | — | 构建产物与测试素材，不进 git；两个子目录删了可以用脚本重生（见下） |
@@ -149,7 +149,7 @@ LanPlayer/
 └─ docs/                    架构、构建、协议、安全、路线图、验证记录
 ```
 
-### 脚本（`scripts/`，24 个 + `scripts/windows/installer.nsi`）
+### 脚本（`scripts/`，29 个 + `scripts/windows/installer.nsi`）
 
 | 脚本 | 作用 |
 |-|-|
@@ -167,6 +167,8 @@ LanPlayer/
 | `capture_window.ps1` | 同上，更早的窗口版（拿来做 UI 证据） |
 | `capture_screen.ps1` | 按用户视角截图；`-WholeScreen` 抓整屏（窗口矩形在缩放显示器上会错过客户区） |
 | `capture_playback_ui.ps1` | 起播放页、先把光标停进窗口让控制栏出现，再整屏抓取并按客户区裁剪，同时统计四个区域的亮像素 |
+| `capture_track_sheet.ps1` | 起播放页，晃指针让控制栏出现 → 点画面空白处激活窗口 → 点「音轨」/「字幕」图标 → 整屏抓取按客户区裁；`-Button settings -Scroll N` 拍设置页。**只写 ASCII 注释**（无 BOM 的 `.ps1` 会被 PowerShell 5.1 按 ANSI 解码，中文注释乱码会吃掉下一行） |
+| `run_flutter_tests.sh` | 把 `TMP`/`TEMP`/`APPDATA`/`LOCALAPPDATA`/`PUB_CACHE` 重定向到仓库内 `.tools/` 后调 SDK：`./scripts/run_flutter_tests.sh` 即 `flutter test`，带参数则透传（如 `analyze`） |
 | `capture_lanscan.ps1` | 起桌面端并自动进入「添加服务器」页，触发一次局域网扫描后截图 |
 | `click_window.ps1` | 用真实光标事件 `mouse_event` 点窗口里的坐标（`PostMessage` 不产生 Flutter tap） |
 | `hover_probe.ps1` | 断言「鼠标移动显示控件、静止 2 秒收起」：真实移动系统光标，看 `LanPlayer controls:` 日志序列 |
@@ -267,6 +269,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_deskto
 * `desktop-browse.png` —— 浏览真实 SMB 共享（192.168.1.10）的目录，视频行显示观看进度
 * `desktop-smb-play.png` —— 直接播放共享里的 1920×820 h264 视频
 * `desktop-stats.png` —— 按 `S` 打开的解码统计覆盖层
+* `desktop-audio-sheet.jpg` —— 播放页「音轨（3 条）」面板：ENG / CHI / JPN 三条，CHI 选中
+* `desktop-subtitle-sheet.jpg` —— 「字幕（1 条内嵌）」面板：关闭字幕、`subrip`、同步 ±0.1s
+* `desktop-settings-tracklang.jpg` / `desktop-settings-subtitle-lang.jpg` —— 设置页首选/次选语言
 
 ### 原生预览播放器（只要内核）
 
@@ -557,8 +562,9 @@ iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字�
 |Windows 原生预览器|✅ 创建窗口、消息循环正常（hwnd 有效、Responding）|
 |画面渲染|✅ 无头渲染 120 帧并导出 BMP，烧录时间码 4.76s 与内部位置一致|
 |声音输出|✅ waveOut 48 kHz 立体声，AAC→float→设备，播放推进到 4.76s/6s|
-|Dart 语法|✅ `dart format` 解析 30 个文件，0 语法错误|
-|Dart 测试|✅ `flutter test` 44 个用例（字幕 span 树 + 光栅化像素计数 + 设置项默认值 + 局域网扫描 + 封面缓存/控件 + 服务器编辑页）全部通过|
+|多音轨 / 多字幕默认轨|✅ 内核 `av_find_best_stream` 只取第一条，所以多音轨片子默认落到英语评论轨。新增 `track_prefs.dart`：语言码归一（`zh`/`chi`/`zho`/`zh-CN`/`中文` 视为同一种语言）后按**首选语言 → 次选语言 → 容器默认 → 第一条**重选，只在换片时干预一次；播放页把「音轨」和「字幕」拆成两个面板（标题分别 `音轨（N 条）` / `字幕（N 条内嵌）`，原来音轨面板标题错写成「字幕」），设置页新增首选/次选音轨语言与字幕语言四项。实测 3 条 aac（ENG/CHI/JPN）的片子不再默认 ENG：`LanPlayer audio pick: 1 -> 2 (zh/auto)`。顺带修掉一个真 bug：`player_open_fn` 紧跟 `MEDIA_INFO` 发 `TRACKS` 空载荷 `"{}"`，host 把空 map 当成「没有轨道」抹掉真列表（字幕面板显示「0 条内嵌」）。详见 `docs/verification.md` 3.31|
+|Dart 语法|✅ `dart format` 解析 37 个文件，0 语法错误|
+|Dart 测试|✅ `flutter test` 93 个用例（字幕 span 树 + 光栅化像素计数 + 设置项默认值 + 局域网扫描 + 封面缓存/控件 + 服务器编辑页 + 浏览列表过滤 + 音量 + 选轨语言偏好）全部通过|
 |Windows 安装包|✅ NSIS 3.10 出 `dist\LanPlayer-0.1.0-windows-x64-setup.exe`（55.4 MB）；静默安装落地 17 个文件 200.2 MB，装出来的 `lanplayer.exe` 起窗正常（`hwnd=1049060 title=[lanplayer]`），静默卸载只剩 `state\`（用户数据按设计保留）|
 |macOS dmg|✅ `dist/LanPlayer-0.1.0-macos-arm64.dmg`（25.8 MB，59 MB app 压到 25.8 MB）；`hdiutil verify` 校验有效，`codesign --verify --deep --strict` 通过；拖进 `/Applications` 后启动即播（VideoToolbox 硬解 + 外挂字幕）|
 |GitHub Release|✅ `v0.1.0` 与 `v0.1.1` 各两个附件已发布（<https://github.com/LXinH3RT/LanPlayer/releases>）；每个包都用 API 下载回来算 SHA256 与本机文件完全一致。`v0.1.1` 的哈希：Windows `8F2FF76C…95C64`、macOS `602243CF…5C1D0F`；tag 指向 `f578a44`（含卡死修复）。仓库是 private，公开直链对未登录访问者为 404，属正常|
@@ -571,7 +577,7 @@ iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字�
 |Android / iOS / macOS 构建|本机没有 NDK / Xcode / CocoaPods；Android 与 iOS 已在 CI 的 `android` / `apple` 两个 job 上编译通过；macOS 已在本机的 Mac 上真跑通|
 |Apple 端真机验证|**已全部跑通**（macOS 见 `docs/verification.md` 3.18、iPad 模拟器 3.19、**实体 iPad 3.27**）：macOS 上 `flutter build macos --release` → `✓ Built lanplayer.app (61.7MB)`，`VideoToolbox` 硬解 + `AudioQueue` + 外挂 SRT；实体 iPad 带签名装机后 `hardware decode videotoolbox 1920x820`、`audioqueue started 48000Hz x2`、字幕 `1062 cues`、进度写入 `progress.json`（0 → 68.64 s），真机截图见 `docs/images/ipad-device-play.jpg`。|
 |真机硬解（MediaCodec / VideoToolbox）|`VideoToolbox` 已在 macOS 真机跑通（日志 `hardware decode videotoolbox`）；`MediaCodec` 需要在 Android 设备上验（CI 只保证编译）|
-|Flutter `analyze`|Dart 侧用 `flutter test` + kernel 编译两重检查（都已接进 `tool/check_all.py`）；`flutter analyze` 需要完整依赖解析，未在本机跑|
+|Flutter `analyze`|✅ 本机已跑通：`./scripts/run_flutter_tests.sh analyze` → `No issues found! (ran in 6.6s)`。直接用 `flutter analyze`/`flutter test` 会失败在 `%APPDATA%\.flutter_tool_state` 不可写，所以要包这层脚本把 `TMP`/`APPDATA`/`LOCALAPPDATA`/`PUB_CACHE` 重定向到仓库内 `.tools/`（详见 `docs/build.md` 7.4）|
 |GitHub Actions 全绿|私有仓库的免费额度（2000 分钟/月）已被这笔开发用完：一次全量 CI ≈ 55 计费分钟（macOS ×10、Windows ×2）。额度耗尽时 job 会「3 秒失败、`steps` 为空、日志 404」，annotation 里写的是 billing。已加 `paths-ignore`（改文档不触发）与 `concurrency`（新推送取消旧跑批）；要恢复全绿需改 public 仓库或提高 spending limit。详见 `docs/build.md` 6.6|
 |视频区域的截图验证|`PrintWindow` 读不到 Flutter 合成结果（客户区全黑）；`CopyFromScreen` 按窗口矩形抓也会因为缩放显示器上合成位置与 `GetWindowRect` 不一致而整个错过客户区。**改用整屏抓取**（`capture_screen.ps1 -WholeScreen`）后视频区域可见并已用于颜色顺序验证；字幕渲染仍以 `flutter test` 金色文件为准|
 

@@ -1,3 +1,7 @@
+import 'track_prefs.dart';
+
+export 'track_prefs.dart';
+
 /// Mirrors LpState in native/include/lanplayer/lp_types.h
 enum PlayerState {
   idle,
@@ -29,6 +33,12 @@ class PlaybackSettings {
   /// 但已经存下的历史不会被删除（重新打开开关就能接着用）。
   bool rememberProgress;
 
+  /// 默认音轨的语言偏好（首选 / 次选）。`auto` = 跟随容器默认标记。
+  TrackPreference audioPreference;
+
+  /// 默认字幕轨的语言偏好。
+  TrackPreference subtitlePreference;
+
   PlaybackSettings({
     this.hardwareDecoding = true,
     this.deinterlace = false,
@@ -39,6 +49,9 @@ class PlaybackSettings {
     this.subtitleScale = 1.0,
     this.subtitleDelayMs = 0,
     this.rememberProgress = true,
+    // 默认偏中文：用户报的就是多音轨片子落到英文轨上。
+    this.audioPreference = const TrackPreference(primary: 'zh'),
+    this.subtitlePreference = const TrackPreference(primary: 'zh'),
   });
 
   Map<String, dynamic> toJson() => {
@@ -51,6 +64,10 @@ class PlaybackSettings {
         'subtitle_scale': subtitleScale,
         'subtitle_delay_ms': subtitleDelayMs,
         'remember_progress': rememberProgress,
+        'audio_primary': audioPreference.primary,
+        'audio_secondary': audioPreference.secondary,
+        'subtitle_primary': subtitlePreference.primary,
+        'subtitle_secondary': subtitlePreference.secondary,
       };
 
   factory PlaybackSettings.fromJson(Map<String, dynamic> j) => PlaybackSettings(
@@ -64,6 +81,17 @@ class PlaybackSettings {
         subtitleDelayMs: (j['subtitle_delay_ms'] as num?)?.toInt() ?? 0,
         // 默认开启：老版本没有这个字段时就应当继续记进度。
         rememberProgress: j['remember_progress'] as bool? ?? true,
+        // 老配置没有这两个字段时：音频和字幕都偏中文。
+        // 默认给中文是因为用户报的就是「多音轨的片子默认播了英文轨」——
+        // 留成 auto 等于把 bug 留着让用户自己去设置里改。
+        audioPreference: TrackPreference(
+          primary: j['audio_primary'] as String? ?? 'zh',
+          secondary: j['audio_secondary'] as String? ?? 'auto',
+        ),
+        subtitlePreference: TrackPreference(
+          primary: j['subtitle_primary'] as String? ?? 'zh',
+          secondary: j['subtitle_secondary'] as String? ?? 'auto',
+        ),
       );
 
   PlaybackSettings copy() => PlaybackSettings.fromJson(toJson());

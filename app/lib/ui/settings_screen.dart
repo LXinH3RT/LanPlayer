@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/bindings.dart';
+import '../data/models.dart' show kLanguageOptions;
 import '../data/stores.dart';
 
 /// Module 4: the knobs advanced users reach for when a file misbehaves.
@@ -89,6 +90,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChangeEnd: (_) => _persist(),
             ),
           ),
+          _TrackLangTile(
+            title: '首选音轨语言',
+            hint: '多音轨的片子按这个顺序挑。选「自动」就跟随文件自己的默认轨。',
+            value: _settings.audioPreference.primary,
+            onChanged: (v) {
+              setState(() => _settings.audioPreference =
+                  _settings.audioPreference.copyWith(primary: v));
+              _persist();
+            },
+          ),
+          _TrackLangTile(
+            title: '次选音轨语言',
+            hint: '首选语言在文件里找不到时用这个；再找不到才用文件默认。',
+            allowUnset: true,
+            value: _settings.audioPreference.secondary,
+            onChanged: (v) {
+              setState(() => _settings.audioPreference =
+                  _settings.audioPreference.copyWith(secondary: v));
+              _persist();
+            },
+          ),
           const _Section('字幕'),
           ListTile(
             title: const Text('字幕大小'),
@@ -115,6 +137,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   setState(() => _settings.subtitleDelayMs = v.round()),
               onChangeEnd: (_) => _persist(),
             ),
+          ),
+          _TrackLangTile(
+            title: '首选字幕语言',
+            hint: '内嵌多条字幕时按这个挑。找不到首选就用次选，再找不到用文件默认。',
+            value: _settings.subtitlePreference.primary,
+            onChanged: (v) {
+              setState(() => _settings.subtitlePreference =
+                  _settings.subtitlePreference.copyWith(primary: v));
+              _persist();
+            },
+          ),
+          _TrackLangTile(
+            title: '次选字幕语言',
+            hint: '首选语言不存在时用这个。',
+            allowUnset: true,
+            value: _settings.subtitlePreference.secondary,
+            onChanged: (v) {
+              setState(() => _settings.subtitlePreference =
+                  _settings.subtitlePreference.copyWith(secondary: v));
+              _persist();
+            },
           ),
           const _Section('连播'),
           SwitchListTile(
@@ -194,4 +237,66 @@ class _Section extends StatelessWidget {
           ),
         ),
       );
+}
+
+/// 「首选/次选语言」选择项：点开是一个下拉，列出常见语言。
+///
+/// 用 DropdownButton 而不是 RadioListTile 堆一列：语言有十来种，堆成单选
+/// 会把设置页拉得很长，而这里本来就是个低频设置。
+class _TrackLangTile extends StatelessWidget {
+  const _TrackLangTile({
+    required this.title,
+    required this.hint,
+    required this.value,
+    required this.onChanged,
+    this.allowUnset = false,
+  });
+
+  final String title;
+  final String hint;
+  final String value;
+  final ValueChanged<String> onChanged;
+
+  /// 次选语言允许「不设」，显示成「未设置」。
+  final bool allowUnset;
+
+  @override
+  Widget build(BuildContext context) {
+    // 注意：DropdownButton 要求 value 必须能在 items 里找到，否则直接断言失败。
+    // 所以次选这一档不能把 'auto' 从 items 里剔掉 —— 剔掉之后既有配置里存的
+    // 'auto' 就会把设置页整个打崩。改成保留在下拉里、只是文案显示为「未设置」。
+    final unset = value.isEmpty || value == 'auto';
+    // 还得挡住「配置里存了表上没有的码」（手改配置文件、或以后缩了语言表），
+    // 否则 DropdownButton 一样会断言失败。
+    final known = kLanguageOptions.any((o) => o.code == value);
+    final selected = unset || !known ? 'auto' : value;
+    return ListTile(
+      title: Text(title),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(hint, style: const TextStyle(fontSize: 12)),
+          const SizedBox(height: 6),
+          DropdownButton<String>(
+            value: selected,
+            isExpanded: true,
+            items: [
+              for (final o in kLanguageOptions)
+                if (!(allowUnset && o.code == 'auto'))
+                  DropdownMenuItem<String>(
+                    value: o.code,
+                    child: Text(o.label),
+                  ),
+              if (allowUnset)
+                const DropdownMenuItem<String>(
+                  value: 'auto',
+                  child: Text('未设置'),
+                ),
+            ],
+            onChanged: (v) => onChanged(v ?? 'auto'),
+          ),
+        ],
+      ),
+    );
+  }
 }

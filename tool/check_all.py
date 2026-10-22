@@ -152,6 +152,9 @@ REQUIRED = [
     "packages/lanplayer_video/windows/include/lanplayer_video/pixel_swizzle.h",
     "app/lib/ui/widgets/subtitle_overlay.dart",
     "app/lib/data/models.dart",
+    "app/lib/data/track_prefs.dart",
+    "app/test/track_prefs_test.dart",
+    "app/test/settings_track_lang_test.dart",
     "app/test/subtitle_overlay_test.dart",
     "app/test/settings_test.dart",
     "scripts/build_windows_app.ps1",
@@ -793,6 +796,88 @@ def check_player_layout() -> None:
                  "bottom row")
 
 
+def check_track_selection() -> None:
+    """Guard the audio/subtitle track picker.
+
+    Three user-visible contracts have to hold together; dropping any one of them
+    silently brings back the bug it fixed:
+
+    1. "音轨" and "字幕" used to share one sheet, so opening the audio panel
+       showed a header literally reading 字幕 (user report: "音频设置打开后
+       标题居然写的是字幕"). They must stay two entry points.
+    2. The default track must not be "whatever FFmpeg's av_find_best_stream
+       returns". Multi-audio releases put the English commentary first, and that
+       is exactly what the user hit. The preference model has to exist.
+    3. The core does not hand the disposition flag up, so pickTrack() has to be
+       reachable from player_screen.dart for the preference to have any effect.
+    """
+    screen = ROOT / "app" / "lib" / "ui" / "player_screen.dart"
+    prefs = ROOT / "app" / "lib" / "data" / "track_prefs.dart"
+    settings = ROOT / "app" / "lib" / "ui" / "settings_screen.dart"
+
+    if not screen.exists():
+        problems.append("player_screen.dart missing")
+        return
+    text = screen.read_text(encoding="utf-8")
+
+    if "_openAudioSheet" not in text:
+        problems.append("the audio panel is gone; 音轨 and 字幕 must be separate "
+                        "sheets or the audio one shows a 字幕 header again")
+    if "_SheetHeader('音轨" not in text:
+        problems.append("the audio sheet lost its 音轨 header")
+    if "pickTrack(" not in text:
+        problems.append("player_screen.dart no longer calls pickTrack(); the "
+                        "language preference would have no effect")
+    if "applyTrackPreference" not in text and "_applyTrackPreferences" not in text:
+        problems.append("player_screen.dart no longer applies the track preference "
+                        "after opening a file")
+
+    if not prefs.exists():
+        problems.append("data/track_prefs.dart missing (language preference model)")
+    else:
+        pt = prefs.read_text(encoding="utf-8")
+        for needle, why in (
+            ("kLanguageOptions", "the settings dropdown lost its language table"),
+            ("String normalizeLanguage(", "language normalisation gone; zh/chi/zho "
+                                          "would stop matching each other"),
+            ("int? pickTrack(", "pickTrack() missing"),
+        ):
+            if needle not in pt:
+                problems.append(f"track_prefs.dart: {why}")
+
+    if settings.exists():
+        st = settings.read_text(encoding="utf-8")
+        for title in ('首选音轨语言', '次选音轨语言', '首选字幕语言', '次选字幕语言'):
+            if title not in st:
+                problems.append(f"settings_screen.dart lost the {title} option")
+
+    # 4. The core used to announce LP_EVENT_TRACKS with an empty "{}" right after
+    #    MEDIA_INFO, and the host parses both with the same code -- so the real
+    #    track list was overwritten by "no tracks at all". The subtitle sheet then
+    #    read 字幕（0 条内嵌）on a file that had one subtitle stream, and only a
+    #    manual track switch (which re-sends real JSON) brought the list back.
+    player = ROOT / "native" / "src" / "core" / "player.c"
+    if player.exists():
+        ptxt = player.read_text(encoding="utf-8")
+        if 'LP_EVENT_TRACKS, "{}"' in ptxt:
+            problems.append("player.c emits an empty TRACKS payload on open; the "
+                            "host parses it as 'this file has no tracks' and the "
+                            "track sheets blank out")
+        if "tracks_info" not in ptxt:
+            problems.append("player.c no longer emits the media JSON with "
+                            "LP_EVENT_TRACKS; the sheets would show stale tracks")
+
+    controller = ROOT / "app" / "lib" / "core" / "player_controller.dart"
+    if not controller.exists():
+        problems.append("core/player_controller.dart missing")
+    elif "if (map.isEmpty)" not in controller.read_text(encoding="utf-8"):
+        problems.append("player_controller.dart accepts an empty MEDIA_INFO/"
+                        "TRACKS payload and clears the track list with it")
+
+    notes.append("track selection: separate audio/subtitle sheets, language "
+                 "preference applied once per file")
+
+
 def _ver_tuple(text: str) -> tuple[int, ...]:
     """Turn "12.0" / "10.14" into a comparable tuple.
 
@@ -1088,6 +1173,7 @@ def main() -> int:
     check_thumbnails()
     check_installers()
     check_player_layout()
+    check_track_selection()
     check_apple_wiring()
     check_hw_decode()
 
