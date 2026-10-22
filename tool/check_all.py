@@ -736,6 +736,29 @@ def check_player_layout() -> None:
         problems.append("the top-right 'more' button is back; picture controls should "
                         "live in the bottom row")
 
+    # Volume must be adjustable, not just mute (user report: "音量设置按钮只能
+    # 设置是否静音，不能调节音量大小"). Guard both layers: the transport row has to
+    # open the volume sheet, and that sheet has to carry a real slider.
+    if "_openVolumeSheet" not in bottom:
+        problems.append("the volume button no longer opens the volume sheet; "
+                        "toggling mute alone cannot change the level")
+    if "_volumeKey" not in bottom:
+        problems.append("the volume button lost its layout-probe key")
+    sheet = ROOT / "app" / "lib" / "ui" / "widgets" / "volume_sheet.dart"
+    if not sheet.exists():
+        problems.append("widgets/volume_sheet.dart missing")
+    else:
+        sc = sheet.read_text(encoding="utf-8")
+        if "Slider(" not in sc:
+            problems.append("VolumeSheet must have a Slider; mute alone is not "
+                            "enough to set the volume")
+        if "maxVolume = 2.0" not in sc:
+            problems.append("VolumeSheet.maxVolume must stay 2.0 (the core gain "
+                            "range); clamping it to 1.0 loses the boost range")
+        if "divisions" not in sc:
+            problems.append("VolumeSheet slider must stay discrete so a drag "
+                            "lands on a stable 5% step")
+
     notes.append("player layout: back button pinned top-left, picture controls in the "
                  "bottom row")
 

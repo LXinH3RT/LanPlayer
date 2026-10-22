@@ -9,10 +9,12 @@ import '../core/player_controller.dart';
 import '../data/location.dart';
 import '../data/models.dart';
 import '../data/progress.dart';
+import '../data/stores.dart';
 import '../player/playlist.dart';
 import '../util/format.dart';
 import 'video_texture.dart';
 import 'widgets/subtitle_overlay.dart';
+import 'widgets/volume_sheet.dart';
 
 /// The playback surface: a Flutter texture fed by the FFmpeg core, plus the
 /// transport UI from module 3.
@@ -77,6 +79,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// rect is exact.
   final GlobalKey _backKey = GlobalKey();
   final GlobalKey _pictureKey = GlobalKey();
+  final GlobalKey _volumeKey = GlobalKey();
 
   /// Set from LANPLAYER_LAYOUT_PROBE: once the transport UI is first up, print the
   /// global rectangles of the back button and the picture button, then stop.
@@ -259,6 +262,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       print('LanPlayer layout probe: screen=${media?.width}x${media?.height}');
       _printRect('back', _backKey);
       _printRect('picture', _pictureKey);
+      _printRect('volume', _volumeKey);
     });
   }
 
@@ -456,6 +460,40 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ),
       ),
     );
+    _scheduleHide();
+  }
+
+  /// 底部操作行的「音量」入口：滑杆调音量 + 静音开关 + 常用档位。
+  ///
+  /// 以前这一格只是一个 IconButton，点了只会 `toggleMute()` —— 只能静音，
+  /// 没法把音量调小或调大。内核早就支持 0.0–2.0 的增益（`lp_ring_set_gain`），
+  /// 缺的只是这个入口。面板本身在 [VolumeSheet] 里，便于单元测试。
+  Future<void> _openVolumeSheet() async {
+    _hideTimer?.cancel();
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) => VolumeSheet(
+          volume: _player.volume,
+          muted: _player.muted,
+          onVolumeChanged: (v) {
+            _player.setVolume(v);
+            _settings.volume = v;
+            // 记住音量：下次开片按上次的来。写 SettingsStore 里那份，
+            // 否则重开播放器还会回到 100%。
+            SettingsStore.instance.value.volume = v;
+            unawaited(SettingsStore.instance.save());
+            setSheetState(() {});
+          },
+          onMutedChanged: (m) {
+            if (m != _player.muted) _player.toggleMute();
+            setSheetState(() {});
+          },
+        ),
+      ),
+    );
+    setState(() {});
     _scheduleHide();
   }
 
@@ -1036,13 +1074,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     label: const Text('音轨'),
                   ),
                   IconButton(
-                    tooltip: '音量',
-                    icon: Icon(
-                        _player.muted ? Icons.volume_off : Icons.volume_up),
-                    onPressed: () {
-                      _player.toggleMute();
-                      _showControls();
-                    },
+                    key: _volumeKey,
+                    tooltip: _player.muted
+                        ? '音量（已静音）'
+                        : '音量 ${(_player.volume * 100).round()}%',
+                    icon: Icon(_player.muted
+                        ? Icons.volume_off
+                        : _player.volume < 0.5
+                            ? Icons.volume_down
+                            : Icons.volume_up),
+                    // 点一下打开音量面板（滑杆 + 静音 + 常用档位）。
+                    // 只做静音切换的话，用户没有任何办法把音量调到 100% 以下。
+                    onPressed: _openVolumeSheet,
                   ),
                 ],
               ),
