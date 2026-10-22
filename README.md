@@ -412,13 +412,15 @@ VERSION=0.1.0 ./scripts/build_macos_dmg.sh
 
 ### 下载已发布的安装包
 
-两个包已经传到 GitHub Release：
-**<https://github.com/LXinH3RT/LanPlayer/releases/tag/v0.1.0>**
+最新版是 **v0.1.1**（修复「打开含视频的文件夹卡死」，见 `docs/verification.md` 3.28）：
+**<https://github.com/LXinH3RT/LanPlayer/releases/tag/v0.1.1>**
 
 | 平台 | 文件 | 大小 | SHA256 |
 |-|-|-:|-|
-| Windows 10/11 x64 | `LanPlayer-0.1.0-windows-x64-setup.exe` | 55.4 MB | `8FBEC026…9D43` |
-| macOS 12+ (Apple Silicon) | `LanPlayer-0.1.0-macos-arm64.dmg` | 25.8 MB | `5178A09B…EAB1` |
+| Windows 10/11 x64 | `LanPlayer-0.1.1-windows-x64-setup.exe` | 55.4 MB | `8F2FF76C…95C64` |
+| macOS 12+ (Apple Silicon) | `LanPlayer-0.1.1-macos-arm64.dmg` | 25.7 MB | `602243CF…5C1D0F` |
+
+> **v0.1.0 的包有卡死缺陷，不要再装。** 0.1.0 仍留在 Release 页作历史记录。
 
 > 仓库是 **private**，所以公开直链对未登录访问者返回 404。要么登录 GitHub 后从
 > Release 页面点附件，要么把仓库改成 public。用 API 下载（`Accept:
@@ -543,7 +545,7 @@ iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字�
 |Dart 测试|✅ `flutter test` 44 个用例（字幕 span 树 + 光栅化像素计数 + 设置项默认值 + 局域网扫描 + 封面缓存/控件 + 服务器编辑页）全部通过|
 |Windows 安装包|✅ NSIS 3.10 出 `dist\LanPlayer-0.1.0-windows-x64-setup.exe`（55.4 MB）；静默安装落地 17 个文件 200.2 MB，装出来的 `lanplayer.exe` 起窗正常（`hwnd=1049060 title=[lanplayer]`），静默卸载只剩 `state\`（用户数据按设计保留）|
 |macOS dmg|✅ `dist/LanPlayer-0.1.0-macos-arm64.dmg`（25.8 MB，59 MB app 压到 25.8 MB）；`hdiutil verify` 校验有效，`codesign --verify --deep --strict` 通过；拖进 `/Applications` 后启动即播（VideoToolbox 硬解 + 外挂字幕）|
-|GitHub Release|✅ `v0.1.0` 两个附件已发布（<https://github.com/LXinH3RT/LanPlayer/releases/tag/v0.1.0>）；用 API 下载回来算 SHA256 与本机文件完全一致（`8FBEC026…9D43` / `5178A09B…EAB1`）。仓库是 private，公开直链对未登录访问者为 404，属正常|
+|GitHub Release|✅ `v0.1.0` 与 `v0.1.1` 各两个附件已发布（<https://github.com/LXinH3RT/LanPlayer/releases>）；每个包都用 API 下载回来算 SHA256 与本机文件完全一致。`v0.1.1` 的哈希：Windows `8F2FF76C…95C64`、macOS `602243CF…5C1D0F`；tag 指向 `f578a44`（含卡死修复）。仓库是 private，公开直链对未登录访问者为 404，属正常|
 |iPad 真机（签名 + 装机 + 播放）|✅ Apple ID 登录后证书出现（`1 valid identities`，Team `<TEAM_ID>` 取自证书 `OU`），`TEAM_ID=<TEAM_ID> ./scripts/ios_device_install.sh` → `✓ Built Runner.app (34.9MB)` → `App installed` → `Launched`；真机日志 `videotoolbox session ready 1920x820 (h264)`、`hardware decode videotoolbox`、`audioqueue started 48000Hz x2`、外挂字幕 `1062 cues`，`progress.json` 进度 0 → 68.64 s，真机截图 2746×1908（`docs/images/ipad-device-play.jpg`）。详见 `docs/verification.md` 3.27|
 
 仍需在别的机器上完成：
