@@ -290,6 +290,13 @@ static int apply_open_options(LpPlayer *p)
         }
         if (lp_json_get_str(opts, "volume", sv, sizeof(sv)) == 0) {
             p->volume = (float)atof(sv);
+            if (p->volume < 0) p->volume = 0;
+            if (p->volume > 2) p->volume = 2;
+            /* 打开时带进来的音量（设置里存的上次值）也记一条：这条日志是
+             * 「设置里的音量真的到了内核」的唯一运行时证据 —— 界面上只有
+             * 一个百分比，截图看不出 gain 有没有生效。 */
+            LP_INFO("audio", "volume %.2f (%d%%) from settings", (double)p->volume,
+                    (int)(p->volume * 100.0f + 0.5f));
         }
     }
     return LP_OK;
