@@ -90,6 +90,18 @@ ARTIFACTS = {
         "strip": 0,
         "why": "state-directory lookup; drives the desktop persistence path",
     },
+    # NSIS only builds the Windows installer; everything else works without it.
+    # The zip keeps its own nsis-3.10/ root (strip 0) because NSIS resolves
+    # Stubs/, Plugins/ and Contrib/ relative to the directory holding
+    # makensis.exe, so moving Bin/ up on its own breaks it.
+    "nsis": {
+        "url": "https://downloads.sourceforge.net/project/nsis/NSIS%203/"
+               "3.10/nsis-3.10.zip",
+        "dest": "nsis.zip",
+        "extract_to": "nsis",
+        "strip": 0,
+        "why": "NSIS 3.10: makensis.exe for scripts/windows/installer.nsi",
+    },
 }
 
 def write_package_config() -> None:
@@ -250,7 +262,8 @@ def find_exe(path: Path, name: str) -> Path | None:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true")
-    ap.add_argument("only", nargs="*", help="subset: zig ffmpeg libsmb2 dart")
+    ap.add_argument("only", nargs="*",
+                    help="subset: zig ffmpeg libsmb2 dart flutter nsis")
     args = ap.parse_args(argv)
 
     names = args.only or list(ARTIFACTS)

@@ -68,6 +68,13 @@
   `app/lib/data/thumbs.dart` 落盘缓存（`LPT2` 头：魔数 + 宽 + 高，坏文件直接丢弃重取）；
   列表用 `ThumbnailTile` 显示，**只对视频行**请求封面，取不到就退回图标、不报错。
   实测 SMB 上取一张封面约 0.7 s（`docs/verification.md` §3.23）
+* ~~发布安装包~~（已完成）：Windows 用 NSIS 出
+  `dist\LanPlayer-<ver>-windows-x64-setup.exe`（55.4 MB，按用户装到
+  `%LOCALAPPDATA%\Programs\LanPlayer`，不弹 UAC，FFmpeg 与 VC++ 运行时全部 app-local）；
+  macOS 出 `dist/LanPlayer-<ver>-macos-<arch>.dmg`（25.8 MB，ad-hoc 签名，拖拽安装）。
+  两个都做了静默安装/卸载与「装完真能播」的实测（`docs/verification.md` §3.24）。
+  尚未做：代码签名证书（Windows Authenticode / Apple Developer ID + 公证），
+  未签名时 SmartScreen 与 Gatekeeper 都会提示
 
 **v0.4 — 画质与音频**
 

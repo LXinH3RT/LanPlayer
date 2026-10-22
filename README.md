@@ -92,7 +92,7 @@
 | `native/platform/` | 8 | 第三方库在 Windows 上的编译补丁 |
 | `native/platform/win32/smb2/` | 8 | libsmb2 在 mingw 下缺的头（`poll.h`、`sys/socket.h`、`netdb.h` 等） |
 | `native/tests/` | 4 | 四个测试可执行文件：冒烟、纹理/颜色、D3D11VA 端到端、硬解能力探针 |
-| `scripts/` | 18 | 所有构建与验证脚本（见下方脚本表） |
+| `scripts/` | 22 | 所有构建与验证脚本（含两个平台的安装包脚本，见下方脚本表） |
 | `tool/` | 12 | 静态检查与依赖下载（见下方工具表） |
 | `docs/` | 15 | 6 篇文档 + 9 张验证截图 |
 | `docs/images/` | 9 | 界面与硬解验证截图，README 与 `verification.md` 引用 |
@@ -127,7 +127,7 @@ LanPlayer/
 └─ docs/                    架构、构建、协议、安全、路线图、验证记录
 ```
 
-### 脚本（`scripts/`，18 个）
+### 脚本（`scripts/`，22 个 + `scripts/windows/installer.nsi`）
 
 | 脚本 | 作用 |
 |-|-|
@@ -149,8 +149,11 @@ LanPlayer/
 | `send_keys.ps1` | 向真实窗口投递按键，验证快捷键/全屏 |
 | `sync_github.ps1` | 一条命令把工作区推到 GitHub：`git add -A` → 有变化才 commit → `git push`；无变化时是空操作 |
 | `install_git_hooks.ps1` | 安装 `.git/hooks/post-commit`（每次 commit 后自动 push）；钩子不在版本库里，新克隆要跑一次 |
+| `build_windows_installer.ps1` | 出 Windows 安装包：暂存 exe/DLL/data + app-local VC++ CRT → `makensis` → `dist\LanPlayer-<ver>-windows-x64-setup.exe`（每用户安装到 `%LOCALAPPDATA%\Programs\LanPlayer`，不需管理员） |
+| `build_macos_dmg.sh` | 出 macOS dmg：`ditto` 拷 `.app` + `/Applications` 软链 → `hdiutil UDZO` → 校验 → `dist/LanPlayer-<ver>-macos-<arch>.dmg`（ad-hoc 签名） |
+| `windows/installer.nsi` | NSIS 脚本本体（UTF-8 **带 BOM**，否则 `makensis` 报 `Bad text encoding`） |
 
-### 工具（`tool/`，8 个）
+### 工具（`tool/`，12 个）
 
 | 工具 | 作用 |
 |-|-|
@@ -346,6 +349,40 @@ exe 旁边。产物可以直接拷到别的机器上运行。
 
 输出与实测记录见 [docs/verification.md](docs/verification.md)。
 
+### 发布安装包
+
+两个安装包都能一条命令出，产物落在 `dist/`（不入库，`.gitignore` 已排除）。
+
+```powershell
+# Windows：exe 自己就是安装程序，装完不需要另装 VC++ 运行库
+python tool\fetch_deps.py nsis
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_installer.ps1 -Version 0.1.0
+# -> dist\LanPlayer-0.1.0-windows-x64-setup.exe
+```
+
+```bash
+# macOS：在 Mac 上跑，前置是 app/build/macos/.../Release/lanplayer.app 已经建好
+VERSION=0.1.0 ./scripts/build_macos_dmg.sh
+# -> dist/LanPlayer-0.1.0-macos-arm64.dmg
+```
+
+| | Windows | macOS |
+|-|-|-|
+| 产物 | `LanPlayer-<ver>-windows-x64-setup.exe` | `LanPlayer-<ver>-macos-<arch>.dmg` |
+| 实测大小 | 55.4 MB（暂存 208.1 MB，LZMA 压缩） | 25.8 MB（app 59 MB，UDZO） |
+| 安装位置 | `%LOCALAPPDATA%\Programs\LanPlayer` | 拖拽到 `/Applications` |
+| 权限 | `RequestExecutionLevel user`，**不弹 UAC** | 无需 sudo |
+| 签名 | 无（未签名，SmartScreen 会提示「仍要运行」） | ad-hoc（`codesign -s -`）；分发需开发者 ID + 公证 |
+| 运行库 | FFmpeg `av*.dll` + `Microsoft.VC145.CRT` 全部 app-local | 系统框架，无额外依赖 |
+
+`avdevice-63.dll`（4.9 MB）**不打包**：`dumpbin /DEPENDENTS` 确认没有任何模块依赖它，
+核心也从不调 `avdevice_*`。用户数据两个包都不碰：Windows 卸载时问一句是否删
+`%APPDATA%\lanplayer`（默认保留），macOS 删 app 就结束，状态在
+`~/Library/Containers/dev.lanplayer.lanplayer/`。
+
+构建细节与实测记录见 [docs/build.md](docs/build.md) §7、
+[docs/verification.md](docs/verification.md) §3.24。
+
 ### Android / iOS / macOS
 
 本仓库不包含移动端与 Apple 端的 FFmpeg / libsmb2 预编译产物，按 `docs/build.md` 生成后放进
@@ -441,8 +478,10 @@ iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字�
 |Windows 原生预览器|✅ 创建窗口、消息循环正常（hwnd 有效、Responding）|
 |画面渲染|✅ 无头渲染 120 帧并导出 BMP，烧录时间码 4.76s 与内部位置一致|
 |声音输出|✅ waveOut 48 kHz 立体声，AAC→float→设备，播放推进到 4.76s/6s|
-|Dart 语法|✅ `dart format` 解析 22 个文件，0 语法错误|
-|Dart 测试|✅ `flutter test` 12 个用例（字幕 span 树 + 光栅化像素计数 + 设置项默认值）全部通过|
+|Dart 语法|✅ `dart format` 解析 30 个文件，0 语法错误|
+|Dart 测试|✅ `flutter test` 44 个用例（字幕 span 树 + 光栅化像素计数 + 设置项默认值 + 局域网扫描 + 封面缓存/控件 + 服务器编辑页）全部通过|
+|Windows 安装包|✅ NSIS 3.10 出 `dist\LanPlayer-0.1.0-windows-x64-setup.exe`（55.4 MB）；静默安装落地 17 个文件 200.2 MB，装出来的 `lanplayer.exe` 起窗正常（`hwnd=1049060 title=[lanplayer]`），静默卸载只剩 `state\`（用户数据按设计保留）|
+|macOS dmg|✅ `dist/LanPlayer-0.1.0-macos-arm64.dmg`（25.8 MB，59 MB app 压到 25.8 MB）；`hdiutil verify` 校验有效，`codesign --verify --deep --strict` 通过；拖进 `/Applications` 后启动即播（VideoToolbox 硬解 + 外挂字幕）|
 
 仍需在别的机器上完成：
 

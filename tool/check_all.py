@@ -154,6 +154,10 @@ REQUIRED = [
     "app/test/settings_test.dart",
     "scripts/build_windows_app.ps1",
     "scripts/build_windows_desktop.ps1",
+    "scripts/build_windows_installer.ps1",
+    "scripts/build_macos_dmg.sh",
+    "scripts/windows/installer.nsi",
+    "LICENSE",
     "scripts/fix_plugin_links.ps1",
     "scripts/msvc_chain.bat",
     "scripts/capture_window.ps1",
@@ -358,6 +362,75 @@ def check_thumbnails() -> None:
         problems.append("the browser list must only request covers for videos")
     notes.append("thumbnails: LPT2 header round-trips, hex cache key, "
                  "covers only for video rows")
+
+def check_installers() -> None:
+    """Guard the two release installers.
+
+    Both were written once and then only lightly touched, so the cheap checks
+    are about the invariants that would silently produce a broken package:
+      * the NSIS script needs a BOM (makensis refuses UTF-8 without one) and
+        must stay a per-user install, because a machine-wide one needs UAC and
+        would write into Program Files;
+      * the staging list in the PowerShell driver and the File list in the .nsi
+        must agree, otherwise the package is missing a DLL at runtime;
+      * the dmg script must use ditto (cp -R drops the code signature) and must
+        not build a lower-case alias next to LanPlayer.app (APFS is
+        case-insensitive, so the cleanup would delete the app it just copied).
+    """
+    nsi = ROOT / "scripts" / "windows" / "installer.nsi"
+    ps1 = ROOT / "scripts" / "build_windows_installer.ps1"
+    sh = ROOT / "scripts" / "build_macos_dmg.sh"
+    for path, what in ((nsi, "NSIS script"), (ps1, "Windows installer driver"),
+                       (sh, "macOS dmg script")):
+        if not path.exists():
+            problems.append(f"missing {path.relative_to(ROOT).as_posix()} ({what})")
+            return
+
+    raw = nsi.read_bytes()
+    if not raw.startswith(b"\xef\xbb\xbf"):
+        problems.append("scripts/windows/installer.nsi must be UTF-8 with BOM, "
+                        "otherwise makensis fails with 'Bad text encoding'")
+    nsi_text = raw.decode("utf-8-sig")
+    nsi_code = "\n".join(l for l in nsi_text.splitlines()
+                         if not l.strip().startswith(";"))
+    if "RequestExecutionLevel user" not in nsi_code:
+        problems.append("installer.nsi must keep RequestExecutionLevel user "
+                        "(a machine-wide install would need UAC)")
+    if "$LOCALAPPDATA\\Programs\\" not in nsi_code:
+        problems.append("installer.nsi must install under "
+                        "$LOCALAPPDATA\\Programs\\, not Program Files")
+    if "ifndef APP_ICON" not in nsi_code:
+        problems.append("installer.nsi lost its APP_ICON default")
+    for macro in ("APP_VERSION", "STAGE", "OUTFILE", "APP_ICON"):
+        if "/D" + macro + "=" not in ps1.read_text(encoding="utf-8"):
+            problems.append(f"build_windows_installer.ps1 does not pass /D{macro} "
+                            "to makensis")
+
+    # Every staged runtime file must also be packaged; a drift here ships a
+    # package that throws on startup when it cannot find a DLL.
+    driver = ps1.read_text(encoding="utf-8")
+    staged = re.findall(r"^\s*'([\w.-]+\.dll|[\w.-]+\.exe)',?\s*$", driver, re.M)
+    for name in staged:
+        if f'"{name}"' not in nsi_code and f"\\{name}" not in nsi_code:
+            problems.append(f"installer.nsi does not package {name} "
+                            "although the driver stages it")
+
+    dmg = sh.read_text(encoding="utf-8")
+    body = "\n".join(l for l in dmg.splitlines()
+                     if not l.strip().startswith("#"))
+    if "ditto" not in body:
+        problems.append("build_macos_dmg.sh must copy the app with ditto "
+                        "(cp -R drops extended attributes and the signature)")
+    if "cp -R" in body:
+        problems.append("build_macos_dmg.sh must not use cp -R for the .app")
+    if "hdiutil create" not in body or "UDZO" not in body:
+        problems.append("build_macos_dmg.sh must create a compressed (UDZO) dmg")
+    if "codesign --verify" not in body:
+        problems.append("build_macos_dmg.sh must verify the signature before "
+                        "packing")
+
+    notes.append("installers: NSIS per-user with BOM + matching file list, "
+                 "dmg uses ditto + UDZO")
 
 def run(cmd: list[str], env: dict[str, str] | None = None,
         cwd: Path | None = None) -> tuple[int, str]:
@@ -877,6 +950,7 @@ def main() -> int:
     check_texture_colors()
     check_lan_scan()
     check_thumbnails()
+    check_installers()
     check_player_layout()
     check_apple_wiring()
     check_hw_decode()

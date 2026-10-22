@@ -711,7 +711,86 @@ Please check the 'Billing & plans' section in your settings
 > 额度用尽**不影响本地构建**：`scripts/build_windows.ps1`、`build_windows_desktop.ps1`、
 > Mac 上的 `build_apple_deps.sh` + `flutter build macos` 全部照常，`tool/check_all.py` 也不依赖 CI。
 
-## 7\. 构建后自检
+## 7\. 打安装包
+
+两个平台各一条命令，产物落在 `dist/`（已在 `.gitignore` 里，因为体积属于发布资产而非源码）。
+
+### 7.1 Windows（NSIS）
+
+```powershell
+python tool\fetch_deps.py nsis        # 只装 NSIS 3.10 到 .tools\nsis（约 2.2 MB）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_installer.ps1 -Version 0.1.0
+# -> dist\LanPlayer-0.1.0-windows-x64-setup.exe
+```
+
+脚本做四件事，任何一步失败都直接 `exit 1` 而不是留下半个包：
+
+1. 校验 `app\build\windows\x64\runner\Release` 里的 `lanplayer.exe`、`lanplayer.dll`、
+   `avcodec-63.dll`、`avformat-63.dll` 都在（缺就提示先跑 `flutter build windows --release`
+   和 `scripts\build_windows.ps1 -DeployTo …`）。
+2. 暂存到 `dist\stage\windows`：10 个 exe/dll（逐个列名，与 `.nsi` 里的 `File` 一一对应）
+   + `data\`（`app.so`、`icudtl.dat`、`flutter_assets`）+ 6 个
+   `Microsoft.VC145.CRT` 运行库（从 vswhere 定位 VS 的 Redist 目录）。
+3. `makensis /DAPP_VERSION=… /DSTAGE=… /DOUTFILE=… /DAPP_ICON=…`。
+4. 打印大小与 SHA256，默认清掉暂存目录（`-KeepStage` 保留，`-Open` 打开 `dist`）。
+
+`avdevice-63.dll`（4.9 MB）**故意不打包**：`dumpbin /DEPENDENTS` 显示没有任何模块依赖它，
+核心也从不调 `avdevice_*`。
+
+安装行为（`scripts/windows/installer.nsi`）：
+
+| 项 | 值 |
+|-|-|
+| 安装位置 | `%LOCALAPPDATA%\Programs\LanPlayer` |
+| 权限 | `RequestExecutionLevel user`，**不弹 UAC**，不写 `Program Files` |
+| 页面 | 欢迎 → 许可（`LICENSE`）→ 组件（核心必装 / 快捷方式 / 文件关联可选）→ 目录 → 安装 → 完成 |
+| 语言 | 简体中文 + English（NSIS 自带 `SimpChinese.nlf`） |
+| 卸载 | 删全部文件与快捷方式、清两类注册表键；**用户数据 `%APPDATA%\lanplayer` 只弹窗询问，默认保留** |
+
+三个必须注意的细节：
+
+- `.nsi` 必须存成 **UTF-8 with BOM**。无 BOM 时 `makensis` 直接报
+  `Bad text encoding: scripts\windows\installer.nsi:1`。
+  `tool/check_all.py` 的 `check_installers()` 会检查这一点。
+- `makensis` 往 `%TEMP%` 写临时文件，沙盒默认位置被拒时表现为
+  `Internal compiler error #12345: error creating mmap the size of 35644314.`。
+  脚本已把 `TMP`/`TEMP` 重定向到 `.tools\tmp`。
+- `scripts/build_windows_installer.ps1` **必须纯 ASCII 注释**：Windows PowerShell 5.1
+  会按 ANSI 读无 BOM 的 `.ps1`，中文注释会变成乱码并把后面的引号吃掉，报
+  `ParserError: Unexpected token ')'`。仓库里所有 `.ps1` 都遵守这条。
+
+静默安装/卸载（CI 或脚本里用）：
+
+```cmd
+dist\LanPlayer-0.1.0-windows-x64-setup.exe /S /D=D:\some\dir
+D:\some\dir\uninstall.exe /S
+```
+
+### 7.2 macOS（dmg）
+
+```bash
+# 前置：scripts/build_apple_deps.sh 与 flutter build macos --release 都已完成
+VERSION=0.1.0 ./scripts/build_macos_dmg.sh
+# -> dist/LanPlayer-0.1.0-macos-arm64.dmg
+```
+
+脚本流程：检查 `.app` 存在 → `ditto` 拷到暂存目录 → `ln -s /Applications` →
+`codesign --verify --deep --strict` → `hdiutil create -ov -format UDZO -imagekey zlib-level=9`
+→ `hdiutil verify` → 打印 SHA256。
+
+两个坑（都写进了脚本注释，`check_installers()` 也会盯着）：
+
+- **必须用 `ditto` 而不是 `cp -R`**：`cp -R` 会丢掉扩展属性与代码签名，
+  拷出来的 `.app` `codesign --verify` 直接失败。
+- **不要在同目录建小写别名**：APFS 默认大小写不敏感，`LanPlayer.app` 与
+  `lanplayer.app` 是同一个目录，随后的清理会把刚拷好的 app 删掉（第一次 dmg 只有 11 KB
+  且里面是空的，就是这个原因）。
+
+签名：`flutter build macos` 默认 ad-hoc 签名（`codesign -dv` 显示 `Signature=adhoc`），
+本机自用足够；**分发给别人需要 Developer ID 证书 + 公证**，否则对方打开时
+Gatekeeper 会拦（`已损坏，无法打开` / `无法验证开发者`）。
+
+## 7.5 构建后自检
 
 ```bash
 python tool/check_all.py            # 一把梭：C 语法/符号、Dart 解析、原生冒烟、Dart 测试

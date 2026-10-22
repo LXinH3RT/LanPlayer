@@ -58,3 +58,8 @@ app/android/app/build/
 # Python bytecode (tool/*.py gets imported by the check scripts)
 __pycache__/
 *.pyc
+
+# Release installers (built by scripts/build_windows_installer.ps1 and
+# scripts/build_macos_dmg.sh). They are release assets, not source: the Windows
+# exe alone is 55 MB and the dmg 26 MB, well past a comfortable repo size.
+dist/
