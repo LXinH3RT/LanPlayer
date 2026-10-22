@@ -440,7 +440,84 @@ iPad 与 iPhone 是同一个 iOS 包；`TARGETED_DEVICE_FAMILY = "1,2"` 已包�
 
 **iOS 侧已经实测跑通的部分**（iPad 模拟器，iPadOS 27.1）：
 VideoToolbox 硬解、AudioQueue 48 kHz 立体声、外挂 SRT 字幕、纹理上屏。
-这台 Mac 没连实体 iPad，所以真机只差一步签名。
+
+#### 4.6.1 真机：Xcode 27 里找不到「Devices and Simulators」
+
+Xcode 27 把设备管理窗口拆成了**独立 app**：`Device Hub`，位于
+
+```
+/Applications/Xcode.app/Contents/Applications/DeviceHub.app
+```
+
+（bundle id `com.apple.dt.Devices`，版本 27.1）。所以 `Window` 菜单里已经没有
+「Devices and Simulators」这一项，找它必然找不到。打开方式：
+
+```bash
+open -a /Applications/Xcode.app/Contents/Applications/DeviceHub.app
+```
+
+命令行等价物（不需要 GUI）是：
+
+```bash
+xcrun devicectl list devices                        # 看设备列表
+xcrun devicectl device info details --device <UDID> # 看配对/开发者模式
+```
+
+`xcrun xcdevice list` 在 Xcode 27 上**只列模拟器**，看不到实体设备——它没有坏，
+只是不再负责实体设备枚举。
+
+#### 4.6.2 USB 插上了但设备不出现
+
+`system_profiler SPUSBDataType` 数不出 iPad、`devicectl list devices` 也只有模拟器，
+但 `ioreg -p IOUSB -w0 -l` 里设备**其实已经在 USB 总线上**（`idVendor = 1452`、
+`"USB Product Name" = "iPad"`）。这种「在总线上但不枚举」几乎都是同一件事：
+
+- **iPad 锁屏了**。锁屏时不启用暴露 `com.apple.mobiledevice` 的 data 配置，
+  也不会弹「要信任这台电脑吗」。
+
+解锁屏幕后再看，`devicectl` 立刻就能列出。判断依据：
+
+```bash
+$HOME/.lpvenv/bin/pymobiledevice3 usbmux list   # 空数组 [] = 没枚举到
+```
+
+#### 4.6.3 无线调试默认是关的
+
+`flutter devices` 只会看到 USB 上的设备。无线调试要先打开一次（之后一直生效）：
+
+```bash
+pymobiledevice3 lockdown wifi-connections on
+pymobiledevice3 lockdown wifi-connections     # 确认 EnableWifiConnections: true
+```
+
+打开后 `usbmux list` 会出现两条同一 UDID 的记录，`ConnectionType` 分别是
+`Network` 与 `USB`。注意 `flutter devices` 末尾仍会打印
+`No wireless devices were found.`——那是它在找**只**在网络上、没插线的设备，
+不代表无线没通。
+
+#### 4.6.4 真机安装：`flutter install` 在 Xcode 27 上不可用
+
+Xcode 27 删掉了旧的 MobileDevice 栈，`flutter install` / `flutter run` 装真机会失败。
+能用的路径是 `devicectl`：
+
+```bash
+TEAM_ID=ABCD123456 ./scripts/ios_device_install.sh
+```
+
+这个脚本做四件事：把 `DEVELOPMENT_TEAM` 写进 `app/ios/Runner.xcodeproj/project.pbxproj`
+（每个 `PRODUCT_BUNDLE_IDENTIFIER` 的 target 都要有，否则报
+`Signing for "Runner" requires a development team`）→ `flutter build ios --release`
+→ `xcrun devicectl device install app` → `xcrun devicectl device process launch`。
+
+真机静态库要先单编一次（默认 `ARCHS=arm64`，与 iPad 一致）：
+
+```bash
+SLICES=iphoneos ./scripts/build_apple_deps.sh
+```
+
+产出在 `native/third_party/*/apple/iphoneos/lib/`，与 macOS / iOS 模拟器两族并存
+（见 4.2）。`flutter build ios --release --no-codesign` 可以在没登录 Apple ID 的
+机器上先验证「代码本身能不能为 arm64 设备编过」。
 
 模拟器上的验证钩子要注意：iOS 的 app 由 launchd 拉起，Dart 侧的
 `Platform.environment` **永远是空表**，`SIMCTL_CHILD_LANPLAYER_OPEN=...`
@@ -471,6 +548,9 @@ stdout/stderr，`xcrun simctl spawn <dev> log show` 只能看到 `flutter:` 那�
 | `Target debug_unpack_ios failed: Binary .../Flutter.framework/Flutter does not contain architectures "arm64 x86_64"` | Mac 上 Flutter SDK 的 iOS 模拟器切片架构与工程 `ARCHS` 不匹配 | 已修：`app/ios/Flutter/*.xcconfig` 收紧到 `ARCHS = arm64` |
 | `error: The iOS Simulator deployment target 'IPHONEOS_DEPLOYMENT_TARGET' is set to 13.0, but the range ... is 15.0 to 27.1.x` | Xcode 27 把 iOS 最低部署目标抬到 15.0 | 已修：`Podfile` / `project.pbxproj` / `AppFrameworkInfo.plist` / podspec 四处统一到 15.0，`post_install` 再兜一层。更新仓库即可 |
 | `vf_scale_vt.c: 'VTPixelTransferSessionCreate' is only available on iOS 16.0 or newer` | `--enable-videotoolbox` 会自动拉进 `scale_vt` 滤镜，它用的 API 在 iOS 16 才有，FFmpeg 6.1.1 没加可用性保护 | 已修：`build_apple_deps.sh` 加 `-Wno-error=unguarded-availability-new` 并显式裁剪滤镜列表。更新仓库即可 |
+| 真机 USB 插上但 `devicectl list devices` 只看到模拟器 | iPad 锁屏时不会启用暴露 `com.apple.mobiledevice` 的 data 配置，也弹不出「信任这台电脑」 | 解锁 iPad 后重试；`ioreg -p IOUSB` 里能看到设备说明线没问题（见 4.6.2） |
+| `error: Signing for "Runner" requires a development team.` | 工程里没有 `DEVELOPMENT_TEAM`，且 Xcode 里没登录 Apple ID（`security find-identity -v -p codesigning` 返回 0 valid identities） | Xcode → Settings → Accounts 登录 Apple ID 生成 Apple Development 证书，再 `TEAM_ID=<10 位> ./scripts/ios_device_install.sh`（见 4.6.4） |
+| `Window` 菜单里没有「Devices and Simulators」 | Xcode 27 把它拆成独立 app `Device Hub` | `open -a /Applications/Xcode.app/Contents/Applications/DeviceHub.app`（见 4.6.1） |
 
 ### 4.8 macOS 上首次构建会遇到的错误（按出现顺序）
 
