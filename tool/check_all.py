@@ -156,6 +156,7 @@ REQUIRED = [
     "scripts/build_windows_desktop.ps1",
     "scripts/build_windows_installer.ps1",
     "scripts/build_macos_dmg.sh",
+    "scripts/ios_device_install.sh",
     "scripts/windows/installer.nsi",
     "LICENSE",
     "scripts/fix_plugin_links.ps1",
@@ -429,8 +430,29 @@ def check_installers() -> None:
         problems.append("build_macos_dmg.sh must verify the signature before "
                         "packing")
 
+    # The iOS device installer is the only path that runs on a real iPad.
+    # Guard the two things that make it work: an explicit team id (Xcode
+    # refuses to sign without one) and devicectl (flutter install needs the
+    # legacy MobileDevice stack, which Xcode 27 dropped for devices).
+    dev = ROOT / "scripts" / "ios_device_install.sh"
+    if not dev.exists():
+        problems.append("missing scripts/ios_device_install.sh")
+    else:
+        dev_body = "\n".join(l for l in dev.read_text(encoding="utf-8").splitlines()
+                             if not l.strip().startswith("#"))
+        if "DEVELOPMENT_TEAM" not in dev_body:
+            problems.append("ios_device_install.sh must write DEVELOPMENT_TEAM "
+                            "into the Xcode project")
+        if "devicectl device install app" not in dev_body:
+            problems.append("ios_device_install.sh must install with "
+                            "'devicectl device install app'")
+        if "flutter build ios" not in dev_body:
+            problems.append("ios_device_install.sh must build with "
+                            "'flutter build ios'")
+
     notes.append("installers: NSIS per-user with BOM + matching file list, "
                  "dmg uses ditto + UDZO")
+    notes.append("iOS device: team id injected, devicectl install")
 
 def run(cmd: list[str], env: dict[str, str] | None = None,
         cwd: Path | None = None) -> tuple[int, str]:

@@ -147,7 +147,7 @@ LanPlayer/
 └─ docs/                    架构、构建、协议、安全、路线图、验证记录
 ```
 
-### 脚本（`scripts/`，23 个 + `scripts/windows/installer.nsi`）
+### 脚本（`scripts/`，24 个 + `scripts/windows/installer.nsi`）
 
 | 脚本 | 作用 |
 |-|-|
@@ -174,6 +174,7 @@ LanPlayer/
 | `ensure_github_tunnel.ps1` | 起本地 CONNECT 隧道（`tool/github_tunnel.py`），供 `github.com` 直连失败时推送用 |
 | `build_windows_installer.ps1` | 出 Windows 安装包：暂存 exe/DLL/data + app-local VC++ CRT → `makensis` → `dist\LanPlayer-<ver>-windows-x64-setup.exe`（每用户安装到 `%LOCALAPPDATA%\Programs\LanPlayer`，不需管理员） |
 | `build_macos_dmg.sh` | 出 macOS dmg：`ditto` 拷 `.app` + `/Applications` 软链 → `hdiutil UDZO` → 校验 → `dist/LanPlayer-<ver>-macos-<arch>.dmg`（ad-hoc 签名） |
+| `ios_device_install.sh` | 装到实体 iPad / iPhone：写 `DEVELOPMENT_TEAM` → `flutter build ios --release` → `devicectl device install app` → 启动。`TEAM_ID=<10 位> ./scripts/ios_device_install.sh` |
 | `windows/installer.nsi` | NSIS 脚本本体（UTF-8 **带 BOM**，否则 `makensis` 报 `Bad text encoding`） |
 
 ### 工具（`tool/`，13 个）
@@ -448,6 +449,9 @@ flutter pub get
 flutter build macos --release          # 或 flutter run -d macos
 flutter build ios --release --no-codesign
 flutter build ios --simulator --debug  # 模拟器（iPad 已验证，见下）
+# 真机（iPad）：先单编真机静态库，再用带签名的安装脚本
+SLICES=iphoneos ./scripts/build_apple_deps.sh
+TEAM_ID=ABCD123456 ./scripts/ios_device_install.sh
 ```
 
 Apple 端的工程接线已经写在仓库里，`docs/build.md` 第 4 节有完整说明：
@@ -534,7 +538,7 @@ iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字�
 |项|原因|
 |-|-|
 |Android / iOS / macOS 构建|本机没有 NDK / Xcode / CocoaPods；Android 与 iOS 已在 CI 的 `android` / `apple` 两个 job 上编译通过；macOS 已在本机的 Mac 上真跑通|
-|Apple 端真机验证|**macOS 已实测通过**：Mac（macOS 27.0.1 / Xcode 27.1）上 `flutter build macos --release` → `✓ Built lanplayer.app (61.7MB)`，运行后 `libsmb2` 浏览 NAS、`VideoToolbox` 硬解 640x360 h264、`AudioQueue` 48 kHz 立体声出声、外挂 SRT 载入 3 条 cue，日志零 error（详见 `docs/verification.md` 3.18）。**iPadOS 已在 iPad 模拟器上实测通过**：同一条 VideoToolbox 硬解 + AudioQueue + 外挂 SRT 链路，截图彩条顺序正确、字幕像素可见（`docs/images/ipad-player.png`，详见 3.19）；实体 iPad 仍需一次签名与「开发者模式」|
+|Apple 端真机验证|**macOS 已实测通过**：Mac（macOS 27.0.1 / Xcode 27.1）上 `flutter build macos --release` → `✓ Built lanplayer.app (61.7MB)`，运行后 `libsmb2` 浏览 NAS、`VideoToolbox` 硬解 640x360 h264、`AudioQueue` 48 kHz 立体声出声、外挂 SRT 载入 3 条 cue，日志零 error（详见 `docs/verification.md` 3.18）。**iPadOS 已在 iPad 模拟器上实测通过**：同一条 VideoToolbox 硬解 + AudioQueue + 外挂 SRT 链路，截图彩条顺序正确、字幕像素可见（`docs/images/ipad-player.png`，详见 3.19）。**实体 iPad（iPadOS）已识别并配对**：`devicectl` 报 `Pairing State: paired`、`Developer Mode Status: Enabled`、USB 传输、arm64e；真机静态库已编出（`iphoneos` 族 arm64），`flutter build ios --release --no-codesign` 通过（34.6 MB）；无线调试已用 `pymobiledevice3 lockdown wifi-connections on` 打开。**只差一步**：Mac 上还没有任何签名身份（`security find-identity` 返回 0 valid identities），登录 Apple ID 后 `TEAM_ID=<10 位> ./scripts/ios_device_install.sh` 即可装机|
 |真机硬解（MediaCodec / VideoToolbox）|`VideoToolbox` 已在 macOS 真机跑通（日志 `hardware decode videotoolbox`）；`MediaCodec` 需要在 Android 设备上验（CI 只保证编译）|
 |Flutter `analyze`|Dart 侧用 `flutter test` + kernel 编译两重检查（都已接进 `tool/check_all.py`）；`flutter analyze` 需要完整依赖解析，未在本机跑|
 |GitHub Actions 全绿|私有仓库的免费额度（2000 分钟/月）已被这笔开发用完：一次全量 CI ≈ 55 计费分钟（macOS ×10、Windows ×2）。额度耗尽时 job 会「3 秒失败、`steps` 为空、日志 404」，annotation 里写的是 billing。已加 `paths-ignore`（改文档不触发）与 `concurrency`（新推送取消旧跑批）；要恢复全绿需改 public 仓库或提高 spending limit。详见 `docs/build.md` 6.6|
