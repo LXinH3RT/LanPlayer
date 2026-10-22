@@ -1,4 +1,4 @@
-# 在指定窗口的客户区坐标上点一下（真实鼠标事件，走 user32 SendInput 的那套语义）。
+﻿# 在指定窗口的客户区坐标上点一下（真实鼠标事件，走 user32 SendInput 的那套语义）。
 #
 # 为什么需要它：Flutter 的 hover / tap 都从 Win32 的真实鼠标位置采样，
 # PostMessage(WM_LBUTTONDOWN) 不会让引擎产生 tap，必须真的移动光标 + 按下/抬起。
