@@ -231,6 +231,21 @@ int lp_is_video_name(const char *name)
     return strcmp(lp_kind_for_name(name), "video") == 0;
 }
 
+/* 浏览列表是否该显示这个文件。
+ *
+ * 只留视频、字幕、音频三类。`.txt`、`.docx`、`.ini`、`.exe` 之类对播放器
+ * 没有任何意义，列出来只会把真正的媒体挤下去（用户报的就是这个）。
+ * 目录始终保留 —— 由调用方判断 is_dir 之后再决定是否过滤。
+ *
+ * 注意这里**不改** lp_kind_for_name 的返回值：kind 还用于别的判断
+ * （比如播放器要不要尝试打开），只是不再把它们展示出来。 */
+int lp_is_listable_media(const char *name)
+{
+    const char *kind = lp_kind_for_name(name);
+    return strcmp(kind, "video") == 0 || strcmp(kind, "subtitle") == 0 ||
+           strcmp(kind, "audio") == 0;
+}
+
 int lp_is_subtitle_name(const char *name)
 {
     return strcmp(lp_kind_for_name(name), "subtitle") == 0;

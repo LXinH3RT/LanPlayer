@@ -118,6 +118,11 @@ static int file_transport_list(const LpUrl *u, const LpSourceOptions *opts,
         if (stat(full, &st) != 0) {
             continue;
         }
+        /* 与 SMB 侧同一套规则：目录一律保留，文件只留视频 / 字幕 / 音频。 */
+        int is_dir = S_ISDIR(st.st_mode);
+        if (!is_dir && !lp_is_listable_media(ent->d_name)) {
+            continue;
+        }
         if (count == cap) {
             cap *= 2;
             LpDirItem *grown = realloc(items, (size_t)cap * sizeof(LpDirItem));
@@ -128,7 +133,7 @@ static int file_transport_list(const LpUrl *u, const LpSourceOptions *opts,
         }
         LpDirItem *it = &items[count++];
         snprintf(it->name, sizeof(it->name), "%s", ent->d_name);
-        it->is_dir = S_ISDIR(st.st_mode);
+        it->is_dir = is_dir;
         it->size = (int64_t)st.st_size;
         it->mtime = (int64_t)st.st_mtime;
     }
