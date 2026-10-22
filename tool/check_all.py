@@ -311,6 +311,22 @@ def check_lan_scan() -> None:
                         f"breaks the whole page: {eager[0].strip()}")
     notes.append("lan scan: probes TCP 445 with capped concurrency, "
                  "optional UI step, share name still user-supplied")
+    # The display-name box was dropped on purpose: two fields (name + share)
+    # for one thing made every add-server visit show an empty optional box that
+    # almost nobody filled, and leaving it blank already fell back to the share
+    # name. Guard the decision so a later edit does not quietly restore it.
+    if "显示名称" in ui_code:
+        problems.append("the add-server screen must not ask for 显示名称 any "
+                        "more; the card title is the share name "
+                        "(ServerProfile.displayName)")
+    if ui_code.count("TextFormField(") != 5:
+        problems.append(
+            f"the add-server screen should have 5 inputs (host/port/share/"
+            f"user/password), found {ui_code.count('TextFormField(')}")
+    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    if models.exists() and "displayName" not in models.read_text(encoding="utf-8"):
+        problems.append("ServerProfile must expose displayName (falls back to "
+                        "share) so cards stay readable when name is empty")
 
 
 def check_thumbnails() -> None:

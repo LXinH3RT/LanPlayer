@@ -124,6 +124,14 @@ class ServerProfile {
   /// Root URL of the share, without credentials.
   String get rootUrl => 'smb://$host${port == 445 ? '' : ':$port'}/$share';
 
+  /// Title of the server card.
+  ///
+  /// The edit screen no longer asks for a display name — it writes the share
+  /// name into [name] — but a profile saved by an older build may have a real
+  /// custom name, or an empty one. Falling back to [share] keeps every card
+  /// readable instead of showing a blank row.
+  String get displayName => name.trim().isEmpty ? share.trim() : name.trim();
+
   /// URL with userinfo, used for FFmpeg/transport calls.
   String get urlWithCredentials {
     final encodedUser = Uri.encodeComponent(user);

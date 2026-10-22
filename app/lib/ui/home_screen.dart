@@ -121,7 +121,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('删除 ${p.name}？'),
+        title: Text('删除 ${p.displayName}？'),
         content: const Text('只会从本机移除这条记录，不会修改服务端的共享设置。'),
         actions: [
           TextButton(
@@ -187,7 +187,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           Theme.of(context).colorScheme.surfaceContainerHighest,
                       child: const Icon(Icons.folder_shared),
                     ),
-                    title: Text(p.name,
+                    title: Text(p.displayName,
                         maxLines: 1, overflow: TextOverflow.ellipsis),
                     subtitle: Text(
                       describeServer(p),

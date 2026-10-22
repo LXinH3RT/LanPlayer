@@ -34,8 +34,6 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
   /// 这样即便内核库缺失，页面也能打开并填完再报错，而不是整页打不开。
   late final MediaRepository _repo = MediaRepository();
 
-  late final TextEditingController _name =
-      TextEditingController(text: widget.profile?.name ?? '');
   late final TextEditingController _host =
       TextEditingController(text: widget.profile?.host ?? '192.168.1.');
   late final TextEditingController _port =
@@ -68,7 +66,7 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
 
   @override
   void dispose() {
-    for (final c in [_name, _host, _port, _share, _user, _password]) {
+    for (final c in [_host, _port, _share, _user, _password]) {
       c.dispose();
     }
     super.dispose();
@@ -144,20 +142,19 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
   void _pickHost(LanHost host) {
     setState(() {
       _host.text = host.address;
-      // 只在显示名还空着的时候帮用户填一下，不覆盖用户已经写好的名字。
-      if (_name.text.trim().isEmpty &&
-          host.name != null &&
-          host.name!.isNotEmpty) {
-        _name.text = host.name!;
-      }
     });
   }
 
+  /// 卡片标题直接用共享名。
+  ///
+  /// 原来这里是一个「显示名称（可选）」输入框，留空时也回退到共享名 —— 也就是说
+  /// 它唯一的用途是让同一个共享在两个名字之间切换（比如两台机器都有 Movies）。
+  /// 实际用下来这一步没人填，反而每次添加都要多看一个空框，所以去掉：
+  /// 显示名恒等于共享名，[ServerProfile.name] 字段本身保留，老配置照旧能读。
   ServerProfile _build() => ServerProfile(
         id: widget.profile?.id ??
             'srv-${DateTime.now().millisecondsSinceEpoch}',
-        name:
-            _name.text.trim().isEmpty ? _share.text.trim() : _name.text.trim(),
+        name: _share.text.trim(),
         host: _host.text.trim(),
         port: int.tryParse(_port.text.trim()) ?? 445,
         share: _share.text.trim(),
@@ -202,14 +199,6 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            TextFormField(
-              controller: _name,
-              decoration: const InputDecoration(
-                labelText: '显示名称（可选）',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 14),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [

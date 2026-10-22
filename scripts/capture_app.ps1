@@ -1,4 +1,4 @@
-# Launches the Flutter desktop app with stdout/stderr redirected to files,
+﻿# Launches the Flutter desktop app with stdout/stderr redirected to files,
 # waits, captures its window to a PNG, then closes it.
 #
 # Differs from capture_window.ps1 (which discards output): this one keeps the
@@ -30,6 +30,22 @@ using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 
 public class WinCap2 {
+    // This machine runs at a display scale above 100%.  Without declaring the
+    // process DPI-aware, GetWindowRect returns virtualised (logical) pixels
+    // while PrintWindow renders the real client area, so the bitmap comes out
+    // with the right sheet size and the wrong content: everything looks zoomed
+    // and the right-hand edge of the window is cut off (the port box simply
+    // was not in the PNG).  Calling this before any window call makes the two
+    // agree.
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+
+    public static void MakeDpiAware() {
+        // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4; fall back to the
+        // Win7-era call on older Windows.
+        if (!SetProcessDpiAwarenessContext(new IntPtr(-4))) { SetProcessDPIAware(); }
+    }
+
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
@@ -74,6 +90,10 @@ public class WinCap2 {
     }
 }
 '@ -ReferencedAssemblies System.Drawing
+
+# Must run before the first GetWindowRect / PrintWindow, otherwise the shot is
+# taken with logical coordinates and loses the right-hand part of the window.
+[WinCap2]::MakeDpiAware() | Out-Null
 
 $proc = Start-Process -FilePath $Exe -WorkingDirectory (Split-Path $Exe) -PassThru `
     -RedirectStandardOutput $stdout -RedirectStandardError $stderr -RedirectStandardInput $stdin

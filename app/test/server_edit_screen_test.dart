@@ -11,17 +11,57 @@ import 'package:lanplayer/ui/server_edit_screen.dart';
 /// 扫描逻辑本身由 `test/lan_scan_test.dart` 覆盖，
 /// 真实网段的命中由 `tool/lan_scan_probe.dart` 实地验证。
 void main() {
-  testWidgets('添加服务器页有扫描入口和六个输入框', (tester) async {
+  testWidgets('添加服务器页有扫描入口和五个输入框', (tester) async {
     await tester.pumpWidget(const MaterialApp(home: ServerEditScreen()));
     await tester.pump();
 
     expect(find.text('添加 SMB 服务器'), findsOneWidget);
     // 扫描入口
     expect(find.text('扫描局域网'), findsOneWidget);
-    // 显示名称 / 地址 / 端口 / 共享名 / 用户名 / 密码
-    expect(find.byType(TextFormField), findsNWidgets(6));
+    // 地址 / 端口 / 共享名 / 用户名 / 密码（不再有「显示名称」那一栏）
+    expect(find.byType(TextFormField), findsNWidgets(5));
+    expect(find.text('显示名称（可选）'), findsNothing);
     expect(find.text('测试连接'), findsOneWidget);
     expect(find.text('保存'), findsOneWidget);
+  });
+
+  test('卡片标题回退到共享名（老配置 name 为空时也不会显示成空白）', () {
+    // 添加页已经不再问显示名，但老配置里可能存着空串，或者用户在旧版本里
+    // 刻意清空过。displayName 负责兜底，界面和删除确认框都只用它。
+    final blank = ServerProfile(
+      id: 'srv-1',
+      host: '192.168.1.10',
+      share: 'Movies',
+      user: 'guest',
+    );
+    expect(blank.name, '');
+    expect(blank.displayName, 'Movies');
+
+    // 老配置里存了自己起的名字，要继续用那个，不能被共享名覆盖掉。
+    final named = ServerProfile(
+      id: 'srv-2',
+      name: '客厅媒体库',
+      host: '192.168.1.10',
+      share: 'Movies',
+    );
+    expect(named.displayName, '客厅媒体库');
+
+    // 全是空白字符也按空处理，否则卡片上会出现一行看不见的标题。
+    final padded = ServerProfile(id: 'srv-3', name: '   ', share: ' Movies ');
+    expect(padded.displayName, 'Movies');
+  });
+
+  testWidgets('连续添加两台机器时，卡片标题分别取各自的共享名', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: ServerEditScreen()));
+    await tester.pump();
+
+    await tester.enterText(find.byType(TextFormField).at(2), 'Movies');
+    await tester.enterText(find.byType(TextFormField).at(0), '192.168.1.10');
+    await tester.pump();
+
+    // 共享名填了之后，页面上不该再出现任何「显示名称」字样
+    expect(find.textContaining('显示名称'), findsNothing);
+    expect(find.text('Movies'), findsOneWidget);
   });
 
   testWidgets('共享名没填时点保存会给出必填提示，不会去连服务器', (tester) async {

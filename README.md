@@ -163,7 +163,7 @@ LanPlayer/
 | `make_test_media.ps1` | 生成测试素材：`test.mp4`、`clip.mp4`+`clip.srt`、`subbed.mkv`、`colortest/red.mp4`（60 秒纯红）、`colortest/black.mp4`（60 秒纯黑，测量控件用） |
 | `build_android_deps.sh` | 交叉编译 Android 的 FFmpeg + libsmb2 到 `native/third_party/` |
 | `build_apple_deps.sh` | 编 iOS / iPadOS / macOS 的 FFmpeg + libsmb2 **和 C 内核**，产出三份 universal 静态库到 `native/third_party/` |
-| `capture_app.ps1` | 起桌面端、等一会、抓窗口 PNG、关掉 |
+| `capture_app.ps1` | 起桌面端、等一会、抓窗口 PNG、关掉。抓图前必须声明 DPI 感知，否则缩放显示器上 `GetWindowRect`（逻辑像素）和 `PrintWindow`（真实客户区）对不上，图会被放大且右侧被裁 |
 | `capture_window.ps1` | 同上，更早的窗口版（拿来做 UI 证据） |
 | `capture_screen.ps1` | 按用户视角截图；`-WholeScreen` 抓整屏（窗口矩形在缩放显示器上会错过客户区） |
 | `capture_playback_ui.ps1` | 起播放页、先把光标停进窗口让控制栏出现，再整屏抓取并按客户区裁剪，同时统计四个区域的亮像素 |

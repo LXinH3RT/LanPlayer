@@ -701,6 +701,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_deskto
 
 只想要内核时：`scripts\build_windows.ps1`（Zig，无需 VS）。
 
+**验证用的 `--dart-define`**：这条通道不走 `flutter build`，所以
+`--dart-define=...` 不会自动进编译。用脚本自己的参数，它写进
+`generated_config.cmake` 的 `DART_DEFINES`：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_desktop.ps1 `
+    -DartDefines "LANPLAYER_UI=add-server"
+```
+
+格式是 **逗号分隔、每项各自 base64 的 `key=value`**（`encodeDartDefines()`，
+`packages/flutter_tools/lib/src/build_info.dart:1045`），不是 base64 的 JSON 数组。
+编错了不会报错：构建成功、app 正常启动、define 悄悄丢失，`String.fromEnvironment`
+拿到空串。要确认可以看
+`app\windows\flutter\ephemeral\generated_config.cmake` 里那一行：
+
+```
+"DART_DEFINES=TEFOUExBWUVSX1VJPWFkZC1zZXJ2ZXI="   # base64("LANPLAYER_UI=add-server")
+```
+
 **官方 `flutter build windows` 路径**（本机已跑通，见下）：
 
 ```powershell
