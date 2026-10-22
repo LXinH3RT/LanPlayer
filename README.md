@@ -406,6 +406,22 @@ VERSION=0.1.0 ./scripts/build_macos_dmg.sh
 `%APPDATA%\lanplayer`（默认保留），macOS 删 app 就结束，状态在
 `~/Library/Containers/dev.lanplayer.lanplayer/`。
 
+### 下载已发布的安装包
+
+两个包已经传到 GitHub Release：
+**<https://github.com/LXinH3RT/LanPlayer/releases/tag/v0.1.0>**
+
+| 平台 | 文件 | 大小 | SHA256 |
+|-|-|-:|-|
+| Windows 10/11 x64 | `LanPlayer-0.1.0-windows-x64-setup.exe` | 55.4 MB | `8FBEC026…9D43` |
+| macOS 12+ (Apple Silicon) | `LanPlayer-0.1.0-macos-arm64.dmg` | 25.8 MB | `5178A09B…EAB1` |
+
+> 仓库是 **private**，所以公开直链对未登录访问者返回 404。要么登录 GitHub 后从
+> Release 页面点附件，要么把仓库改成 public。用 API 下载（`Accept:
+> application/octet-stream`）已验证两个文件字节与本地一致。
+
+上传方式与两个坑（`--ssl-no-revoke`、`uploads.github.com`）见 `docs/build.md` 7.3。
+
 构建细节与实测记录见 [docs/build.md](docs/build.md) §7、
 [docs/verification.md](docs/verification.md) §3.24。
 
