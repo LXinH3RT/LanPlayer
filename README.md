@@ -475,6 +475,17 @@ iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字�
 
 ![iPad 播放](docs/images/ipad-player.png)
 
+**实体 iPad 已跑通**（iPad，iPadOS，真机 2746×1908 截图）：
+
+![iPad 真机播放](docs/images/ipad-device-play.jpg)
+![iPad 真机播放（画面推进）](docs/images/ipad-device-play2.jpg)
+
+装的是带签名的 Release 包（Apple Development 证书，Team `<TEAM_ID>`），
+启动后自动打开 SMB 共享里的《movie-01》，内核日志逐项确认：
+`videotoolbox session ready 1920x820 (h264)` → `hardware decode videotoolbox` →
+`audioqueue started 48000Hz x2` → 外挂字幕 `1062 cues`，播放进度写进
+`progress.json`（0 → 68.64 s）。全链路见 `docs/verification.md` §3.27。
+
 在真 Mac 上第一次动手前，`docs/build.md` 的 4.1、4.6 与 4.8 值得先看一遍，那里记了三条本机没有、
 但 macOS 上一定会撞到的事实：
 
@@ -532,13 +543,14 @@ iPad 上的实测截图（iPad 模拟器，`lanplayer/video` 纹理 + 外挂字�
 |Windows 安装包|✅ NSIS 3.10 出 `dist\LanPlayer-0.1.0-windows-x64-setup.exe`（55.4 MB）；静默安装落地 17 个文件 200.2 MB，装出来的 `lanplayer.exe` 起窗正常（`hwnd=1049060 title=[lanplayer]`），静默卸载只剩 `state\`（用户数据按设计保留）|
 |macOS dmg|✅ `dist/LanPlayer-0.1.0-macos-arm64.dmg`（25.8 MB，59 MB app 压到 25.8 MB）；`hdiutil verify` 校验有效，`codesign --verify --deep --strict` 通过；拖进 `/Applications` 后启动即播（VideoToolbox 硬解 + 外挂字幕）|
 |GitHub Release|✅ `v0.1.0` 两个附件已发布（<https://github.com/LXinH3RT/LanPlayer/releases/tag/v0.1.0>）；用 API 下载回来算 SHA256 与本机文件完全一致（`8FBEC026…9D43` / `5178A09B…EAB1`）。仓库是 private，公开直链对未登录访问者为 404，属正常|
+|iPad 真机（签名 + 装机 + 播放）|✅ Apple ID 登录后证书出现（`1 valid identities`，Team `<TEAM_ID>` 取自证书 `OU`），`TEAM_ID=<TEAM_ID> ./scripts/ios_device_install.sh` → `✓ Built Runner.app (34.9MB)` → `App installed` → `Launched`；真机日志 `videotoolbox session ready 1920x820 (h264)`、`hardware decode videotoolbox`、`audioqueue started 48000Hz x2`、外挂字幕 `1062 cues`，`progress.json` 进度 0 → 68.64 s，真机截图 2746×1908（`docs/images/ipad-device-play.jpg`）。详见 `docs/verification.md` 3.27|
 
 仍需在别的机器上完成：
 
 |项|原因|
 |-|-|
 |Android / iOS / macOS 构建|本机没有 NDK / Xcode / CocoaPods；Android 与 iOS 已在 CI 的 `android` / `apple` 两个 job 上编译通过；macOS 已在本机的 Mac 上真跑通|
-|Apple 端真机验证|**macOS 已实测通过**：Mac（macOS 27.0.1 / Xcode 27.1）上 `flutter build macos --release` → `✓ Built lanplayer.app (61.7MB)`，运行后 `libsmb2` 浏览 NAS、`VideoToolbox` 硬解 640x360 h264、`AudioQueue` 48 kHz 立体声出声、外挂 SRT 载入 3 条 cue，日志零 error（详见 `docs/verification.md` 3.18）。**iPadOS 已在 iPad 模拟器上实测通过**：同一条 VideoToolbox 硬解 + AudioQueue + 外挂 SRT 链路，截图彩条顺序正确、字幕像素可见（`docs/images/ipad-player.png`，详见 3.19）。**实体 iPad（iPadOS）已识别并配对**：`devicectl` 报 `Pairing State: paired`、`Developer Mode Status: Enabled`、USB 传输、arm64e；真机静态库已编出（`iphoneos` 族 arm64），`flutter build ios --release --no-codesign` 通过（34.6 MB）；无线调试已用 `pymobiledevice3 lockdown wifi-connections on` 打开。**只差一步**：Mac 上还没有任何签名身份（`security find-identity` 返回 0 valid identities），登录 Apple ID 后 `TEAM_ID=<10 位> ./scripts/ios_device_install.sh` 即可装机|
+|Apple 端真机验证|**已全部跑通**（macOS 见 `docs/verification.md` 3.18、iPad 模拟器 3.19、**实体 iPad 3.27**）：macOS 上 `flutter build macos --release` → `✓ Built lanplayer.app (61.7MB)`，`VideoToolbox` 硬解 + `AudioQueue` + 外挂 SRT；实体 iPad 带签名装机后 `hardware decode videotoolbox 1920x820`、`audioqueue started 48000Hz x2`、字幕 `1062 cues`、进度写入 `progress.json`（0 → 68.64 s），真机截图见 `docs/images/ipad-device-play.jpg`。|
 |真机硬解（MediaCodec / VideoToolbox）|`VideoToolbox` 已在 macOS 真机跑通（日志 `hardware decode videotoolbox`）；`MediaCodec` 需要在 Android 设备上验（CI 只保证编译）|
 |Flutter `analyze`|Dart 侧用 `flutter test` + kernel 编译两重检查（都已接进 `tool/check_all.py`）；`flutter analyze` 需要完整依赖解析，未在本机跑|
 |GitHub Actions 全绿|私有仓库的免费额度（2000 分钟/月）已被这笔开发用完：一次全量 CI ≈ 55 计费分钟（macOS ×10、Windows ×2）。额度耗尽时 job 会「3 秒失败、`steps` 为空、日志 404」，annotation 里写的是 billing。已加 `paths-ignore`（改文档不触发）与 `concurrency`（新推送取消旧跑批）；要恢复全绿需改 public 仓库或提高 spending limit。详见 `docs/build.md` 6.6|

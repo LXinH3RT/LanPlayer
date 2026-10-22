@@ -40,8 +40,17 @@ echo "== 1. 写入 DEVELOPMENT_TEAM=$TEAM_ID =="
 if grep -q 'DEVELOPMENT_TEAM' "$PBX"; then
   /usr/bin/sed -i '' -E "s/DEVELOPMENT_TEAM = [^;]*;/DEVELOPMENT_TEAM = $TEAM_ID;/g" "$PBX"
 else
-  /usr/bin/sed -i '' -E "s|(PRODUCT_BUNDLE_IDENTIFIER = dev\.lanplayer\.lanplayer;)|\\1
-				DEVELOPMENT_TEAM = $TEAM_ID;|g" "$PBX"
+  # BSD sed 的替换式里不能出现真正的换行（会报 unescaped newline inside
+  # substitute pattern），所以用 awk 在 bundle id 那一行后面追加一行。
+  /usr/bin/awk -v team="$TEAM_ID" '
+    /PRODUCT_BUNDLE_IDENTIFIER = dev\.lanplayer\.lanplayer;/ {
+      print $0
+      match($0, /^[ \t]*/)
+      print substr($0, 1, RLENGTH) "DEVELOPMENT_TEAM = " team ";"
+      next
+    }
+    { print }
+  ' "$PBX" > "$PBX.tmp" && mv "$PBX.tmp" "$PBX"
 fi
 grep -c "DEVELOPMENT_TEAM = $TEAM_ID;" "$PBX" | sed 's/^/  occurrences: /'
 
