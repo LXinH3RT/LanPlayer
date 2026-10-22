@@ -107,13 +107,16 @@
 
 | 路径 | 体积 | 重建方式 |
 |-|-:|-|
-| `build/media/`（测试素材） | 约 59 MB | `powershell -File scripts\make_test_media.ps1`（需要 `.tools/ffmpeg`） |
-| `build/win-x64/`（内核 DLL 与 4 个测试 exe） | 约 196 MB | `powershell -File scripts\build_windows.ps1` |
+| `build/media/`（测试素材） | 约 4 MB | `powershell -File scripts\make_test_media.ps1`（需要 `.tools/ffmpeg`） |
+| `build/win-x64/`（内核 DLL 与 4 个测试 exe） | 约 188 MB | `powershell -File scripts\build_windows.ps1` |
 | `build/media/colortest/red.mp4` | 28 KB | 同上 `make_test_media.ps1`；`check_all.py` 的硬解一项靠它，没有就自动跳过 |
-| `native/third_party/`（FFmpeg / libsmb2 / 核静态库） | 数百 MB | `scripts\build_windows.ps1`（Windows）、`SLICES=macosx ./scripts/build_apple_deps.sh`（Apple） |
-| `app/build/`、`app/windows/out/`、`app/.dart_tool/` | 数百 MB | 重新跑一次 `flutter build windows` / `flutter pub get` |
+| `native/third_party/`（FFmpeg / libsmb2 / 核静态库） | 数百 MB，Windows 上原本就没有 | `scripts\build_windows.ps1`（Windows）、`SLICES=macosx ./scripts/build_apple_deps.sh`（Apple） |
+| `app/build/`、`app/windows/out/`、`app/.dart_tool/` | 约 43 MB | 重新跑一次 `flutter build windows` / `flutter pub get` |
 | `dist/`（安装包） | 81 MB | `scripts\build_windows_installer.ps1`、`scripts\build_macos_dmg.sh` |
 | `.tools/`（工具链本体） | 2.7 GB | `python tool\fetch_deps.py zig ffmpeg libsmb2 dart flutter nsis` |
+
+当前整个目录 **约 3.0 GB**（其中 `.tools` 2.7 GB、`build` 188 MB、`dist` 81 MB、
+`app` 44 MB；纯源码 + 文档 + `.git` 合计不到 10 MB）。
 
 **不要删**：`.tools/flutter-sdk/.git`（删了 Flutter 工具直接报“不是 GitHub 仓库的克隆”）、`.tools/flutter-sdk/bin/mingit`（本机唯一可用的 git）。
 
