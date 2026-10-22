@@ -74,7 +74,25 @@ try {
     }
 
     # Push whatever the branch now has. "Everything up-to-date" is success.
+    #
+    # Two attempts. The direct one is normal; when it fails it is almost always
+    # because DNS handed us a github.com address that this network cannot reach
+    # (see tool/github_tunnel.py). The fallback starts that local CONNECT tunnel
+    # and retries through it, without persisting any proxy in the git config.
     $pushOutput = & $git push origin HEAD 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        if (-not $Quiet) { Write-Host 'sync: direct push failed, trying the local tunnel' }
+        $tunnel = Join-Path $PSScriptRoot 'ensure_github_tunnel.ps1'
+        if (Test-Path $tunnel) {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $tunnel | ForEach-Object {
+                if (-not $Quiet) { Write-Host "  $_" }
+            }
+            if ($LASTEXITCODE -eq 0) {
+                $pushOutput = & $git -c http.proxy=http://127.0.0.1:8899 `
+                    -c https.proxy=http://127.0.0.1:8899 push origin HEAD 2>&1
+            }
+        }
+    }
     if ($LASTEXITCODE -ne 0) {
         Write-Host "sync: git push failed" -ForegroundColor Red
         $pushOutput | ForEach-Object { Write-Host "  $_" }
