@@ -18,7 +18,7 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/app/build/macos/Build/Products/Release/lanplayer.app"
-VERSION="${VERSION:-0.1.0}"
+VERSION="${VERSION:-0.1.2}"
 ARCH="$(uname -m)"
 OUT="$ROOT/dist"
 DMG="$OUT/LanPlayer-${VERSION}-macos-${ARCH}.dmg"
