@@ -801,6 +801,43 @@ VERSION=0.1.0 ./scripts/build_macos_dmg.sh
 本机自用足够；**分发给别人需要 Developer ID 证书 + 公证**，否则对方打开时
 Gatekeeper 会拦（`已损坏，无法打开` / `无法验证开发者`）。
 
+### 7.3 发布到 GitHub Release
+
+两个包打出来后直接传到 GitHub 的 Release 里，不需要 `gh` CLI（本机没装），
+用 REST API 两步：先建 release（顺带建 tag），再逐个上传 asset。
+
+```bash
+# 1. 建 release + tag（tag 指向 main 当前 HEAD）
+curl -sS -X POST \
+  -H "Authorization: token $GH_TOKEN" \
+  -H "Accept: application/vnd.github+json" \
+  -H "Content-Type: application/json" \
+  https://api.github.com/repos/LXinH3RT/LanPlayer/releases \
+  -d '{"tag_name":"v0.1.0","target_commitish":"main","name":"LanPlayer 0.1.0","body":"...","draft":false,"prerelease":false}'
+
+# 2. 传 asset（注意是 uploads.github.com，不是 api.github.com）
+curl -sS -X POST \
+  -H "Authorization: token $GH_TOKEN" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @dist/LanPlayer-0.1.0-windows-x64-setup.exe \
+  "https://uploads.github.com/repos/LXinH3RT/LanPlayer/releases/<release_id>/assets?name=LanPlayer-0.1.0-windows-x64-setup.exe"
+```
+
+两个踩过的坑：
+
+- **必须加 `--ssl-no-revoke`**：Windows 自带 curl 走 schannel，检查吊销列表时
+  报 `CRYPT_E_NO_REVOCATION_CHECK (0x80092012)`，加这个开关即可。
+- **上传目标主机是 `uploads.github.com`**：用 `api.github.com` 传会 404。
+
+验证方式：用 `Accept: application/octet-stream` 下载
+`https://api.github.com/repos/.../releases/assets/<asset_id>`，与本机文件比 SHA256
+（本次两个包的哈希完全一致）。
+
+> 仓库目前是 **private**，所以 `https://github.com/.../releases/download/v0.1.0/...`
+> 这类公开直链对未登录访问者返回 404 —— 这是私有库的正常行为，不是上传失败。
+> 要么让获邀协作者登录后从 Release 页面下载，要么把仓库改成 public。
+> 把仓库改 public 还会顺带解决 GitHub Actions 免费额度用完的问题（见 6.6）。
+
 ## 7.5 构建后自检
 
 ```bash
