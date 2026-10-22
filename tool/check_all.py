@@ -796,6 +796,64 @@ def check_player_layout() -> None:
                  "bottom row")
 
 
+def check_powershell_scripts() -> None:
+    """Every .ps1 under scripts/ must be readable by Windows PowerShell 5.1.
+
+    PowerShell 5.1 decodes a script with no UTF-8 BOM using the ANSI code page
+    (cp936 on this machine, OEMCP=936). A Chinese comment then turns into a
+    garbled *string literal* that swallows the next line -- no parse error, just
+    a silently lost assignment. That cost two rounds of debugging
+    (scripts/capture_track_sheet.ps1: $btnY became an empty string and the click
+    landed at y=0), so it is worth a static guard rather than a comment.
+
+    Two shapes are allowed:
+      * pure ASCII body, with or without a BOM
+      * UTF-8 BOM + any UTF-8 body
+    Anything else fails.
+
+    pwsh 7 would default to UTF-8, but this machine does not have it installed
+    (checked 2026-10-22: no pwsh on PATH, no C:\\Program Files\\PowerShell,
+    winget reports MS.PowerShell not installed), and the BOM is the portable
+    answer either way.
+    """
+    script_dir = ROOT / "scripts"
+    if not script_dir.is_dir():
+        return
+
+    bom = b"\xef\xbb\xbf"
+    bad: list[str] = []
+    for path in sorted(script_dir.glob("*.ps1")):
+        raw = path.read_bytes()
+        has_bom = raw.startswith(bom)
+        body = raw[len(bom):] if has_bom else raw
+        try:
+            text = body.decode("utf-8")
+        except UnicodeDecodeError:
+            bad.append(f"scripts/{path.name}: not valid UTF-8")
+            continue
+        non_ascii = [ch for ch in text if ord(ch) > 0x7F]
+        if not non_ascii:
+            continue
+        if not has_bom:
+            line = next(
+                (i + 1 for i, ln in enumerate(text.splitlines())
+                 if any(ord(c) > 0x7F for c in ln)),
+                0,
+            )
+            bad.append(
+                f"scripts/{path.name}: contains non-ASCII text (line {line}) but has "
+                f"no UTF-8 BOM; Windows PowerShell 5.1 will decode it as cp936 and "
+                f"swallow the following line silently -- either keep it pure ASCII "
+                f"or prepend EF BB BF"
+            )
+
+    if bad:
+        problems.extend(bad)
+    else:
+        notes.append("powershell: every scripts/*.ps1 is ASCII or UTF-8 + BOM "
+                     "(PS 5.1 would mis-decode an unmarked one)")
+
+
 def check_track_selection() -> None:
     """Guard the audio/subtitle track picker.
 
@@ -1173,6 +1231,7 @@ def main() -> int:
     check_thumbnails()
     check_installers()
     check_player_layout()
+    check_powershell_scripts()
     check_track_selection()
     check_apple_wiring()
     check_hw_decode()

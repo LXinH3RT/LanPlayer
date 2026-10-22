@@ -1,4 +1,4 @@
-# Capture the audio/subtitle track sheet, to prove the player lists every track
+﻿# Capture the audio/subtitle track sheet, to prove the player lists every track
 # inside the file (the user's report was "only one track, and the audio sheet was
 # titled 'subtitles'").
 #

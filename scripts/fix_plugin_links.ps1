@@ -1,4 +1,4 @@
-# Re-creates the plugin links Flutter expects under
+﻿# Re-creates the plugin links Flutter expects under
 # app\windows\flutter\ephemeral\.plugin_symlinks\.
 #
 # Why this exists: `flutter pub get` / `flutter build windows` call Dart's
