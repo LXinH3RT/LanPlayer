@@ -519,6 +519,51 @@ SLICES=iphoneos ./scripts/build_apple_deps.sh
 （见 4.2）。`flutter build ios --release --no-codesign` 可以在没登录 Apple ID 的
 机器上先验证「代码本身能不能为 arm64 设备编过」。
 
+真机装机的三个必踩点（都已实测，见 `docs/verification.md` 3.27）：
+
+1. **Team ID 从证书里读，不用等 Xcode 界面**：
+
+   ```bash
+   security find-certificate -c "Apple Development" -p \
+     | openssl x509 -noout -subject
+   # subject= /UID=.../CN=Apple Development: .../OU=<TEAM_ID>/O=.../C=US
+   #                                               ^^ Team ID
+   ```
+
+2. **SSH 非交互会话签不了名**。`codesign` 报
+   `Failed to codesign .../Flutter.framework/Flutter with identity ...`，
+   根因是 `security show-keychain-info` 返回
+   `User interaction is not allowed.`。若 login keychain 无密码，先解一次锁：
+
+   ```bash
+   security unlock-keychain -p "" ~/Library/Keychains/login.keychain-db
+   ```
+
+   解锁后同一会话里 `codesign` 立即 rc=0。脚本本身不含这一步（不宜把空密码写死）。
+
+3. **卸载重装会重置「开发者信任」**。profile 仍然 `Valid`，但启动报
+   `error 10002 ... its profile has not been explicitly trusted by the user`。
+   iPad 上需要在 `设置 → 通用 → VPN与设备管理` 手动点一次信任；
+   点完后 `devicectl device process launch` 立刻成功。**没有命令行替代方案。**
+
+信任恢复之后，`devicectl device process launch --console` 就能直接读到内核日志
+（内核走 `fprintf(stderr, ...)`），不需要 `flutter run`：
+
+```bash
+xcrun devicectl device process launch --console --terminate-existing \
+  --device <UDID> dev.lanplayer.lanplayer
+# [LanPlayer I videotoolbox] session ready 1920x820 (h264)
+# [LanPlayer I video] hardware decode videotoolbox 1920x820
+# [LanPlayer I audioqueue] started 48000Hz x2
+```
+
+真机截图用 `devicectl`（`simctl io` 只对模拟器有效）：
+
+```bash
+xcrun devicectl device capture screenshot --device <UDID> --destination out.png
+# Dimensions: 2746x1908 pixels
+```
+
 模拟器上的验证钩子要注意：iOS 的 app 由 launchd 拉起，Dart 侧的
 `Platform.environment` **永远是空表**，`SIMCTL_CHILD_LANPLAYER_OPEN=...`
 虽然确实进了进程环境（`ps eww -p <pid>` 能看到），但 Dart 读不到。
@@ -548,6 +593,9 @@ stdout/stderr，`xcrun simctl spawn <dev> log show` 只能看到 `flutter:` 那�
 | `Target debug_unpack_ios failed: Binary .../Flutter.framework/Flutter does not contain architectures "arm64 x86_64"` | Mac 上 Flutter SDK 的 iOS 模拟器切片架构与工程 `ARCHS` 不匹配 | 已修：`app/ios/Flutter/*.xcconfig` 收紧到 `ARCHS = arm64` |
 | `error: The iOS Simulator deployment target 'IPHONEOS_DEPLOYMENT_TARGET' is set to 13.0, but the range ... is 15.0 to 27.1.x` | Xcode 27 把 iOS 最低部署目标抬到 15.0 | 已修：`Podfile` / `project.pbxproj` / `AppFrameworkInfo.plist` / podspec 四处统一到 15.0，`post_install` 再兜一层。更新仓库即可 |
 | `vf_scale_vt.c: 'VTPixelTransferSessionCreate' is only available on iOS 16.0 or newer` | `--enable-videotoolbox` 会自动拉进 `scale_vt` 滤镜，它用的 API 在 iOS 16 才有，FFmpeg 6.1.1 没加可用性保护 | 已修：`build_apple_deps.sh` 加 `-Wno-error=unguarded-availability-new` 并显式裁剪滤镜列表。更新仓库即可 |
+| `sed: 1: "s\|(PRODUCT_BUNDLE_IDENT ...": unescaped newline inside substitute pattern` | BSD sed 的替换式里不能有真正的换行，`ios_device_install.sh` 原先这么插 `DEVELOPMENT_TEAM` | 已修：改用 `awk` 匹配 `PRODUCT_BUNDLE_IDENTIFIER` 后按原缩进追加一行。更新仓库即可 |
+| `Failed to codesign .../Flutter.framework/Flutter with identity 7D41...`（`security show-keychain-info` 报 `User interaction is not allowed.`） | SSH 非交互会话没有钥匙串访问权 | 先 `security unlock-keychain -p "" ~/Library/Keychains/login.keychain-db`（见 4.6.4） |
+| `error 10002 ... its profile has not been explicitly trusted by the user` | 卸载重装后开发证书信任被重置；profile 仍报 `Valid` | iPad 上 `设置 → 通用 → VPN与设备管理` 手动点一次信任（见 4.6.4） |
 | 真机 USB 插上但 `devicectl list devices` 只看到模拟器 | iPad 锁屏时不会启用暴露 `com.apple.mobiledevice` 的 data 配置，也弹不出「信任这台电脑」 | 解锁 iPad 后重试；`ioreg -p IOUSB` 里能看到设备说明线没问题（见 4.6.2） |
 | `error: Signing for "Runner" requires a development team.` | 工程里没有 `DEVELOPMENT_TEAM`，且 Xcode 里没登录 Apple ID（`security find-identity -v -p codesigning` 返回 0 valid identities） | Xcode → Settings → Accounts 登录 Apple ID 生成 Apple Development 证书，再 `TEAM_ID=<10 位> ./scripts/ios_device_install.sh`（见 4.6.4） |
 | `Window` 菜单里没有「Devices and Simulators」 | Xcode 27 把它拆成独立 app `Device Hub` | `open -a /Applications/Xcode.app/Contents/Applications/DeviceHub.app`（见 4.6.1） |

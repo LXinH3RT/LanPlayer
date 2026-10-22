@@ -180,11 +180,17 @@ void _openLocalFile(String target) {
     ext: name.contains('.') ? name.split('.').last : '',
   );
   final playlist = PlaylistController(items: [entry]);
+  // 网络路径要带上凭据，否则走匿名登录，libsmb2 会报
+  // Session setup failed with (0xc000000d) STATUS_INVALID_PARAMETER。
   final location = isNetwork
       ? MediaLocation(
           label: '网络视频',
           rootUrl: target,
-          options: const {},
+          options: <String, dynamic>{
+            'user': _probe('LANPLAYER_USER') ?? '',
+            'password': _probe('LANPLAYER_PASS') ?? '',
+            'timeout_ms': 15000,
+          },
         )
       : MediaLocation.local('本地视频', target);
   appNavigatorKey.currentState?.push(MaterialPageRoute<void>(
