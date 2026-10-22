@@ -290,6 +290,13 @@ static int smb_transport_list(const LpUrl *u, const LpSourceOptions *opts,
         if (lp_is_os_junk_name(ent->name)) {
             continue;
         }
+        /* 只列视频 / 字幕 / 音频。.txt、.docx、.ini 之类对播放器没用，
+         * 混在列表里只会把真正的媒体挤下去（用户报的就是这个）。
+         * 目录不过滤 —— 不然就进不去子文件夹了。 */
+        int is_dir = ent->st.smb2_type == SMB2_TYPE_DIRECTORY;
+        if (!is_dir && !lp_is_listable_media(ent->name)) {
+            continue;
+        }
         if (count == cap) {
             cap *= 2;
             LpDirItem *grown = realloc(items, (size_t)cap * sizeof(LpDirItem));
@@ -300,7 +307,7 @@ static int smb_transport_list(const LpUrl *u, const LpSourceOptions *opts,
         }
         LpDirItem *it = &items[count++];
         snprintf(it->name, sizeof(it->name), "%s", ent->name);
-        it->is_dir = ent->st.smb2_type == SMB2_TYPE_DIRECTORY;
+        it->is_dir = is_dir;
         it->size = (int64_t)ent->st.smb2_size;
         it->mtime = (int64_t)ent->st.smb2_mtime;
     }

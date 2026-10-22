@@ -86,28 +86,36 @@ class _BrowserScreenState extends State<BrowserScreen> {
     }
   }
 
-  /// 判断给定的视频文件是否存在同名外挂字幕文件。
+  /// 把字幕文件名显示成「相对视频主干多出来的那段」，没有就退回扩展名。
   ///
-  /// 该逻辑会先去掉文件扩展名并标准化文件名，再比较基础名称，因此
-  /// 像 "movie.mkv" 和 "movie.zh-cn.ass" 这样的文件即使扩展名不同，
-  /// 也可以被视为同一媒体的字幕匹配项。
-  bool _hasSidecar(MediaEntry video) {
-    final stem = _stem(video.name);
-    return _listing.subtitles.any((s) => _stem(s.name).startsWith(stem));
-  }
-
-  /// 将文件名转换为用于字幕匹配的标准化基础名。
-  static String _stem(String name) {
-    final dot = name.lastIndexOf('.');
-    return (dot > 0 ? name.substring(0, dot) : name).toLowerCase();
+  /// `电影.mkv` + `电影.zh-CN.srt` → `zh-CN`
+  /// `电影.mkv` + `电影.srt`      → `SRT`
+  String _subtitleLabel(MediaEntry sub) {
+    final dot = sub.name.lastIndexOf('.');
+    final subStem = (dot > 0 ? sub.name.substring(0, dot) : sub.name);
+    // 找到它归属的视频，减掉主干前缀。
+    final owner = _listing.videos.firstWhere(
+      (v) => _listing.subtitlesFor(v).any((s) => s.path == sub.path),
+      orElse: () => sub,
+    );
+    final ownerDot = owner.name.lastIndexOf('.');
+    final ownerStem = ownerDot > 0 ? owner.name.substring(0, ownerDot) : owner.name;
+    var rest = subStem;
+    if (subStem.length >= ownerStem.length &&
+        subStem.substring(0, ownerStem.length).toLowerCase() ==
+            ownerStem.toLowerCase()) {
+      rest = subStem.substring(ownerStem.length);
+    }
+    rest = rest.replaceAll(RegExp(r'^[.\-_\s(]+'), '');
+    return rest.isEmpty ? sub.ext.toUpperCase() : rest;
   }
 
   /// 创建播放列表并跳转到播放器界面。
   ///
-  /// 播放列表基于当前目录列表生成，这样播放器就能在当前文件夹中
-  /// 继续播放上一条/下一条媒体项目。所选条目的字幕列表也会一并传入，
-  /// 让播放器能够自动展示匹配的字幕轨道。
-  Future<void> _play(MediaEntry entry) async {
+  /// [subtitles] 是归属到这条视频的外挂字幕；只把它们传给播放器，
+  /// 而不是整个目录的字幕列表 —— 否则「字幕」面板里会混进别的片子的字幕。
+  Future<void> _play(MediaEntry entry,
+      {List<MediaEntry> subtitles = const []}) async {
     final playlist = PlaylistController.fromListing(_listing, entry.path);
     final settings = SettingsStore.instance.value;
     await Navigator.of(context).push(MaterialPageRoute<void>(
@@ -115,7 +123,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
         location: widget.location,
         playlist: playlist,
         settings: settings,
-        subtitles: _listing.subtitles,
+        subtitles: subtitles,
       ),
     ));
     if (mounted) setState(() {});
@@ -123,9 +131,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // 每次 build 时都会重新计算目录项，因此列表会随刷新和导航而实时更新，
-    // 始终反映当前文件夹中的最新内容。
-    final entries = _listing.entries;
+    // 每次 build 都重算目录项，列表随刷新与导航实时更新。
+    //
+    // 用 `browsable` 而不是 `entries`：目录 + 视频 + 音频。字幕不单独占一行，
+    // 它们被归到对应视频下面；.txt/.docx 这类已由内核在列目录时滤掉。
+    final entries = _listing.browsable;
 
     // 把 URL 按路径段拆分后，AppBar 可以显示当前文件夹名，
     // 而不必展示完整的远程/本地路径。
@@ -143,7 +153,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
             Text(_stack.isEmpty ? widget.location.label : folderName,
                 maxLines: 1, overflow: TextOverflow.ellipsis),
             Text(
-              '${entries.where((e) => e.isVideo).length} 个视频 · ${entries.where((e) => e.isDir).length} 个文件夹',
+              // 字幕不单独计数：它们已经被归属到视频下面，单独报个数会让
+              // 用户以为列表里还有没显示出来的东西。
+              '${entries.where((e) => e.isVideo).length} 个视频 · '
+              '${entries.where((e) => e.isDir).length} 个文件夹'
+              '${_listing.subtitles.isNotEmpty ? ' · ${_listing.subtitles.length} 个字幕已关联' : ''}',
               style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
             ),
           ],
@@ -190,9 +204,32 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   );
                 }
 
+                // 没有视频认领的字幕：单独给一行，标「未关联」。
+                // 直接隐藏会让用户以为播放器漏列了文件。
+                if (e.isSubtitle) {
+                  return ListTile(
+                    leading: Icon(Icons.subtitles_outlined,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    title: Text(e.name,
+                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                    subtitle: Text(
+                      '${formatBytes(e.size)} · ${e.ext.toUpperCase()} · 未关联到视频',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    // 点一下可以直接播当前目录的第一条视频并挂上这条字幕。
+                    onTap: _listing.videos.isEmpty
+                        ? null
+                        : () => _play(_listing.videos.first, subtitles: [e]),
+                  );
+                }
+
                 // 当文件是视频或音频时，才视为可播放内容；
                 // 其他类型文件虽然可见，但会被禁用，避免误入不支持播放的项目。
                 final playable = e.isVideo || e.kind == 'audio';
+
+                // 这个视频自带的外挂字幕（已按主干匹配好，见 subtitlesFor）。
+                // 字幕不再单独占一行，而是挂在这里展示。
+                final subs = e.isVideo ? _listing.subtitlesFor(e) : const <MediaEntry>[];
 
                 // 播放进度从持久化的进度存储中读取，
                 // 这样界面就能显示某个文件已观看到什么程度。
@@ -235,12 +272,42 @@ class _BrowserScreenState extends State<BrowserScreen> {
                         [
                           if (e.size > 0) formatBytes(e.size),
                           e.ext.toUpperCase(),
-                          if (e.isVideo && _hasSidecar(e)) '含外挂字幕',
+                          if (subs.isNotEmpty) '字幕 ${subs.length}',
                           if (watchedPct != null)
                             '已看 ${watchedPct.toStringAsFixed(0)}%',
                         ].join(' · '),
                         style: const TextStyle(fontSize: 12),
                       ),
+                      // 把归属到这个视频的字幕名直接列出来：用户不用再猜
+                      // 「这个目录里那一堆 .srt 到底哪条配这个片子」。
+                      // 只显示主干之外的语言后缀，太长就省略。
+                      if (subs.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Row(
+                            children: [
+                              Icon(Icons.subtitles_outlined,
+                                  size: 13,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  subs.map(_subtitleLabel).join('、'),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       if (watchedPct != null)
                         Padding(
                           padding: const EdgeInsets.only(top: 3),
@@ -261,7 +328,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
                   trailing: watchedPct != null
                       ? const Icon(Icons.play_circle_outline, size: 20)
                       : null,
-                  onTap: playable ? () => _play(e) : null,
+                  onTap: playable ? () => _play(e, subtitles: subs) : null,
                 );
               },
             ),

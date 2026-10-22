@@ -95,6 +95,9 @@ int lp_path_parent(const char *path, char *out, size_t outlen);
 /* 系统/桌面环境写进目录、与媒体无关的元数据文件，列表里一律不显示。 */
 int lp_is_os_junk_name(const char *name);
 
+/* 浏览列表只展示视频 / 字幕 / 音频；目录由调用方单独保留。 */
+int lp_is_listable_media(const char *name);
+
 #ifdef __cplusplus
 }
 #endif

@@ -27,6 +27,7 @@
 |1 连接与浏览|服务器增删改、保存 IP/端口/账号密码|`app/lib/data/stores.dart`、`ui/server_edit_screen.dart`|
 ||连接后以文件列表浏览共享目录|`native/src/source/smb.c`、`ui/browser_screen.dart`|
 ||列表每行带封面缩略图（只解第一帧、本地缓存、只对视频行请求）|`native/src/core/thumb.c`（`lp_source_thumbnail`）、`app/lib/data/thumbs.dart`、`ui/widgets/thumbnail_tile.dart`|
+||只列视频/字幕/音频，`.txt`、`.docx` 等不显示；每个视频下面挂出它自己的字幕|`native/src/source/url.c`（`lp_is_listable_media`）、`app/lib/data/models.dart`（`browsable` / `subtitlesFor`）、`ui/browser_screen.dart`|
 |2 播放内核|libavformat 打开网络流、解析音视频字幕轨道|`native/src/core/demux.c`|
 ||硬解：Android MediaCodec / Apple VideoToolbox / Windows D3D11VA|`platform/android/media_codec_decoder.c`、`platform/apple/videotoolbox_decoder.c`、`platform/win32/d3d11va_decoder.c`|
 ||主时钟音画同步|`core/audio_ring.c`（时钟映射）、`core/video.c`（排期与丢帧）|

@@ -416,12 +416,42 @@ def check_thumbnails() -> None:
         url_code = url_c.read_text(encoding="utf-8")
         if "lp_is_os_junk_name" not in url_code:
             problems.append("lp_is_os_junk_name must live in url.c")
+        if "lp_is_listable_media" not in url_code:
+            problems.append("lp_is_listable_media must live in url.c")
         if "O_RDWR" in (smb_c.read_text(encoding="utf-8") if smb_c.exists() else ""):
             problems.append("smb.c must never open a share read-write")
+
+    # The browser must show media only: .txt/.docx used to be listed as
+    # unplayable rows. Both transports filter files (directories must survive),
+    # and the Flutter side keeps a second guard plus subtitle grouping.
+    for path, label in ((smb_c, "SMB"), (file_c, "local")):
+        if path.exists() and "lp_is_listable_media" not in path.read_text(encoding="utf-8"):
+            problems.append(f"{label} listing must keep only video/subtitle/audio "
+                            f"(lp_is_listable_media)")
+    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    browser = ROOT / "app" / "lib" / "ui" / "browser_screen.dart"
+    if models.exists():
+        mc = models.read_text(encoding="utf-8")
+        if "browsable" not in mc:
+            problems.append("DirectoryListing.browsable missing; the browser "
+                            "would fall back to listing every file")
+        if "subtitlesFor" not in mc:
+            problems.append("DirectoryListing.subtitlesFor missing; sidecar "
+                            "subtitles would not be linked to their video")
+    else:
+        problems.append("app/lib/data/models.dart missing")
+    if browser.exists():
+        bc = browser.read_text(encoding="utf-8")
+        if "_listing.browsable" not in bc:
+            problems.append("browser_screen must iterate browsable, not entries")
+        if "subtitlesFor" not in bc:
+            problems.append("browser_screen must group subtitles per video")
 
     notes.append("thumbnails: LPT2 header round-trips, hex cache key, "
                  "covers only for video rows, decoding is throttled and "
                  "cannot spin or seek past the end")
+    notes.append("browser: only video/subtitle/audio rows, subtitles grouped "
+                 "under their own video")
     notes.append("source: listing hides OS metadata (.DS_Store/._*/desktop.ini), "
                  "SMB transport is read-only")
 
