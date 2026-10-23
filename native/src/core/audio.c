@@ -275,6 +275,11 @@ void *lp_audio_thread_fn(void *arg)
             pending = lp_pq_get(&p->audio.pq, &qserial, 0);
             if (pending) {
                 serial = qserial;
+            } else if (lp_pq_aborted(&p->audio.pq)) {
+                /* 停止或切轨：队列还压着包也直接退出，否则 lp_audio_stop
+                 * 的 pthread_join 会永远等下去（Dart 侧同步 FFI 调用，
+                 * 后果是整个 UI 线程卡死）。 */
+                break;
             } else if (lp_pq_eof(&p->audio.pq)) {
                 p->audio.draining = 1;
             } else {
@@ -357,6 +362,12 @@ int lp_audio_start(LpPlayer *p)
     if (open_audio_decoder(p) != LP_OK) {
         return LP_ERR_CODEC;
     }
+    /* 切轨 = 先 lp_audio_stop 再 lp_audio_start。上一个线程可能是「播到结尾
+     * 排空后自然退出」的，会把 draining/eof 留在 1；新线程一进来就当成已经
+     * 结束，直接退出，于是切轨之后整条音频链路静默（安卓上表现为切完音轨
+     * 立刻 end of stream、没有声音）。新开一个解码线程时必须清干净。 */
+    p->audio.draining = 0;
+    atomic_store(&p->audio.eof, 0);
     lp_pq_start(&p->audio.pq);
     if (pthread_create(&p->audio.thread, NULL, lp_audio_thread_fn, p) != 0) {
         return LP_ERR_NOMEM;

@@ -255,6 +255,8 @@ void *lp_video_thread_fn(void *arg)
 
     int serial = p->serial;
     int draining = 0;
+    int drained = 0;
+    int drain_rounds = 0;
     int64_t last_pts_us = 0;
     double frame_dur = 0.04;
 
@@ -268,6 +270,8 @@ void *lp_video_thread_fn(void *arg)
             filter_close(p);
             av_packet_free(&pending);
             draining = 0;
+            drained = 0;
+            drain_rounds = 0;
             serial = p->serial;
             continue;
         }
@@ -277,6 +281,10 @@ void *lp_video_thread_fn(void *arg)
             pending = lp_pq_get(&p->video.pq, &qserial, 0);
             if (pending) {
                 serial = qserial;
+            } else if (lp_pq_aborted(&p->video.pq)) {
+                /* 停止 / 换轨：队列里还有包也立刻退出，否则 lp_video_stop
+                 * 的 pthread_join 会一直等到超时。 */
+                break;
             } else if (lp_pq_eof(&p->video.pq)) {
                 draining = 1;
             } else {
@@ -286,20 +294,25 @@ void *lp_video_thread_fn(void *arg)
         }
 
         int r;
+        int again;
         if (p->video.hw) {
             r = lp_hw_decoder_send(p->video.hw, draining ? NULL : pending);
+            /* 硬解走的是我们自己的接口，用的是 LP_ERR_AGAIN(-7)；软解走
+             * FFmpeg，用的是 AVERROR(EAGAIN)(-11)。两者编号不同，早先这里
+             * 只判 AVERROR(EAGAIN)，于是硬解返回 -7 时掉进下面的 r < 0 分支
+             * 把包 av_packet_free 掉 —— MediaCodec 一帧都收不到，画面全黑。 */
+            again = (r == LP_ERR_AGAIN);
         } else {
             r = avcodec_send_packet(p->video.avctx, draining ? NULL : pending);
+            again = (r == AVERROR(EAGAIN));
         }
-        if (r == 0 || r == AVERROR_EOF || r == AVERROR(EAGAIN) || r < 0) {
-            if (r == AVERROR(EAGAIN)) {
-                /* Keep the packet, drain below, retry on the next iteration. */
-            } else if (r < 0 && r != AVERROR_EOF) {
-                LP_WARN("video", "send_packet: %d", r);
-                av_packet_free(&pending);
-            } else {
-                av_packet_free(&pending);
-            }
+        if (again) {
+            /* Keep the packet, drain below, retry on the next iteration. */
+        } else if (r < 0 && r != AVERROR_EOF) {
+            LP_WARN("video", "send_packet: %d", r);
+            av_packet_free(&pending);
+        } else {
+            av_packet_free(&pending);
         }
 
         for (;;) {
@@ -311,7 +324,13 @@ void *lp_video_thread_fn(void *arg)
                     break;
                 }
                 if (hr == LP_ERR_END_OF_STREAM) {
+                    /* 解码器真的吐完了：VideoToolbox / MediaCodec 都是在收到
+                     * EOS 之后再过一轮才回 END_OF_STREAM。这里必须跳出外层
+                     * 循环（只 break 内层的话外层会空转，p->video.eof 永远不
+                     * 置位，LP_EVENT_ENDED 发不出去，界面就卡在最后一帧上
+                     * 转圈）。 */
                     draining = 1;
+                    drained = 1;
                     break;
                 }
                 if (hr < 0) {
@@ -336,7 +355,12 @@ void *lp_video_thread_fn(void *arg)
             }
 
             r = avcodec_receive_frame(p->video.avctx, frame);
-            if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) {
+            if (r == AVERROR_EOF) {
+                /* 软解的排空结束信号，语义同上面的 LP_ERR_END_OF_STREAM。 */
+                drained = 1;
+                break;
+            }
+            if (r == AVERROR(EAGAIN)) {
                 break;
             }
             if (r < 0) {
@@ -380,6 +404,25 @@ void *lp_video_thread_fn(void *arg)
             av_frame_unref(frame);
             break;
         }
+
+        if (drained) {
+            /* 解码器已经吐完所有帧：本路视频到此为止。
+             * （以前这里继续回到 while 顶部，却已经没有包可发，于是无限
+             * 空转 —— 见上面 LP_ERR_END_OF_STREAM 分支的注释。） */
+            break;
+        }
+        if (draining && !pending) {
+            /* 排空中但还没拿到 END_OF_STREAM：让出 CPU 再问一次，别忙等。
+             * 兜一个次数上限：个别解码器（尤其硬解）在 EOS 之后既不回
+             * END_OF_STREAM 也不报错，一直 TRY_AGAIN。真遇到这种就在 500 轮
+             * 之后当作排空结束，否则播放器又会卡在最后一帧。 */
+            if (++drain_rounds > 500) {
+                LP_WARN("video", "decoder never reported end of stream, giving up");
+                drained = 1;
+                break;
+            }
+            av_usleep(2000);
+        }
     }
 
     atomic_store(&p->video.eof, 1);
@@ -399,6 +442,9 @@ int lp_video_start(LpPlayer *p)
     if (open_decoder(p) != LP_OK) {
         return LP_ERR_CODEC;
     }
+    /* 同 audio.c：新解码线程必须从「未结束」开始，否则上一个线程留下的
+     * video.eof=1 会让结束判定立刻成立。 */
+    atomic_store(&p->video.eof, 0);
     lp_pq_start(&p->video.pq);
     if (pthread_create(&p->video.thread, NULL, lp_video_thread_fn, p) != 0) {
         return LP_ERR_NOMEM;

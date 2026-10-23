@@ -179,6 +179,20 @@ int lp_pq_eof(LpPacketQueue *q)
     return eof;
 }
 
+/* 「停止/切轨」与「解复用真的到结尾」是两回事：lp_pq_abort 之后 lp_pq_get
+ * 立刻返 NULL，但队列里往往还压着几十个包，于是 lp_pq_eof 仍然是假。解码
+ * 线程以前只看 eof，就会在「已 abort 但队列非空」的死角里每 2ms 空转一圈
+ * 永远出不来 —— 而 lp_audio_stop / lp_video_stop 正等在 pthread_join 上，
+ * 整个 FFI 调用（在 Dart 里是同步的）就此卡死。安卓上切音轨卡住、界面
+ * 停在最后一帧不响应，就是这么来的。解码线程要同时看这个标志。 */
+int lp_pq_aborted(LpPacketQueue *q)
+{
+    pthread_mutex_lock(&q->mutex);
+    int aborted = q->abort_request;
+    pthread_mutex_unlock(&q->mutex);
+    return aborted;
+}
+
 /* --------------------------------------------------------------- clock --- */
 
 static double now_seconds(void)

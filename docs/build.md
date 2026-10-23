@@ -116,10 +116,31 @@ cmake --build build-apple -j && cmake --install build-apple
 cd app
 flutter create --platforms=android,ios,macos .   # 只生成脚手架，不覆盖已有文件
 flutter pub get
-flutter build apk --release
+flutter build apk --release --target-platform android-arm64
 ```
 
-配置已就位：`android/app/build.gradle.kts` 的 `minSdk 26`（AAudio）、`abiFilters arm64-v8a/armeabi-v7a`、`externalNativeBuild` 指向 `src/main/cpp/CMakeLists.txt` 并传 `LP_FFMPEG_ROOT` / `LP_SMB2_ROOT`；`src/main/cpp/CMakeLists.txt` 做 `add_subdirectory(native)`；`AndroidManifest.xml` 有网络/媒体读权限与 `usesCleartextTraffic`。产物：`liblanplayer.so`（含 JNI 符号）+ 随包打入的 FFmpeg `.so`。
+配置已就位：`android/app/build.gradle.kts` 的 `minSdk 26`（AAudio）、`abiFilters arm64-v8a`（只出这一种 ABI）、`externalNativeBuild` 指向 `src/main/cpp/CMakeLists.txt` 并传 `LP_FFMPEG_ROOT` / `LP_SMB2_ROOT`；`src/main/cpp/CMakeLists.txt` 做 `add_subdirectory(native)`；`AndroidManifest.xml` 有网络/媒体读权限与 `usesCleartextTraffic`。产物：`liblanplayer.so`（含 JNI 符号）+ 随包打入的 FFmpeg `.so`。
+
+`ndkVersion` 是 `System.getenv("LP_ANDROID_NDK") ?: "26.1.10909125"`，CI 用环境变量覆盖。要先有 NDK 和交叉编译出来的依赖：
+
+```bash
+# NDK r26b 正是 26.1.10909125
+curl -fL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r26b-darwin.zip
+unzip -q ndk.zip -d ~ && export ANDROID_NDK_HOME=~/android-ndk-r26b
+./scripts/build_android_deps.sh arm64-v8a      # FFmpeg 6.1.1 + libsmb2 + 内核
+```
+
+真机上跑过一次，过程中会撞到三件事：
+
+1. **`make` 必须有。** `scripts/build_android_deps.sh` 是 bash 脚本，交叉编译 FFmpeg 依赖 `make`；Git Bash 里没有 `make`，所以 Windows 不是合适的构建机。Mac 上有。
+2. **Gradle Wrapper 下载证书报 `PKIX path building failed`。** 装了会做 MITM 的代理（比如 SteamTools）时，JVM 不认它的根证书。把该根证书导入 `$JAVA_HOME/lib/security/cacerts`。
+3. **JDK 太新会让 Gradle 8.3 直接拒绝。** 构建脚本里显式 `export JAVA_HOME="$(/usr/libexec/java_home -v 17)"`；之后增量构建只要 1.5–1.8 s。
+
+装机：`adb install -r app/build/app/outputs/flutter-apk/app-release.apk`。MIUI 上第一次会报 `INSTALL_FAILED_USER_RESTRICTED`，是开发者选项里的「USB 安装」没开，不是包的问题。
+
+`/storage/emulated/0` 的媒体读权限目前要在系统设置里手动给（manifest 声明了 `READ_MEDIA_VIDEO` / `READ_MEDIA_AUDIO`，Dart 侧还没有运行时申请代码），细节与修法见 `docs/verification.md` 3.34 与第 6 节。
+
+看内核日志：`adb logcat -s LanPlayer`（`native/src/util/lp_log.c` 把模块名放进正文，tag 固定是 `LanPlayer`）。
 ## 4. iOS / iPadOS / macOS
 Apple 侧没有 CMake 也不用 MSBuild：**先在 Mac 上把 FFmpeg / libsmb2 / C 内核编成静态库，再由 CocoaPods 链进 Runner。**
 ### 4.1 准备（只需一次）

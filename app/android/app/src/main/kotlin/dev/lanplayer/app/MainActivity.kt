@@ -9,17 +9,21 @@ import io.flutter.view.TextureRegistry
 /**
  * Hosts the video surface for the FFmpeg core.
  *
- * A SurfaceTexture is registered with the Flutter texture registry, wrapped in a
- * Surface and handed to the native layer as an ANativeWindow*.  The native core
- * then either renders into it with EGL (software decode) or lets MediaCodec
- * render into it directly (hardware decode), and Dart just draws
- * `Texture(textureId: ...)`.
+ * The texture is registered with Flutter's surface producer API (not the legacy
+ * SurfaceTexture entry).  That matters on Android: with the default Impeller
+ * (Vulkan) renderer the legacy path hands out a SurfaceTexture whose frames are
+ * never consumed, so MediaCodec keeps dropping every decoded frame
+ * (`Render:0 Drop:N` in `dumpsys media.codec`) and the picture stays black even
+ * though decoding works.  SurfaceProducer owns the consumer side for us.
+ *
+ * The Surface is wrapped as an ANativeWindow* and handed to the native layer,
+ * which either renders into it with EGL (software decode) or lets MediaCodec
+ * render into it directly (hardware decode); Dart draws `Texture(textureId:)`.
  */
 class MainActivity : FlutterActivity() {
 
     private var channel: MethodChannel? = null
-    private var entry: TextureRegistry.SurfaceTextureEntry? = null
-    private var surface: Surface? = null
+    private var producer: TextureRegistry.SurfaceProducer? = null
     private var windowPtr: Long = 0
     private var playerPtr: Long = 0
 
@@ -37,7 +41,7 @@ class MainActivity : FlutterActivity() {
                 "resizeTexture" -> {
                     val width = call.argument<Int>("width") ?: 0
                     val height = call.argument<Int>("height") ?: 0
-                    entry?.surfaceTexture()?.setDefaultBufferSize(width, height)
+                    producer?.setSize(width, height)
                     result.success(null)
                 }
                 "attachPlayer" -> {
@@ -58,14 +62,13 @@ class MainActivity : FlutterActivity() {
         // FlutterRenderer implements TextureRegistry itself, so there is no
         // separate `textureRegistry` getter on it (that name only exists on the
         // iOS/macOS registrar).
-        val e = engine.renderer.createSurfaceTexture()
-        e.surfaceTexture().setDefaultBufferSize(width, height)
-        val s = Surface(e.surfaceTexture())
+        val p = engine.renderer.createSurfaceProducer()
+        p.setSize(width, height)
+        val s: Surface = p.surface
         val w = VideoTextureBridge.nativeCreateWindow(s)
-        entry = e
-        surface = s
+        producer = p
         windowPtr = w
-        return mapOf("textureId" to e.id(), "window" to w)
+        return mapOf("textureId" to p.id(), "window" to w)
     }
 
     private fun releaseTexture() {
@@ -73,10 +76,8 @@ class MainActivity : FlutterActivity() {
             VideoTextureBridge.nativeReleaseWindow(windowPtr)
             windowPtr = 0
         }
-        surface?.release()
-        surface = null
-        entry?.release()
-        entry = null
+        producer?.release()
+        producer = null
     }
 
     override fun onDestroy() {

@@ -225,6 +225,7 @@ int main(int argc, char **argv)
 
     int64_t prev = 0;
     int stalled = 0;
+    int ended = 0;
     for (int i = 0; i < seconds * 10; i++) {
         lp_test_sleep_ms(100);
         int64_t p = 0;
@@ -235,6 +236,13 @@ int main(int argc, char **argv)
             stalled = 0;
         }
         prev = p;
+        /* 片子比采样窗口短的话，播完之后位置本来就不再前进 —— 那不是
+         * 「时钟卡住」。没有这一条，`lp_smoke_test clip.mp4 14` 会对一个
+         * 6 秒的片子报 FAIL: clock stalled for 82 consecutive samples。 */
+        if (lp_player_get_state(player) == LP_STATE_ENDED) {
+            ended = 1;
+            break;
+        }
     }
 
     int64_t pos = 0, dur = 0;

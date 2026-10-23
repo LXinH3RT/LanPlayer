@@ -20,9 +20,30 @@ static void prune_markers(LpAudioRing *r, int keep_one_before)
     (void)keep_one_before;
 }
 
-int lp_ring_init(LpAudioRing *r, int channels, int sample_rate, int latency_ms)
+/* 锁与条件变量跟播放器对象同生命周期：lp_player_create 里 lp_ring_setup()
+ * 建一次，lp_player_destroy 里 lp_ring_teardown() 毁一次，开片关片都不碰它们。
+ *
+ * 这一点在安卓上是被崩溃逼出来的：tick 线程每 20ms 算一次主时钟
+ * （lp_master_clock_us -> lp_audio_clock_seconds -> lp_ring_clock_seconds，
+ * 里面要锁这把锁），而关片时 lp_audio_stop 会销毁环形缓冲区。原先锁跟着缓冲区
+ * 一起销毁，tick 线程随后再锁就是
+ *   FORTIFY: pthread_mutex_lock called on a destroyed mutex
+ * 直接 SIGABRT（必现）。 */
+void lp_ring_setup(LpAudioRing *r)
 {
     memset(r, 0, sizeof(*r));
+    pthread_mutex_init(&r->mutex, NULL);
+    pthread_cond_init(&r->cond, NULL);
+}
+
+void lp_ring_teardown(LpAudioRing *r)
+{
+    pthread_mutex_destroy(&r->mutex);
+    pthread_cond_destroy(&r->cond);
+}
+
+int lp_ring_init(LpAudioRing *r, int channels, int sample_rate, int latency_ms)
+{
     if (channels <= 0 || channels > 8 || sample_rate <= 0) {
         return LP_ERR_ARGUMENT;
     }
@@ -43,8 +64,20 @@ int lp_ring_init(LpAudioRing *r, int channels, int sample_rate, int latency_ms)
         return LP_ERR_NOMEM;
     }
     r->gain = 1.0;
-    pthread_mutex_init(&r->mutex, NULL);
-    pthread_cond_init(&r->cond, NULL);
+    /* 锁在 setup 里建好了，这里只清数据状态。abort_request 必须显式清掉：
+     * 上一轮的 lp_ring_destroy 会把它置 1，不清的话新开的文件一写环就
+     * 立刻返回 LP_ERR_INTERRUPTED。 */
+    pthread_mutex_lock(&r->mutex);
+    r->abort_request = 0;
+    r->paused = 0;
+    r->read_pos = 0;
+    r->write_pos = 0;
+    r->count = 0;
+    r->sample_index = 0;
+    r->marker_head = 0;
+    r->marker_count = 0;
+    pthread_cond_broadcast(&r->cond);
+    pthread_mutex_unlock(&r->mutex);
     return LP_OK;
 }
 
@@ -54,8 +87,6 @@ void lp_ring_destroy(LpAudioRing *r)
     r->abort_request = 1;
     pthread_cond_broadcast(&r->cond);
     pthread_mutex_unlock(&r->mutex);
-    pthread_mutex_destroy(&r->mutex);
-    pthread_cond_destroy(&r->cond);
     free(r->buf);
     r->buf = NULL;
 }

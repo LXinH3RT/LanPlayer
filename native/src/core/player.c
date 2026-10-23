@@ -138,7 +138,13 @@ void lp_note_position(LpPlayer *p, int64_t position_us)
 
 int64_t lp_master_clock_us(LpPlayer *p)
 {
-    if (p->sync_mode == 0 && p->audio.stream_index >= 0) {
+    /* 音频当主时钟的前提是「它还在往前走」。音频解码线程排空退出后，
+     * 声卡环不再被写入，lp_ring_clock_seconds 会永远停在同一刻 —— 这时
+     * 视频线程还在 wait_for_presentation 里等最后一个 GOP，主时钟不动它
+     * 就永远等下去，video.eof 永不置位，ENDED 发不出去：表现为片尾画面
+     * 停住、进度条停在最后一秒（subbed.mkv 6.0s 上必现）。
+     * 音频一旦宣布收尾就回退到墙钟，让最后几帧照常走完。 */
+    if (p->sync_mode == 0 && p->audio.stream_index >= 0 && !atomic_load(&p->audio.eof)) {
         double t = lp_audio_clock_seconds(p);
         if (t >= 0) {
             return (int64_t)(t * LP_TIME_BASE);
@@ -174,7 +180,7 @@ static void *player_tick_fn(void *arg)
     int64_t last_frames = 0;
     int ended_reported = 0;
 
-    while (!lp_is_abort(p)) {
+    while (!atomic_load(&p->quit_request)) {
         av_usleep(LP_TICK_INTERVAL_US);
         if (!p->opened) {
             continue;
@@ -222,6 +228,7 @@ static void *player_tick_fn(void *arg)
             int video_done = p->video.stream_index < 0 || atomic_load(&p->video.eof);
             if (audio_done && video_done) {
                 ended_reported = 1;
+                LP_INFO("trace", "playback ended at %lld us", (long long)p->position_us);
                 lp_set_state(p, LP_STATE_ENDED);
                 lp_emit_event(p, LP_EVENT_ENDED, "{\"pos\":%lld}", (long long)p->position_us);
             }
@@ -374,6 +381,7 @@ int32_t lp_player_create(LpPlayer **out)
     pthread_mutex_init(&p->lock, NULL);
     atomic_init(&p->state, LP_STATE_IDLE);
     atomic_init(&p->abort_request, 0);
+    atomic_init(&p->quit_request, 0);
     atomic_init(&p->seek_req, 0);
     atomic_init(&p->position_us, (int64_t)0);
     atomic_init(&p->serial, 0);
@@ -388,6 +396,14 @@ int32_t lp_player_create(LpPlayer **out)
     p->vout.kind = LP_VOUT_NONE;
     p->vout.scale_mode = LP_SCALE_FIT;
     pthread_mutex_init(&p->vout.mutex, NULL);
+    /* 字幕状态的锁随播放器对象创建/销毁，不随开片关片。这样关片之后
+     * setOption("subtitle_delay") 仍然锁得住（以前关片会 destroy 掉它，
+     * 再锁就是 FORTIFY abort）。 */
+    pthread_mutex_init(&p->subs.mutex, NULL);
+    p->subs_inited = 1;
+    /* 音频环的锁同样归播放器对象所有：tick 线程每 20ms 读一次音频主时钟，
+     * 关片时若把锁毁掉，它就撞上 destroyed mutex（安卓上必崩）。 */
+    lp_ring_setup(&p->audio.ring);
     lp_clock_init(&p->ac);
     lp_clock_init(&p->extc);
     lp_pq_init(&p->video.pq, LP_MAX_PACKET_BYTES);
@@ -407,17 +423,22 @@ void lp_player_destroy(LpPlayer *p)
     }
     atomic_store(&p->abort_request, 1);
     lp_player_close(p);
-    atomic_store(&p->abort_request, 1);
+    /* lp_player_close 会把 abort_request 清回去（它要能再次开片），所以 tick
+     * 线程的退出不能看 abort_request，得看这个专用标志。 */
+    atomic_store(&p->quit_request, 1);
     if (p->tick_started) {
         pthread_join(p->tick_thread, NULL);
         p->tick_started = 0;
     }
     lp_pq_destroy(&p->video.pq);
     lp_pq_destroy(&p->audio.pq);
+    lp_ring_teardown(&p->audio.ring);
     lp_render_close(p);
     lp_clock_destroy(&p->ac);
     lp_clock_destroy(&p->extc);
     pthread_mutex_destroy(&p->vout.mutex);
+    pthread_mutex_destroy(&p->subs.mutex);
+    p->subs_inited = 0;
     pthread_mutex_destroy(&p->lock);
     free(p->url);
     free(p->options_json);

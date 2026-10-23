@@ -66,11 +66,17 @@ void lp_log_emit(int level, const char *tag, const char *fmt, ...)
         return;
     }
 #if defined(__ANDROID__)
+    /* __android_log_print(prio, tag, fmt, ...) —— tag 和 fmt 是两个独立的
+     * 参数。早先这里写成 ("LanPlayer/%s", tag, "%s", msg)，于是 tag 拿到的是
+     * 字面量 "LanPlayer/%s"、fmt 拿到的是模块名，msg 被当成多余的 varargs
+     * 丢掉：logcat 里每行都只有 `I LanPlayer/%s: video`，正文全空。真机上查
+     * 黑屏时才发现这一点。模块名并进消息正文，tag 用固定值，`adb logcat -s
+     * LanPlayer` 就能过滤出全部内核日志。 */
     __android_log_print(level >= LP_LOG_ERROR ? ANDROID_LOG_ERROR
                           : level == LP_LOG_WARN ? ANDROID_LOG_WARN
                           : level == LP_LOG_INFO ? ANDROID_LOG_INFO
                                                  : ANDROID_LOG_DEBUG,
-                        "LanPlayer/%s", tag ? tag : "core", "%s", msg);
+                        "LanPlayer", "%s: %s", tag ? tag : "core", msg);
 #else
     fprintf(stderr, "[LanPlayer %s %s] %s\n", level_name(level), tag ? tag : "core", msg);
 #endif
