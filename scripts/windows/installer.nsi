@@ -105,8 +105,9 @@ LangString DESC_Assoc     ${LANG_ENGLISH}     "Associate common video files (mp4
   ;
   ; 这里必须是 findstr，不能是 find：find 是 Git Bash / MSYS2 / Cygwin 都带的
   ; GNU 工具，PATH 里只要有一个 usr/bin 排在 System32 前面，cmd 就会解析到那个
-  ; find.exe。GNU find 不认 /FI 与 /I，直接报错退出（返回 0 或 2），于是本宏
-  ; 把「还在跑」误判成「没在跑」，升级又变成「文件被占用」。实测过的现象：
+  ; find.exe。GNU find 不认 /FI 与 /I，直接报错，进程明明在跑也返回 1，于是
+  ; 本宏把「还在跑」误判成「没在跑」，升级又变成「文件被占用」。实测对照
+  ; （app 正在运行）：find /I → FIND_EXIT=1（错），findstr /I /C: → 0（对）。
   ; 同一个安装包在宿主 PowerShell 里跑 PASS，在 Git Bash 里跑就 FAILED。
   ; findstr 只有 Windows 自带，不会被同名工具遮蔽。
   nsExec::ExecToStack 'cmd /C tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH | findstr /I /C:"${APP_EXE}"'
