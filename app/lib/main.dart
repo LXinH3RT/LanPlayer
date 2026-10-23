@@ -152,8 +152,15 @@ Future<void> _openLocation(String url) async {
       print('LanPlayer row: ${e.name} path=${e.path} '
           '${p == null ? "no-history" : (ms == null ? "finished" : "${(ms / Duration.microsecondsPerSecond).toStringAsFixed(1)}s pct=${pct!.toStringAsFixed(1)}")}');
     }
+    // 本地目录的完整路径在标题里没有意义（而且截图时会把机器的目录结构一并
+    // 拍进去），根目录标题取最后一层目录名；共享地址则保留原样，因为
+    // `smb://host/share` 本身就是用户填进去的那一行。
+    final segments = url.split('/').where((s) => s.isNotEmpty).toList();
+    final label = url.startsWith('file://')
+        ? (segments.isEmpty ? url : segments.last)
+        : url;
     final location = MediaLocation(
-      label: url,
+      label: label,
       rootUrl: url,
       options: options,
     );

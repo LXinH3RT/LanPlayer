@@ -102,9 +102,12 @@ void main() {
     await tester.pump();
 
     expect(find.text('编辑服务器'), findsOneWidget);
-    expect(find.text('192.168.1.10'), findsOneWidget);
-    expect(find.text('共享'), findsOneWidget);
-    expect(find.text('share'), findsOneWidget);
+    // 地址框的 hint 与回填值可能相同，按 controller 断言而不是按文本找控件。
+    String fieldText(int i) =>
+        tester.widget<TextFormField>(find.byType(TextFormField).at(i)).controller!.text;
+    expect(fieldText(0), '192.168.1.10');
+    expect(fieldText(2), '共享');
+    expect(fieldText(3), 'share');
   });
 
   testWidgets('扫描结果列表把每台主机都画出来，点一行会回调', (tester) async {

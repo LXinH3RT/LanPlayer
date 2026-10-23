@@ -53,7 +53,7 @@
 
 iPad 上的同一套 UI（`lanplayer/video` 纹理 + 外挂字幕）：
 
-![iPad 播放](docs/images/ipad-device-play.jpg)
+![iPad 播放](docs/images/ipad-player.png)
 
 ## 快速开始
 
@@ -193,6 +193,11 @@ Windows 桌面端硬解已接 D3D11VA，仍缺 GPU 直出纹理与 WASAPI。
 - 生成物一律不入库：`build/`、`dist/`、`.tools/`、`app/build/`、`app/windows/out/`、`native/third_party/`。
 - 发布一个新版本时，Windows / macOS / Android 三个包必须同时上传到同一个 GitHub Release，
   缺任何一个都不算发完。用 `scripts/release_all.ps1` 一条命令完成上传与校验。
+- 文档、脚本、注释、commit message、截图中**不写真实环境**：IP 用 `192.168.1.10` 这类示例
+  地址，账号用 `share`，设备只写平台（`Mac` / `iPad` / `Android 手机`），不写具体型号、系统
+  版本、UDID、开发者团队 ID 或本机用户名路径；素材与截图用 `scripts/make_doc_media.ps1`
+  生成的合成文件重拍，不要贴真实影音画面。理由是这个仓库准备公开，而网络拓扑、设备清单、
+  片单本身就能定位到具体的人和机器。详见 [docs/security.md](docs/security.md)。
 
 自检一次性跑完：`.tools\python\python.exe tool\check_all.py`（静态检查、dart 语法与编译、
 dart 用例、安装器与发布断言都在里面）。
