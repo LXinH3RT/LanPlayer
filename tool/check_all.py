@@ -90,6 +90,7 @@ REQUIRED = [
     "native/src/core/subtitle.c",
     "native/src/core/queue.c",
     "native/src/core/audio_ring.c",
+    "native/src/core/nal.c",
     "native/src/source/smb.c",
     "native/src/source/file.c",
     "native/src/source/io.c",
@@ -1296,9 +1297,48 @@ def check_playback_profiles() -> None:
                         "frames; av_hwframe_transfer_data returns EINVAL for them "
                         "and every frame is dropped")
 
+    # NAL framing must be decided by walking the whole length chain, not by
+    # peeking at 4 bytes.  A 485-byte slice whose length field is 00 00 01 e5
+    # starts with 00 00 01 and looks exactly like an Annex-B start code; the old
+    # check rewrote it as Annex-B, VideoToolbox then answered
+    # kVTVideoDecoderBadDataErr (-12909) for every following frame and the file
+    # played at 0.00 fps with one decoded frame.
+    nal = ROOT / "native" / "src" / "core" / "nal.c"
+    if not nal.exists():
+        problems.append("native/src/core/nal.c is gone; both hw decoders need it to "
+                        "tell length-prefixed packets from Annex-B ones")
+    else:
+        nal_text = nal.read_text(encoding="utf-8")
+        if "lp_nal_is_annexb(" not in nal_text:
+            problems.append("native/src/core/nal.c lost lp_nal_is_annexb()")
+        elif "chain_is_valid(" not in nal_text:
+            problems.append("nal.c no longer validates the whole length chain; "
+                            "peeking at the first 4 bytes mistakes 00 00 01 e5 "
+                            "for a start code and corrupts every slice")
+    callers = {
+        "native/src/platform/apple/videotoolbox_decoder.c": "VideoToolbox to_avcc()",
+        "native/src/platform/android/media_codec_decoder.c": "MediaCodec needs_annexb()",
+    }
+    for rel, name in callers.items():
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        if "lp_nal_is_annexb(" not in path.read_text(encoding="utf-8"):
+            problems.append(f"{name} in {rel} no longer calls lp_nal_is_annexb(); "
+                            "length-prefixed packets that begin 00 00 01 would be "
+                            "converted as if they were Annex-B and decode to nothing")
+    for rel in ("native/CMakeLists.txt", "scripts/build_windows.ps1",
+                "scripts/build_apple_deps.sh"):
+        path = ROOT / rel
+        if path.exists() and "nal.c" not in path.read_text(encoding="utf-8"):
+            problems.append(f"{rel} no longer compiles native/src/core/nal.c; "
+                            "the decoders would fail to link")
+
     notes.append("playback profiles: hwaccel refuses 10-bit H.264 on all three "
                  "platforms, 10-bit HEVC on Apple + Android only, d3d11va draws "
                  "software frames instead of dropping them")
+    notes.append("nal framing: start code vs length prefix decided by walking the "
+                 "whole chain, shared by VideoToolbox and MediaCodec")
 
 
 def _ver_tuple(text: str) -> tuple[int, ...]:

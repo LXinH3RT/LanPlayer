@@ -53,6 +53,7 @@ set(LP_CORE_SOURCES
     src/util/lp_log.c
     src/core/queue.c
     src/core/audio_ring.c
+    src/core/nal.c
     src/core/demux.c
     src/core/video.c
     src/core/audio.c

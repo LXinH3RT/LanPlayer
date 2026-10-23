@@ -310,7 +310,11 @@ int lp_hw_decoder_init(LpVideoDecoder *d, const LpVideoDecoderConfig *cfg, char 
     return LP_OK;
 }
 
-/* Converts Annex-B start codes to 4-byte length prefixes (VT wants AVCC). */
+/* Converts Annex-B start codes to 4-byte length prefixes (VT wants AVCC).
+ *
+ * The framing test is not "does the first byte look like a start code": a
+ * length-prefixed packet whose first NAL is ~0x000100xx bytes long starts with
+ * 00 00 01 too, and converting it corrupts every NAL (see lp_nal_is_annexb). */
 static AVPacket *to_avcc(LpVideoDecoder *d, const AVPacket *pkt)
 {
     (void)d;
@@ -319,8 +323,7 @@ static AVPacket *to_avcc(LpVideoDecoder *d, const AVPacket *pkt)
     if (size < 4) {
         return NULL;
     }
-    int has_sc = (src[0] == 0 && src[1] == 0 && (src[2] == 1 || (src[2] == 0 && src[3] == 1)));
-    if (!has_sc) {
+    if (!lp_nal_is_annexb(src, (size_t)size)) {
         return NULL; /* already length prefixed */
     }
     AVPacket *out = av_packet_alloc();
@@ -382,8 +385,7 @@ int lp_hw_decoder_send(LpVideoDecoder *d, const AVPacket *pkt)
     }
     AVPacket *converted = to_avcc(d, pkt);
     const AVPacket *use = converted ? converted : pkt;
-    if (use->size <= 0) {
-        /* A zero sized sample carries nothing to decode; some mkv files hand
+    if (use->size <= 0) {        /* A zero sized sample carries nothing to decode; some mkv files hand
          * one out around a discontinuity.  Feeding it to VideoToolbox just
          * wastes a session round trip, so drop it here. */
         av_packet_free(&converted);
@@ -433,6 +435,9 @@ int lp_hw_decoder_send(LpVideoDecoder *d, const AVPacket *pkt)
           push_frame(dec, (CVPixelBufferRef)image, pts_us);
         });
     CFRelease(sb);
+    if (st != noErr) {
+        LP_WARN("videotoolbox", "decode frame rejected: status %d", (int)st);
+    }
     return st == noErr ? LP_OK : LP_ERR_CODEC;
 }
 

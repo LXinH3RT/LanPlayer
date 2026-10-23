@@ -202,6 +202,7 @@ for SLICE in $SLICES; do
     "$ROOT/native/src/util/lp_log.c"
     "$ROOT/native/src/core/queue.c"
     "$ROOT/native/src/core/audio_ring.c"
+    "$ROOT/native/src/core/nal.c"
     "$ROOT/native/src/core/demux.c"
     "$ROOT/native/src/core/video.c"
     "$ROOT/native/src/core/audio.c"
