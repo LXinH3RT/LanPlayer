@@ -105,7 +105,7 @@ ANDROID_NDK_HOME=~/android-ndk-r26 ./scripts/build_android_deps.sh
 自检（Windows，必须在仓库根、且把 `TMP`/`TEMP` 指进 `.tools/tmp`）：
 
 ```powershell
-$env:TMP='D:\repo\LanPlayer\.tools\tmp'; $env:TEMP=$env:TMP
+$env:TMP="$PWD\.tools\tmp"; $env:TEMP=$env:TMP
 .\.tools\python\python.exe tool\check_all.py
 ```
 

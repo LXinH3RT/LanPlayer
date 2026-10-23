@@ -1,8 +1,13 @@
 param(
-    [string]$OldSetup = 'D:\repo\LanPlayer\dist\LanPlayer-0.1.1-windows-x64-setup.exe',
-    [string]$NewSetup = 'D:\repo\LanPlayer\dist\LanPlayer-0.1.2-windows-x64-setup.exe',
-    [string]$Scratch  = 'D:\lp-upgrade-test'
+    [string]$OldSetup = '',
+    [string]$NewSetup = '',
+    [string]$Scratch  = ''
 )
+
+$Root = Split-Path -Parent $PSScriptRoot
+if (-not $OldSetup) { $OldSetup = Join-Path $Root 'dist\LanPlayer-0.1.1-windows-x64-setup.exe' }
+if (-not $NewSetup) { $NewSetup = Join-Path $Root 'dist\LanPlayer-0.1.2-windows-x64-setup.exe' }
+if (-not $Scratch) { $Scratch = Join-Path ([System.IO.Path]::GetTempPath()) 'lp-upgrade-test' }
 
 # Verify that the installer upgrades over a *running* old version without asking
 # the user to uninstall first -- the bug this script exists to catch.

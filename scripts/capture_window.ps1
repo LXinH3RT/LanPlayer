@@ -1,12 +1,18 @@
 # Launches the Flutter desktop app, captures its window to a PNG, closes it.
 # Used as evidence that the MSVC-built runner actually renders the UI.
 param(
-    [string]$Exe = 'D:\repo\LanPlayer\build\msvc-chain\lanplayer.exe',
-    [string]$Out = 'D:\repo\LanPlayer\build\msvc-chain\window.png',
+    [string]$Exe = '',
+    [string]$Out = '',
     [int]$WaitMs = 7000
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Defaults hang off the repository this script lives in, not off one machine's
+# directory layout.
+$Root = Split-Path -Parent $PSScriptRoot
+if (-not $Exe) { $Exe = Join-Path $Root 'build\msvc-chain\lanplayer.exe' }
+if (-not $Out) { $Out = Join-Path $Root 'build\msvc-chain\window.png' }
 
 $code = @"
 using System;

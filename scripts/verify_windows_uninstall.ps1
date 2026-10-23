@@ -1,7 +1,11 @@
 param(
-    [string]$Setup   = 'D:\repo\LanPlayer\dist\LanPlayer-0.1.2-windows-x64-setup.exe',
-    [string]$Scratch = 'D:\lp-uninstall-test'
+    [string]$Setup   = '',
+    [string]$Scratch = ''
 )
+
+$Root = Split-Path -Parent $PSScriptRoot
+if (-not $Setup) { $Setup = Join-Path $Root 'dist\LanPlayer-0.1.2-windows-x64-setup.exe' }
+if (-not $Scratch) { $Scratch = Join-Path ([System.IO.Path]::GetTempPath()) 'lp-uninstall-test' }
 
 # Verify that the uninstaller asks a running copy to quit. Without that, Delete
 # on lanplayer.exe / the DLLs fails (they are mapped images) and the uninstall
