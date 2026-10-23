@@ -4,7 +4,7 @@ import 'package:lanplayer/data/lan_scan.dart';
 void main() {
   group('parseIPv4', () {
     test('接受正常的点分十进制', () {
-      expect(parseIPv4('192.168.1.20'), 0xC0A80508);
+      expect(parseIPv4('192.168.1.20'), 0xC0A80114);
       expect(parseIPv4('0.0.0.0'), 0);
       expect(parseIPv4('255.255.255.255'), 0xFFFFFFFF);
       // 前导零按十进制处理，不当成八进制。
@@ -12,7 +12,7 @@ void main() {
     });
 
     test('拒绝非法写法', () {
-      expect(parseIPv4('192.168.5'), isNull);
+      expect(parseIPv4('192.168.1'), isNull);
       expect(parseIPv4('192.168.1.256'), isNull);
       expect(parseIPv4('192.168.1.-1'), isNull);
       expect(parseIPv4('192.168.1.a'), isNull);
