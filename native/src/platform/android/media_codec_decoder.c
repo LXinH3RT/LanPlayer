@@ -270,16 +270,16 @@ int lp_hw_decoder_init(LpVideoDecoder *d, const LpVideoDecoderConfig *cfg, char 
  * 在 FFmpeg 里由 `h264_mp4toannexb` 位流过滤器负责这件事，我们手写等价逻辑。 */
 static int needs_annexb(const AVPacket *pkt, const uint8_t *extra, int extralen)
 {
-    /* 包本身已经是起始码开头的就不用转。 */
-    if (pkt->size >= 4) {
-        const uint8_t *b = pkt->data;
-        if (b[0] == 0 && b[1] == 0 && (b[2] == 1 || (b[2] == 0 && b[3] == 1))) {
-            return 0;
-        }
-    }
     (void)extra;
     (void)extralen;
-    return 1;
+    if (pkt->size < 4) {
+        return 0;
+    }
+    /* 不能只看包头：长度前缀的包里，第一个 NAL 的长度字段可能正好长得像起始码
+     * （movie-03.mkv 就是 00 00 01 e5 = 485 字节的切片），那种包会被误判成已经是
+     * Annex-B 而跳过转换，解码器于是从第二帧起全部报错。共用嗅探器会把整条
+     * 长度链走一遍来区分，详见 src/core/nal.c。 */
+    return !lp_nal_is_annexb(pkt->data, (size_t)pkt->size);
 }
 
 /* 返回转换后写入的长度；0 表示无需/无法转换。dst 至少要有 size*3/2+64 字节。 */

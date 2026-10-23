@@ -156,6 +156,15 @@ int lp_pq_eof(LpPacketQueue *q);
 /* 1 = 队列已被 abort（停止或切轨），解码线程必须立刻退出，不能再等 eof。 */
 int lp_pq_aborted(LpPacketQueue *q);
 
+/* ---------------------------------------------------------- nal framing */
+
+/* 1 = 这个包是 Annex-B（00 00 01 起始码分隔的 NAL），0 = 长度前缀（AVCC/HVCC）。
+ * 只看包头会误判：长度前缀包里第一个 NAL 的长度字段可能正好长得像起始码，
+ * 所以这里会验证整条长度链是否恰好走完整个包；详见 src/core/nal.c 的注释。 */
+int lp_nal_is_annexb(const uint8_t *data, size_t size);
+/* 从 start 处那个 NAL 的载荷字节数；格式不合法时返回 0。 */
+size_t lp_nal_payload_len(const uint8_t *data, size_t size, size_t start);
+
 /* ------------------------------------------------------------ audio ring */
 
 typedef struct LpAudioMarker {
