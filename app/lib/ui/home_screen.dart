@@ -6,6 +6,7 @@ import '../data/repository.dart';
 import '../data/stores.dart';
 import 'browser_screen.dart';
 import 'feedback.dart';
+import 'media_permission.dart';
 import 'server_edit_screen.dart';
 import 'settings_screen.dart';
 
@@ -102,6 +103,24 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
     if (!mounted || picked == null) return;
+    // Android 13+ 把存储权限拆成了按类型的媒体权限，必须运行时申请；
+    // 没申请时读出来是空目录，用户会以为本地浏览坏了。
+    final perm = await MediaPermission.request();
+    if (!perm.granted) {
+      if (mounted) {
+        await showError(
+            context, '没有读取视频的权限，无法浏览本地文件。可以在系统设置里给 LanPlayer 打开「视频」权限。');
+      }
+      return;
+    }
+    if (perm.partial && mounted) {
+      // Android 14 的「选择部分」只放出用户勾中的那几个文件，目录会缺一大半。
+      await showError(
+          context,
+          '当前只授予了「部分视频」的访问权限，这个文件夹里只会显示你勾选过的文件。'
+          '要看全部，请在系统设置 → 权限 里改成「允许访问全部」。');
+    }
+    if (!mounted) return;
     try {
       final listing = await _repo.browseLocal(picked.path);
       if (!mounted) return;

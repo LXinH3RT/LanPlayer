@@ -106,6 +106,7 @@ REQUIRED = [
     "app/lib/core/player_controller.dart",
     "app/lib/data/stores.dart",
     "app/lib/ui/home_screen.dart",
+    "app/lib/ui/media_permission.dart",
     "app/lib/ui/browser_screen.dart",
     "app/lib/ui/player_screen.dart",
     "app/android/app/src/main/kotlin/dev/lanplayer/app/MainActivity.kt",
@@ -1096,8 +1097,41 @@ def check_android_playback() -> None:
             problems.append("lp_log.c no longer prints '<module>: <message>' on "
                             "Android; adb logcat -s LanPlayer would show no modules")
 
+    # Android 13+ splits storage into per-type media permissions and no longer
+    # grants READ_MEDIA_VIDEO on install: without a runtime request the local
+    # browser lists an empty folder, which reads as a bug in the browser.
+    manifest = ROOT / "app" / "android" / "app" / "src" / "main" / "AndroidManifest.xml"
+    kt = ROOT / "app" / "android" / "app" / "src" / "main" / "kotlin" / "dev" / "lanplayer" / "app" / "MainActivity.kt"
+    perm = ROOT / "app" / "lib" / "ui" / "media_permission.dart"
+    mtext = manifest.read_text(encoding="utf-8") if manifest.exists() else ""
+    ktext = kt.read_text(encoding="utf-8") if kt.exists() else ""
+    if 'android.permission.READ_MEDIA_VIDEO' not in mtext:
+        problems.append("AndroidManifest.xml no longer declares READ_MEDIA_VIDEO; "
+                        "the local browser cannot list Movies on Android 13+")
+    if "requestPermissions(" not in ktext or "lanplayer/permissions" not in ktext:
+        problems.append("MainActivity.kt lost the runtime media permission request; "
+                        "the declared permission is never granted, so a fresh "
+                        "install browses an empty folder")
+    if "hasMediaPermission" not in ktext:
+        problems.append("MainActivity.kt lost hasMediaPermission; asking again on "
+                        "every browse would pop the dialog repeatedly")
+    if not perm.exists():
+        problems.append("app/lib/ui/media_permission.dart is missing; nothing asks "
+                        "for the media permission before browsing local storage")
+    else:
+        ptext2 = perm.read_text(encoding="utf-8")
+        # Match the wire name, not just the Dart method: renaming one side of the
+        # channel leaves a silently dead permission request.
+        if "'requestMedia'" not in ptext2:
+            problems.append("media_permission.dart no longer calls the "
+                            "'requestMedia' channel method (MainActivity exposes "
+                            "that exact name)")
+        if '"requestMedia" ->' not in ktext:
+            problems.append("MainActivity.kt no longer handles the 'requestMedia' "
+                            "channel call from media_permission.dart")
+
     notes.append("android playback: annex-b + csd split, queue-abort exits, demux "
-                 "retries, tick outlives close")
+                 "retries, tick outlives close, runtime media permission")
 
 
 def _ver_tuple(text: str) -> tuple[int, ...]:
