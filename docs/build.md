@@ -138,7 +138,7 @@ unzip -q ndk.zip -d ~ && export ANDROID_NDK_HOME=~/android-ndk-r26b
 
 装机：`adb install -r app/build/app/outputs/flutter-apk/app-release.apk`。MIUI 上第一次会报 `INSTALL_FAILED_USER_RESTRICTED`，是开发者选项里的「USB 安装」没开，不是包的问题。
 
-`/storage/emulated/0` 的媒体读权限目前要在系统设置里手动给（manifest 声明了 `READ_MEDIA_VIDEO` / `READ_MEDIA_AUDIO`，Dart 侧还没有运行时申请代码），细节与修法见 `docs/verification.md` 3.34 与第 6 节。
+`/storage/emulated/0` 的媒体读权限由 app 自己申请：manifest 只声明 `READ_MEDIA_VIDEO`（不声明 audio，否则一次弹两个框），`MainActivity.kt` 的 `lanplayer/permissions` 通道负责 `requestPermissions`，`app/lib/ui/media_permission.dart` 在 `_openLocal()` 进目录前调用，返回值带 `partial` 以覆盖 Android 14 的「选择部分」。要点与实测见 `docs/verification.md` 3.34 (j)。
 
 看内核日志：`adb logcat -s LanPlayer`（`native/src/util/lp_log.c` 把模块名放进正文，tag 固定是 `LanPlayer`）。
 ## 4. iOS / iPadOS / macOS
