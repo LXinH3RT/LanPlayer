@@ -541,7 +541,9 @@ Windows 包要先用 `flutter build windows --release`（或 `scripts\build_wind
 
 **覆盖升级**：装新版不用先手动卸载。`installer.nsi` 的 `StopRunningApp` 宏在安装段与卸载段各调一次，先 `taskkill`（不带 `/F`，等于发 WM_CLOSE）再轮询，5 秒不退才强杀；判「在不在跑」用的是 `tasklist | findstr`，**必须是 `findstr` 不能是 `find`** —— Git Bash 的 PATH 里 MSYS 的 GNU find 排在 System32 前面，它不认 `/FI`/`/I`，退出码非 0，宏会把「还在跑」误判成「没在跑」，覆盖升级就退化成「文件被占用」。回归用 `scripts\verify_windows_upgrade.ps1` / `verify_windows_uninstall.ps1`，两个脚本都带正负对照，`ops_bash` 与宿主 `pwsh` 里都能跑（详见 verification.md 3.33）。
 
-v0.1.2 的发布结果（照上面两步做的）：Release id `421052828`，tag `v0.1.2` → `995da50`；asset id Windows `666686044`（58137270 字节，sha256 `50C71364AB1EAE706123B078F5B896D9F94693FF9481C5FEA6D0E040AF21E9F7`）、macOS `666686825`（27210696 字节，sha256 `8F775B39BF8979FA76D64FF477FC7E9DF38F5AD73248D0716EB1A35579D05166`）。两个包都下载回来重算过 SHA256，与本地一致。
+v0.1.2 的发布结果（照上面两步做的）：Release id `421052828`，tag `v0.1.2` → `995da50`；asset id Windows `668400068`（58132233 字节，sha256 `B6940F682581CB4225A453F04ED8EB48747EC181A96B9E934EE99BC2D844223F`）、macOS `666686825`（27210696 字节，sha256 `8F775B39BF8979FA76D64FF477FC7E9DF38F5AD73248D0716EB1A35579D05166`）。两个包都下载回来重算过 SHA256，与本地一致。
+
+Windows 那个包是**重传过一回**的：第一版（asset `666686044`，sha256 `50C71364…21E9F7`）里的 `StopRunningApp` 宏还在用 `find /I`，从 Git Bash 调用会解析到 GNU find、把「旧版在跑」误判成「没在跑」，覆盖升级失效。改成 `findstr` 后重打包，先 `DELETE /releases/assets/666686044` 再重新上传（GitHub 不允许同名 asset 覆盖，必须删了再传）。教训：**安装器的行为可能依赖调用者的 PATH**，所以回归必须至少在一个真实会遇到的 shell 里跑过 —— 只在宿主 PowerShell 里验是漏的。macOS 的 dmg 不受影响，没有重传。
 
 踩到的一个坑：用 Python 读 API 返回的 JSON 时写了 `json.load(open(...))`，Windows 上默认按 GBK 解码，中文 body 立刻 `UnicodeDecodeError: 'gbk' codec can't decode byte 0xad`。改成 `io.open(path, encoding='utf-8')`，或者干脆只让 `.ps1` 里用 `--ssl-no-revoke` 的 curl 落盘再读。
 
