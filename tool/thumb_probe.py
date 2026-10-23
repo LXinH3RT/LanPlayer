@@ -10,7 +10,8 @@ import json
 import os
 import sys
 
-DLL = r"D:\repo\LanPlayer\build\win-x64\lanplayer.dll"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DLL = os.path.join(ROOT, "build", "win-x64", "lanplayer.dll")
 
 
 def main() -> int:
@@ -59,7 +60,8 @@ def main() -> int:
 
     failures = 0
     if not urls:
-        urls = [r"file:///D:/repo/LanPlayer/build/media/clip.mp4"]
+        clips = os.path.join(ROOT, "build", "media", "clip.mp4")
+        urls = ["file:///" + clips.replace("\\", "/")]
 
     for url in urls:
         pixels = ctypes.c_void_p()

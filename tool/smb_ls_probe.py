@@ -1,9 +1,11 @@
 """列 SMB 目录，找真实视频路径供缩略图探针使用。"""
 import ctypes
 import json
+import os
 import sys
 
-DLL = r"D:\repo\LanPlayer\build\win-x64\lanplayer.dll"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DLL = os.path.join(ROOT, "build", "win-x64", "lanplayer.dll")
 
 
 def main() -> int:
