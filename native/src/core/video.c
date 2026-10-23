@@ -35,7 +35,21 @@ static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial)
         }
         int64_t diff = pts_us - lp_master_clock_us(p);
         if (diff <= 0) {
-            return diff < -250000 ? 1 : 0;
+            /* 开播阶段不要丢帧：主时钟在 lp_demux_open 的时候就开始走了，
+             * 而第一帧要等解复用 + 解码器初始化（macOS 上 VideoToolbox
+             * 建会话约 200 ms），于是头一两秒的帧天生「晚了 300 ms」，
+             * 按 250 ms 规则会被整段丢掉 —— 24 fps 的片子前 2 秒就丢 17 帧，
+             * 看起来像开播卡一下。规则只对「已经出过画面之后」的晚到生效。 */
+            if (p->video.frames_decoded == 0) {
+                return 0;
+            }
+            /* 硬解有固有的管线延迟：帧要等解码器吐出来才能上屏，VideoToolbox
+             * 在 1080p H.264 上实测稳定落后主时钟 200–300 ms（av_diff 长期
+             * 停在 -196 ~ -336 ms）。这是延迟不是「跟不上」，按 250 ms 丢会
+             * 把正常出帧当成落后丢掉 —— 实测 30 秒丢 127 帧。阈值放宽到
+             * 500 ms：仍然拦得住真正跟不上的情况（软解来不及、机器太慢），
+             * 但不再误伤解码延迟。 */
+            return diff < -500000 ? 1 : 0;
         }
         unsigned nap = diff > 10000 ? 10000u : (unsigned)diff;
         if (nap < 1000) {
@@ -445,6 +459,10 @@ int lp_video_start(LpPlayer *p)
     /* 同 audio.c：新解码线程必须从「未结束」开始，否则上一个线程留下的
      * video.eof=1 会让结束判定立刻成立。 */
     atomic_store(&p->video.eof, 0);
+    /* 连播下一个文件时也要重新获得「开播不丢帧」的豁免：这个计数只用来
+     * 判断「本片是否已经出过画面」（见 wait_for_presentation）。不在这里
+     * 清零，播放列表里第二个文件之后的头两秒仍会被当成晚到丢掉。 */
+    p->video.frames_decoded = 0;
     lp_pq_start(&p->video.pq);
     if (pthread_create(&p->video.thread, NULL, lp_video_thread_fn, p) != 0) {
         return LP_ERR_NOMEM;
