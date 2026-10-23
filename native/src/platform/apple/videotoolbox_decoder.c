@@ -149,6 +149,30 @@ static int hevc_param_sets(const uint8_t *ed, int size, const uint8_t **sets, si
     return n;
 }
 
+/* Profiles VideoToolbox accepts but decodes far slower than the software
+ * decoder.  Measured on an M-series Mac over SMB, 8 s each:
+ *
+ *   [anime-05] Hi10P 1440x1080    VT 50 frames, fps 0.00, 5.6 s behind
+ *                                    software 185 frames, fps 23.5, 45 ms
+ *   anime-06 10-bit 1080p  VT 139 frames, 27 dropped
+ *                                    software 147 frames, 0 dropped
+ *
+ * The clock is audio driven, so a decoder that cannot keep up makes the video
+ * thread fall further behind every second (wait_for_presentation never returns
+ * early) until nothing is drawn at all -- the user sees a frozen picture and a
+ * progress bar that keeps walking.  Routing these profiles to software costs
+ * CPU but plays, so refuse them up front; open_decoder() then falls back. */
+static int profile_needs_software(int codec_id, int profile)
+{
+    if (codec_id == AV_CODEC_ID_H264) {
+        return profile == AV_PROFILE_H264_HIGH_10 || profile == AV_PROFILE_H264_HIGH_10_INTRA ||
+               profile == AV_PROFILE_H264_HIGH_422 || profile == AV_PROFILE_H264_HIGH_422_INTRA ||
+               profile == AV_PROFILE_H264_HIGH_444_PREDICTIVE ||
+               profile == AV_PROFILE_H264_HIGH_444_INTRA;
+    }
+    return 0;
+}
+
 static int build_format_description(LpVideoDecoder *d, const LpVideoDecoderConfig *cfg, char *err,
                                     size_t errlen)
 {
@@ -236,6 +260,11 @@ int lp_hw_decoder_init(LpVideoDecoder *d, const LpVideoDecoderConfig *cfg, char 
     }
     d->tb = cfg->time_base;
     d->player = cfg->player;
+    if (profile_needs_software(cfg->codec_id, cfg->par->profile)) {
+        snprintf(err, errlen, "%s profile %d is decoded better in software",
+                 avcodec_get_name(cfg->codec_id), cfg->par->profile);
+        return LP_ERR_UNSUPPORTED;
+    }
     if (build_format_description(d, cfg, err, errlen) != 0) {
         return LP_ERR_UNSUPPORTED;
     }

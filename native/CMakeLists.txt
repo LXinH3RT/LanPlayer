@@ -260,14 +260,42 @@ elseif(APPLE)
     find_library(FW_COREVIDEO CoreVideo)
     find_library(FW_AUDIOTOOLBOX AudioToolbox)
     find_library(FW_COREFOUNDATION CoreFoundation)
+    # Foundation is not used directly, but VideoToolbox's block-based decode
+    # callback pulls in NSUndefinedKeyException at link time: without it the
+    # macOS build of anything linking the static library fails with
+    #   Undefined symbols for architecture arm64: "_NSUndefinedKeyException"
+    # (the iOS app links it transitively, the CMake test executables do not).
+    find_library(FW_FOUNDATION Foundation)
     find_library(FW_COREVIDEO_TOOLBOX CoreVideoToolbox OPTIONAL)
     target_link_libraries(lanplayer PUBLIC
         ${LP_FF_LIBS}
         ${FW_VIDEOTOOLBOX} ${FW_COREMEDIA} ${FW_COREVIDEO}
-        ${FW_AUDIOTOOLBOX} ${FW_COREFOUNDATION}
+        ${FW_AUDIOTOOLBOX} ${FW_COREFOUNDATION} ${FW_FOUNDATION}
         iconv
     )
     target_compile_definitions(lanplayer PRIVATE LP_PLATFORM_APPLE=1 LP_HAVE_ICONV=1)
+    # The Apple FFmpeg prebuilts are configured with every demuxer enabled, and
+    # matroskadec reaches for the bzip2 and liblzma decoders to unpack Matroska
+    # header compression.  podspec links them for the app; the CMake
+    # executables have to name them here or linking stops with
+    #   "_BZ2_bzDecompress", referenced from _matroska_decode_buffer
+    target_link_libraries(lanplayer PUBLIC bz2 lzma z)
+    # Same story for libavfilter: vf_coreimage.o is pulled in (Apple FFmpeg
+    # enables --enable-coreimage) and it calls CoreGraphics / CoreImage /
+    # AppKit directly, so those frameworks have to be named explicitly too.
+    find_library(FW_COREGRAPHICS CoreGraphics)
+    find_library(FW_COREIMAGE CoreImage)
+    find_library(FW_APPKIT AppKit)
+    target_link_libraries(lanplayer PUBLIC
+        ${FW_COREGRAPHICS} ${FW_COREIMAGE} ${FW_APPKIT})
+    # Two more that only surface once vf_coreimage.o and tls_securetransport.o
+    # are pulled in: OpenGL for CGLGetCurrentContext, and Security for the
+    # SSLCreateContext family the SecureTransport TLS backend uses.
+    find_library(FW_OPENGL OpenGL)
+    find_library(FW_SECURITY Security)
+    find_library(FW_QUARTZCORE QuartzCore)
+    target_link_libraries(lanplayer PUBLIC
+        ${FW_OPENGL} ${FW_SECURITY} ${FW_QUARTZCORE})
     # VideoToolbox output handlers are blocks.
     target_compile_options(lanplayer PRIVATE -fblocks)
 else()

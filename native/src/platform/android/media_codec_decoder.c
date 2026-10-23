@@ -144,6 +144,21 @@ static const char *mime_for_codec(enum AVCodecID id)
     }
 }
 
+/* 这些 profile 厂商的 MediaCodec 要么直接报错、要么慢到跟不上时钟。
+ * Android 手机（c2.qti.avc.decoder）实测 1280x720 Hi10P：hardware decode 后第一帧
+ * 就 `hw receive: -6`，整路播放变成连续错误事件；同一文件软解 24 fps 正常。
+ * 与其让它失败后再回退，不如按 profile 提前拒绝，open_decoder() 会走软解。 */
+static int profile_needs_software(enum AVCodecID id, int profile)
+{
+    if (id == AV_CODEC_ID_H264) {
+        return profile == AV_PROFILE_H264_HIGH_10 || profile == AV_PROFILE_H264_HIGH_10_INTRA ||
+               profile == AV_PROFILE_H264_HIGH_422 || profile == AV_PROFILE_H264_HIGH_422_INTRA ||
+               profile == AV_PROFILE_H264_HIGH_444_PREDICTIVE ||
+               profile == AV_PROFILE_H264_HIGH_444_INTRA;
+    }
+    return 0;
+}
+
 LpVideoDecoder *lp_hw_decoder_create(void)
 {
     LpVideoDecoder *d = calloc(1, sizeof(*d));
@@ -168,6 +183,11 @@ int lp_hw_decoder_init(LpVideoDecoder *d, const LpVideoDecoderConfig *cfg, char 
     d->mime = mime_for_codec(cfg->codec_id);
     if (!d->mime) {
         snprintf(err, errlen, "no MediaCodec MIME for %s", avcodec_get_name(cfg->codec_id));
+        return LP_ERR_UNSUPPORTED;
+    }
+    if (cfg->par && profile_needs_software(cfg->codec_id, cfg->par->profile)) {
+        snprintf(err, errlen, "%s profile %d is decoded better in software",
+                 avcodec_get_name(cfg->codec_id), cfg->par->profile);
         return LP_ERR_UNSUPPORTED;
     }
     if (!cfg->native_window) {
@@ -291,7 +311,6 @@ int lp_hw_decoder_send(LpVideoDecoder *d, const AVPacket *pkt)
     }
     ssize_t idx = AMediaCodec_dequeueInputBuffer(d->codec, 5 * 1000);
     if (idx == AMEDIACODEC_INFO_TRY_AGAIN_LATER || idx < 0) {
-        d->send_again++;
         return LP_ERR_AGAIN;
     }
     size_t cap = 0;
@@ -368,7 +387,6 @@ int lp_hw_decoder_receive(LpVideoDecoder *d, LpDecodedFrame *out)
         }
         if (idx == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED ||
             idx == AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
-            d->recv_again++;
             if (d->output_eos) {
                 return LP_ERR_END_OF_STREAM;
             }
@@ -390,10 +408,6 @@ int lp_hw_decoder_receive(LpVideoDecoder *d, LpDecodedFrame *out)
             /* 诊断用：ByteBuffer 输出真的产出帧了，数出来立刻释放。 */
             d->byte_frames++;
             d->byte_bytes += (size_t)(info.size > 0 ? info.size : 0);
-            if (d->byte_frames <= 3 || (d->byte_frames % 60) == 0) {
-                LP_INFO("mediacodec", "byte frame #%lld size=%d total=%zu",
-                        (long long)d->byte_frames, info.size, d->byte_bytes);
-            }
             AMediaCodec_releaseOutputBuffer(d->codec, (size_t)idx, false);
             continue;
         }
