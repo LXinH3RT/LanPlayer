@@ -170,6 +170,20 @@ static int profile_needs_software(int codec_id, int profile)
                profile == AV_PROFILE_H264_HIGH_444_PREDICTIVE ||
                profile == AV_PROFILE_H264_HIGH_444_INTRA;
     }
+    if (codec_id == AV_CODEC_ID_HEVC) {
+        /* 10-bit HEVC: the hardware path accepts the format and then either
+         * rejects every frame (-12909) or decodes at a few frames per second.
+         * Measured on the same machine over SMB, 6 s each:
+         *
+         *   anime-02a.mkv   VT  11.9 fps, 3 dropped      software 23.8 fps
+         *   anime-02b.mkv   VT   0.0 fps, 2 decoded       software 24.5 fps
+         *   anime-03    VT   0.0 fps, 3 decoded       software 24.0 fps
+         *   anime-04 19     VT   0.0 fps                  software 24.0 fps
+         *
+         * 8-bit HEVC stays on the hardware path (23.6 fps, no drops). */
+        return profile == AV_PROFILE_HEVC_MAIN_10 || profile == AV_PROFILE_HEVC_MAIN_STILL_PICTURE ||
+               profile == AV_PROFILE_HEVC_REXT;
+    }
     return 0;
 }
 
@@ -368,6 +382,13 @@ int lp_hw_decoder_send(LpVideoDecoder *d, const AVPacket *pkt)
     }
     AVPacket *converted = to_avcc(d, pkt);
     const AVPacket *use = converted ? converted : pkt;
+    if (use->size <= 0) {
+        /* A zero sized sample carries nothing to decode; some mkv files hand
+         * one out around a discontinuity.  Feeding it to VideoToolbox just
+         * wastes a session round trip, so drop it here. */
+        av_packet_free(&converted);
+        return LP_OK;
+    }
 
     CMBlockBufferRef block = NULL;
     OSStatus st = CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault, NULL,

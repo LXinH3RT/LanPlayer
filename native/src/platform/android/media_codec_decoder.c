@@ -156,6 +156,16 @@ static int profile_needs_software(enum AVCodecID id, int profile)
                profile == AV_PROFILE_H264_HIGH_444_PREDICTIVE ||
                profile == AV_PROFILE_H264_HIGH_444_INTRA;
     }
+    if (id == AV_CODEC_ID_HEVC) {
+        /* Android 手机 的 c2.qti.hevc.decoder 对 10-bit 是「吃下去但不出画面」：
+         * 播放 1080p HEVC-10bit 时 `MediaCodec` 自己的统计是
+         *   Qin:456 DQin:456/456 Render:0 Drop:0 DQout:0/456
+         * 也就是 456 个输入缓冲全被收下，却一个都没 dequeue 出来，
+         * 屏幕上一直是黑帧、进度条照走（用户看到的就是「卡住」）。
+         * 同一个文件软解 24 fps 正常，所以按 profile 提前拒绝。 */
+        return profile == AV_PROFILE_HEVC_MAIN_10 || profile == AV_PROFILE_HEVC_MAIN_STILL_PICTURE ||
+               profile == AV_PROFILE_HEVC_REXT;
+    }
     return 0;
 }
 
