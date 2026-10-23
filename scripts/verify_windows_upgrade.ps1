@@ -26,7 +26,7 @@ param(
 #     same sha256), so its size proves nothing on its own. Append marker bytes
 #     first; if the installer overwrites the file the size drops back to 90624.
 #     The deleted DLL is the second, independent signal.
-#  3. Start-Process -PassThru + $p.HasExited hangs forever under this environment,
+#  3. Start-Process -PassThru + $p.HasExited can hang forever on this machine,
 #     and `cmd /c "..." &` from a sandboxed shell leaves tasklist without a
 #     usable stdin. Run `cmd /c "<setup>" /S` synchronously instead, and poll
 #     with Get-Process.
@@ -41,7 +41,7 @@ param(
 #     Install 0.1.1 properly instead -- that also produces uninstall.exe.
 #  7. The verdict depends on where you run it from, because of PATH. The
 #     StopRunningApp macro asks cmd to pipe tasklist into find. Under Git Bash
-#     (the MSYS shell), PATH puts /usr/bin ahead of System32, so `find`
+#     (Git Bash), PATH puts /usr/bin ahead of System32, so `find`
 #     resolves to GNU find, which rejects /FI and /I and exits non-zero -- the
 #     macro reads that as "not running", skips the taskkill, and the install
 #     fails with exe_replaced=False. Under the host pwsh it resolves to

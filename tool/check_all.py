@@ -162,6 +162,8 @@ REQUIRED = [
     "scripts/build_windows_desktop.ps1",
     "scripts/build_windows_installer.ps1",
     "scripts/build_macos_dmg.sh",
+    "scripts/build_android_apk.sh",
+    "scripts/release_all.ps1",
     "scripts/ios_device_install.sh",
     "scripts/windows/installer.nsi",
     "scripts/verify_windows_upgrade.ps1",
@@ -600,6 +602,99 @@ def check_installers() -> None:
     notes.append("upgrade: installer and uninstaller both stop a running copy "
                  "first (verified against a stripped negative control)")
     notes.append("iOS device: team id injected, devicectl install")
+
+
+def check_release_policy() -> None:
+    """Every release ships three platforms, and local-only notes never ship.
+
+    Two rules that are easy to violate silently:
+
+      * A release must carry Windows, macOS *and* Android. Publishing two of
+        the three leaves the download page lying about what the version
+        supports, and nothing about the repository shows it happened. The
+        release script therefore has to name all three packages and has to
+        fail before uploading when one is missing.
+      * Notes that only apply to one checkout must stay local.
+        They describe the current checkout, not the product; publishing them
+        is noise at best. .gitignore has to keep them out, and no tracked file
+        may point at them (a dangling link in README is how they got shipped
+        the first time).
+    """
+    release = ROOT / "scripts" / "release_all.ps1"
+    if not release.is_file():
+        problems.append("scripts/release_all.ps1 is missing; one release must "
+                        "upload the Windows, macOS and Android packages together")
+        return
+
+    text = release.read_text(encoding="utf-8", errors="replace")
+    # Match the interpolated names in the asset array, not the plain names in
+    # the header comment: a comment can keep saying "android" while the list
+    # that is actually uploaded has lost it.
+    for pattern, what in (
+        ('"LanPlayer-$Version-windows-x64-setup.exe"', "Windows installer"),
+        ('"LanPlayer-$Version-macos-arm64.dmg"', "macOS dmg"),
+        ('"LanPlayer-$Version-android-arm64.apk"', "Android apk"),
+    ):
+        if pattern not in text:
+            problems.append(f"scripts/release_all.ps1 no longer uploads the "
+                            f"{what} ({pattern}); a release must ship all "
+                            f"three platforms")
+    if "if ($missing.Count -gt 0)" not in text or "exit 1" not in text:
+        problems.append("scripts/release_all.ps1 no longer refuses to upload "
+                        "when a platform package is missing")
+    for builder in ("build_windows_installer.ps1", "build_macos_dmg.sh",
+                    "build_android_apk.sh"):
+        if not (ROOT / "scripts" / builder).is_file():
+            problems.append(f"scripts/{builder} is missing; the release needs a "
+                            f"way to produce every platform package")
+
+    # The APK builder must take the version from pubspec so the three packages
+    # of one release cannot disagree.
+    apk_sh = ROOT / "scripts" / "build_android_apk.sh"
+    if apk_sh.is_file():
+        apk_text = apk_sh.read_text(encoding="utf-8", errors="replace")
+        if "pubspec.yaml" not in apk_text:
+            problems.append("scripts/build_android_apk.sh no longer reads the "
+                            "version from app/pubspec.yaml")
+
+    ignore = ROOT / ".gitignore"
+    ignored = ignore.read_text(encoding="utf-8", errors="replace") if ignore.is_file() else ""
+    checkout_only = (
+        "docs/build.md",
+        "docs/notes.md",
+        ".editor/",
+        "docs/notes.md",
+    )
+    for name in checkout_only:
+        if not any(line.strip() == name for line in ignored.splitlines()):
+            problems.append(f".gitignore no longer ignores {name}; files written "
+                            f"that only apply to one checkout must not be published")
+
+    # Nothing tracked may reference those files: a link in README is exactly
+    # how such a note ended up in the repository before.
+    code, out = run(["git", "ls-files"])
+    if code == 0:
+        tracked = [line.strip() for line in out.splitlines() if line.strip()]
+        if "docs/build.md" in tracked:
+            problems.append("docs/notes.md is tracked; it is a checkout-only "
+                            "note and must not be in the repository")
+        for path in tracked:
+            if path == "tool/check_all.py":
+                # This file holds the list itself; scanning it would always hit.
+                continue
+            if not path.endswith((".md", ".ps1", ".py", ".sh", ".yaml", ".yml", ".nsi")):
+                continue
+            full = ROOT / path
+            if not full.is_file():
+                continue
+            body = full.read_text(encoding="utf-8", errors="replace")
+            for name in checkout_only:
+                if name in body:
+                    problems.append(f"{path} references {name}; local-only notes "
+                                    f"must not be linked from tracked files")
+
+    notes.append("release: one release uploads Windows + macOS + Android, "
+                 "checkout-only notes stay out of the repository")
 
 def run(cmd: list[str], env: dict[str, str] | None = None,
         cwd: Path | None = None) -> tuple[int, str]:
@@ -1428,6 +1523,7 @@ def main() -> int:
     check_lan_scan()
     check_thumbnails()
     check_installers()
+    check_release_policy()
     check_player_layout()
     check_powershell_scripts()
     check_track_selection()

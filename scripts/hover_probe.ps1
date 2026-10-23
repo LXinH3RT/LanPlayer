@@ -8,7 +8,7 @@
 # and asserts on those paired lines in stdout.
 #
 # Pointer input goes through PostMessage(WM_MOUSEMOVE) delivered to the Flutter
-# view (a child of the top-level frame), not SendInput: the environment cannot
+# view (a child of the top-level frame), not SendInput: this machine cannot
 # reliably take the foreground of the desktop session.
 #
 #   powershell -File scripts\hover_probe.ps1 -Exe <lanplayer.exe> -Open <video>

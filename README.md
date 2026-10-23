@@ -191,8 +191,11 @@ Windows 桌面端硬解已接 D3D11VA，仍缺 GPU 直出纹理与 WASAPI。
   偶数字节的中文注释会把下一行吞进注释里，静默不报错）。`tool/check_all.py` 有护栏。
 - C 源码 UTF-8 无 BOM、以换行结尾。
 - 生成物一律不入库：`build/`、`dist/`、`.tools/`、`app/build/`、`app/windows/out/`、`native/third_party/`。
+- 发布一个新版本时，Windows / macOS / Android 三个包必须同时上传到同一个 GitHub Release，
+  缺任何一个都不算发完。用 `scripts/release_all.ps1` 一条命令完成上传与校验。
 
-更细的约定见 docs/build.md。
+自检一次性跑完：`.tools\python\python.exe tool\check_all.py`（静态检查、dart 语法与编译、
+dart 用例、安装器与发布断言都在里面）。
 
 ## 目录
 
