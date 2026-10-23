@@ -1229,6 +1229,54 @@ def check_android_playback() -> None:
                  "retries, tick outlives close, runtime media permission")
 
 
+def check_playback_profiles() -> None:
+    """Every hardware decoder must refuse 10-bit H.264 up front.
+
+    None of the three shipping hwaccels implements High 10 / High 4:2:2, and a
+    rejection is not how it fails: libavcodec falls back to software *inside* the
+    hardware context, where thread_count is pinned to 1 because the codec still
+    owns a device.  Measured on all three platforms with real SMB files, a
+    1080p 10-bit H.264 then decodes at far below real time while the audio
+    clock keeps running, so the picture freezes on the first frame and only
+    starts again once the queue is thousands of packets deep.  The fix is the
+    same profile guard in every backend; dropping it from one platform brings
+    the freeze back on that platform only, which is why this is checked per file.
+    """
+    backends = {
+        "native/src/platform/win32/d3d11va_decoder.c": "D3D11VA",
+        "native/src/platform/apple/videotoolbox_decoder.c": "VideoToolbox",
+        "native/src/platform/android/media_codec_decoder.c": "MediaCodec",
+    }
+    for rel, name in backends.items():
+        path = ROOT / rel
+        if not path.exists():
+            problems.append(f"{rel} is gone; the {name} profile guard lives there")
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "profile_needs_software(" not in text:
+            problems.append(f"{rel} lost profile_needs_software(); {name} would be "
+                            "handed 10-bit H.264 and would freeze on the first frame")
+        elif "AV_PROFILE_H264_HIGH_10" not in text:
+            problems.append(f"{rel}: profile_needs_software() no longer names "
+                            "AV_PROFILE_H264_HIGH_10, the profile that stalls")
+        if "profile_needs_software(cfg->codec_id, cfg->par->profile)" not in text:
+            problems.append(f"{rel} no longer calls profile_needs_software() from "
+                            "lp_hw_decoder_init(); the guard would never run")
+
+    # Windows: the hwaccel can still hand back a system-memory frame mid-stream
+    # (the software fallback happens after init for some bitstreams). Downloading
+    # such a frame returns EINVAL and every picture is thrown away, so present()
+    # must draw it directly instead.
+    d3d = ROOT / "native" / "src" / "platform" / "win32" / "d3d11va_decoder.c"
+    if d3d.exists() and "AV_PIX_FMT_D3D11 && !hf->hw_frames_ctx" not in d3d.read_text(encoding="utf-8"):
+        problems.append("d3d11va present() no longer special-cases system-memory "
+                        "frames; av_hwframe_transfer_data returns EINVAL for them "
+                        "and every frame is dropped")
+
+    notes.append("playback profiles: hwaccel refuses 10-bit H.264 on all three "
+                 "platforms, d3d11va draws software frames instead of dropping them")
+
+
 def _ver_tuple(text: str) -> tuple[int, ...]:
     """Turn "12.0" / "10.14" into a comparable tuple.
 
@@ -1528,6 +1576,7 @@ def main() -> int:
     check_powershell_scripts()
     check_track_selection()
     check_android_playback()
+    check_playback_profiles()
     check_apple_wiring()
     check_hw_decode()
 

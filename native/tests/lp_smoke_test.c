@@ -44,6 +44,12 @@ static int g_subtitle_events = 0;
 static char g_first_subtitle[256];
 static char g_last_subtitle[256];
 static int g_have_media_info = 0;
+/* Last STATS payload. Kept so the report can show whether frames actually came
+ * out: a decoder that opens fine but never produces a picture still advances
+ * the clock (position is audio driven), so position alone cannot tell a good
+ * run from a stalled one. */
+static char g_last_stats[256];
+static long long g_stats_decoded = -1;
 
 static void lp_test_sleep_ms(int ms)
 {
@@ -109,7 +115,14 @@ static void on_event(void *user, int32_t event, const char *json, int64_t value)
         printf("ended: %s\n", payload);
         break;
     case LP_EVENT_STATS:
-        /* Too chatty for a smoke test; the final report summarises instead. */
+        /* Keep the newest payload; the final report summarises it. */
+        snprintf(g_last_stats, sizeof(g_last_stats), "%s", payload);
+        {
+            const char *d = strstr(payload, "\"decoded\":");
+            if (d) {
+                g_stats_decoded = atoll(d + 10);
+            }
+        }
         break;
     default:
         break;
@@ -209,13 +222,21 @@ int main(int argc, char **argv)
         seconds = 1;
     }
     /* `hw` can be overridden for hardware experiments:
-     *   lp_smoke_test movie.mkv 4 hw=mediacodec */
+     *   lp_smoke_test movie.mkv 4 hw=mediacodec
+     * A whole options object is accepted too, which is how a network source
+     * gets its credentials:
+     *   lp_smoke_test smb://host/share/a.mkv 8 '{"hw":"auto","user":"u","password":"p"}'
+     */
     char opts[256];
     const char *hw = "sw";
     if (argc > 3 && strncmp(argv[3], "hw=", 3) == 0) {
         hw = argv[3] + 3;
     }
-    snprintf(opts, sizeof(opts), "{\"auto_play\":true,\"hw\":\"%s\"}", hw);
+    if (argc > 3 && argv[3][0] == '{') {
+        snprintf(opts, sizeof(opts), "%s", argv[3]);
+    } else {
+        snprintf(opts, sizeof(opts), "{\"auto_play\":true,\"hw\":\"%s\"}", hw);
+    }
 
     if (lp_player_open(player, argv[1], opts) != LP_OK) {
         fprintf(stderr, "open failed\n");
@@ -260,6 +281,9 @@ int main(int argc, char **argv)
     printf("decoder       %s\n", hw_used);
     printf("events        %d (position=%d subtitle=%d stats=%d)\n", g_events,
            g_counts[LP_EVENT_POSITION], g_counts[LP_EVENT_SUBTITLE], g_counts[LP_EVENT_STATS]);
+    if (g_last_stats[0]) {
+        printf("stats         %s\n", g_last_stats);
+    }
     printf("subtitle      %d event(s)\n", g_subtitle_events);
     if (g_first_subtitle[0]) {
         printf("  first       \"%s\"\n", g_first_subtitle);
@@ -287,6 +311,14 @@ int main(int argc, char **argv)
     }
     if (stalled > 20) {
         printf("FAIL: clock stalled for %d consecutive samples\n", stalled);
+        failures++;
+    }
+    /* A decoder that opens but never delivers a picture still advances the
+     * clock when the file has audio, so the position checks above pass while
+     * the user stares at a frozen first frame. One second of STATS events
+     * without a single decoded frame means exactly that. */
+    if (seconds >= 2 && g_stats_decoded == 0) {
+        printf("FAIL: no video frame decoded in %d s (%s)\n", seconds, g_last_stats);
         failures++;
     }
     lp_player_destroy(player);
