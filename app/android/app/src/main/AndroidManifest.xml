@@ -6,9 +6,10 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
-    <!-- Module 5: local playback.  Kept to the media permissions only. -->
+    <!-- Module 5: local playback.  Only what the browser needs: video on API
+         33+, the old storage permission below that.  Both are requested at
+         runtime from MainActivity; declaring them here is just the entitlement. -->
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
