@@ -99,10 +99,17 @@ LangString DESC_Assoc     ${LANG_ENGLISH}     "Associate common video files (mp4
 ; 按映像名找进程，所以同机另一份 lanplayer.exe 也会一起被关掉 —— 这个程序的
 ; 用户数据在 %APPDATA%\lanplayer，卸载/升级从不删，多份并存本来就没意义。
 !macro StopRunningApp
-  ; 先确认它到底在不在。tasklist 用 /FI 过滤映像名，交给 find 找；找不到时
-  ; find 返回非 0，正好当「不存在」用 —— 比拿 taskkill 的退出码可靠：不带 /F 的
+  ; 先确认它到底在不在。tasklist 用 /FI 过滤映像名，交给 findstr 找；找不到时
+  ; findstr 返回 1，正好当「不存在」用 —— 比拿 taskkill 的退出码可靠：不带 /F 的
   ; taskkill 对「有窗口但收不到 WM_CLOSE」的进程会返回错误码，而进程其实还活着。
-  nsExec::ExecToStack 'cmd /C tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH | find /I "${APP_EXE}"'
+  ;
+  ; 这里必须是 findstr，不能是 find：find 是 Git Bash / MSYS2 / Cygwin 都带的
+  ; GNU 工具，PATH 里只要有一个 usr/bin 排在 System32 前面，cmd 就会解析到那个
+  ; find.exe。GNU find 不认 /FI 与 /I，直接报错退出（返回 0 或 2），于是本宏
+  ; 把「还在跑」误判成「没在跑」，升级又变成「文件被占用」。实测过的现象：
+  ; 同一个安装包在宿主 PowerShell 里跑 PASS，在 Git Bash 里跑就 FAILED。
+  ; findstr 只有 Windows 自带，不会被同名工具遮蔽。
+  nsExec::ExecToStack 'cmd /C tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH | findstr /I /C:"${APP_EXE}"'
   Pop $R8
   Pop $R7   ; 输出（丢掉）
 
@@ -119,7 +126,7 @@ LangString DESC_Assoc     ${LANG_ENGLISH}     "Associate common video files (mp4
     StrCpy $R6 0
     ${Do}
       Sleep 500
-      nsExec::ExecToStack 'cmd /C tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH | find /I "${APP_EXE}"'
+      nsExec::ExecToStack 'cmd /C tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH | findstr /I /C:"${APP_EXE}"'
       Pop $R8
       Pop $R7
       ${If} $R8 != 0
