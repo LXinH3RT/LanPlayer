@@ -18,10 +18,10 @@ param(
 #
 # Seven traps, all learned the hard way:
 #
-#  1. Integrity label. Files this shell creates carry a Low integrity
-#     label, and a Low-label exe cannot write to a Medium-label directory: the
-#     installer then exits 0 having done nothing -- a silent false negative.
-#     So both setups are copied into %TEMP% (Medium) and the copies are run.
+#  1. Copy the packages to %TEMP% before running them. Files created under the
+#     repo carry a Low integrity label, and keeping the run away from the repo
+#     also means a half-finished install can never touch dist\. (This was long
+#     blamed for silent installer no-ops; that diagnosis was wrong -- see 7.)
 #  2. The launcher exe is byte-identical between 0.1.1 and 0.1.2 (same size,
 #     same sha256), so its size proves nothing on its own. Append marker bytes
 #     first; if the installer overwrites the file the size drops back to 90624.
@@ -39,11 +39,16 @@ param(
 #     deletes everything already in $INSTDIR, so a pre-seeded tree vanishes and
 #     "was the exe replaced" turns into a comparison against a missing file.
 #     Install 0.1.1 properly instead -- that also produces uninstall.exe.
-#  7. Run this from a Medium-integrity shell (the host pwsh window), not from
-#     the MSYS shell session. Its children inherit Low integrity, and
-#     requestExecutionLevel=user keeps that label, so the installer again
-#     exits 0 having done nothing: exe_replaced=False, old_still_alive=True.
-#     Same script, same packages, opposite verdict -- the environment matters.
+#  7. The verdict depends on where you run it from, because of PATH. The
+#     StopRunningApp macro asks cmd to pipe tasklist into find. Under Git Bash
+#     (the MSYS shell), PATH puts /usr/bin ahead of System32, so `find`
+#     resolves to GNU find, which rejects /FI and /I and exits non-zero -- the
+#     macro reads that as "not running", skips the taskkill, and the install
+#     fails with exe_replaced=False. Under the host pwsh it resolves to
+#     C:\Windows\System32\find.exe and passes. Fixed on the installer side: the
+#     macro now uses findstr, which Windows alone ships. So this script works
+#     from either shell now -- but if you ever see the exact signature
+#     exe_replaced=False + old_still_alive=True again, check `where find` first.
 #
 # ASCII only: Windows PowerShell 5.1 decodes a BOM-less .ps1 as cp936, and a
 # Chinese comment then becomes a garbled string literal that eats the next line.

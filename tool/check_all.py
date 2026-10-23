@@ -580,6 +580,20 @@ def check_installers() -> None:
                 problems.append(f"installer.nsi does not call StopRunningApp from "
                                 f"the {name} section")
 
+        # The macro asks cmd to pipe tasklist into a text filter and takes the
+        # filter's exit code as "is it still running". `find` is a trap: Git
+        # Bash puts /usr/bin ahead of System32, so cmd resolves to GNU find,
+        # which rejects /FI and /I and exits non-zero -- the macro then thinks
+        # nothing is running, skips the taskkill, and the upgrade silently
+        # fails with "file in use" again. findstr ships with Windows only.
+        if "| findstr" not in nsi_code:
+            problems.append("installer.nsi no longer filters tasklist with "
+                            "findstr; `find` resolves to GNU find under Git "
+                            "Bash and breaks the running-app check")
+        if "| find /I" in nsi_code:
+            problems.append("installer.nsi pipes tasklist into `find /I`; that "
+                            "is GNU find under Git Bash and always fails")
+
     notes.append("installers: NSIS per-user with BOM + matching file list, "
                  "dmg uses ditto + UDZO")
     notes.append("upgrade: installer and uninstaller both stop a running copy "
