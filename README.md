@@ -177,12 +177,11 @@ macOS 删 app 就结束，状态在 `~/Library/Containers/dev.lanplayer.lanplaye
 |安装包覆盖升级|✅ 旧版在跑也能直接装新版，正负对照均有脚本|
 |Dart 测试|✅ `flutter test` 95 个用例全过；`flutter analyze` 无 issue|
 |Apple 端|✅ macOS 与实体 iPad 均真机跑通（VideoToolbox + AudioQueue + 字幕 + 进度续播）|
-|Android 端|✅ arm64 真机跑通（MediaCodec 硬解 + AAudio + 多音轨选轨 + 自动连播）；首次出包后修掉九个只在真机复现的缺陷|
+|Android 端|✅ arm64 真机跑通（MediaCodec 硬解 + AAudio + 多音轨选轨 + 自动连播 + 运行时媒体权限）；首次出包后修掉十个缺陷，前九个只在真机复现|
 
 **已知限制**（见 [docs/roadmap.md](docs/roadmap.md)）：ASS 的 `\t` 动画、`\clip`、矢量绘图 `\p`、
 卡拉 OK `\k` 不渲染（其余行内标签都支持）；不枚举服务器共享名，共享名需手填；
-Windows 桌面端硬解已接 D3D11VA，仍缺 GPU 直出纹理与 WASAPI；Android 侧读 `/storage/emulated/0`
-的媒体权限要在系统设置里手动给（manifest 已声明，Dart 侧还没写运行时申请）。
+Windows 桌面端硬解已接 D3D11VA，仍缺 GPU 直出纹理与 WASAPI。
 
 ## 开发约定
 
