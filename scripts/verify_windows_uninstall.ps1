@@ -38,7 +38,7 @@ $lnkDir  = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\LanPlayer"
 $lnkDesk = "$env:USERPROFILE\Desktop\LanPlayer.lnk"
 $lnkBox  = Join-Path $env:TEMP 'lp-shortcut-backup'
 
-# %TEMP% copy: files this shell creates carry a Low integrity label, and
+# %TEMP% copy: files created under this checkout carry a Low integrity label, and
 # a Low-label installer cannot write to a Medium-label directory -- it exits 0
 # having done nothing. %TEMP% itself is Medium.
 Copy-Item $Setup $tmpExe -Force

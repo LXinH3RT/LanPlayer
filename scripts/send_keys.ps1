@@ -5,7 +5,7 @@
 # no CLI way to inject key events.  The app prints one "LanPlayer key: <label>"
 # line per handled shortcut, so the captured stdout is the assertion.
 #
-# PostMessage is used instead of SendInput because the environment cannot reliably
+# PostMessage is used instead of SendInput because this machine cannot reliably
 # take the foreground focus of the desktop session.  Keys are posted to the
 # focused child window (the Flutter view), not the top-level frame, because that
 # is where Flutter's message handler lives.

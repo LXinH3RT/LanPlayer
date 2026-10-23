@@ -522,7 +522,7 @@ powershell -File scripts\verify_windows_upgrade.ps1     # 旧版运行中 -> 装
 powershell -File scripts\verify_windows_uninstall.ps1   # 应用运行中 -> 卸载
 ```
 
-两个都装到 `D:\lp-upgrade-test` / `D:\lp-uninstall-test` 这类 scratch 目录，跑完恢复注册表与快捷方式，不动真实安装；它们做**正负对照**：把宏拆掉的安装器（`.tools\tmp` 里由 `mknokill.py` / `mknoun.py` 生成）必须让脚本报失败，否则说明断言没在测东西（见 `verification.md` 3.33）。跑时注意两点：**先把安装包 `Copy-Item` 到 `%TEMP%` 再执行**（仓库里的文件带 Low 完整性标签，复制出去跑是为了不弄脏 `dist\`）；**别用 `Start-Process -PassThru` + `$p.HasExited` 轮询**（在 environment 里会死锁），用同步的 `cmd /c "<setup>" /S`。`ops_bash` 与宿主 `pwsh` 都可以跑——**但只要你从 Git Bash 跑，就要确认 `where find` 命中 `C:\Windows\System32\find.exe`**，PATH 里 MSYS 的 GNU find 会把覆盖升级验成 FAILED（宏已改用 `findstr` 规避，详见 3.33）。
+两个都装到 `D:\lp-upgrade-test` / `D:\lp-uninstall-test` 这类 scratch 目录，跑完恢复注册表与快捷方式，不动真实安装；它们做**正负对照**：把宏拆掉的安装器（`.tools\tmp` 里由 `mknokill.py` / `mknoun.py` 生成）必须让脚本报失败，否则说明断言没在测东西（见 `verification.md` 3.33）。跑时注意两点：**先把安装包 `Copy-Item` 到 `%TEMP%` 再执行**（仓库里的文件带 Low 完整性标签，复制出去跑是为了不弄脏 `dist\`）；**别用 `Start-Process -PassThru` + `$p.HasExited` 轮询**（在本机会死锁），用同步的 `cmd /c "<setup>" /S`。PowerShell 与 Git Bash 都可以跑——**但只要你从 Git Bash 跑，就要确认 `where find` 命中 `C:\Windows\System32\find.exe`**，PATH 里 MSYS 的 GNU find 会把覆盖升级验成 FAILED（宏已改用 `findstr` 规避，详见 3.33）。
 ### 7.2 macOS（dmg）
 ```bash
 # 前置：scripts/build_apple_deps.sh 与 flutter build macos --release 都已完成
@@ -560,7 +560,7 @@ curl -sS -X POST \
 
 Windows 包要先用 `flutter build windows --release`（或 `scripts\build_windows_desktop.ps1`）把产物放到 `app/build/windows/x64/runner/Release/`——**安装脚本只认这个路径**，再 `build_windows.ps1 -DeployTo` 把新内核 DLL 覆盖进去，不能漏，否则打的还是旧 DLL。`build_windows_desktop.ps1` 现在自己就把编好的 bundle 复制到那个目录（第 9 步），因为它实际编译输出在 `app/windows/out/build/...`。macOS 侧先 `flutter build macos --release`，再 `VERSION=0.1.2 ./scripts/build_macos_dmg.sh`。
 
-**覆盖升级**：装新版不用先手动卸载。`installer.nsi` 的 `StopRunningApp` 宏在安装段与卸载段各调一次，先 `taskkill`（不带 `/F`，等于发 WM_CLOSE）再轮询，5 秒不退才强杀；判「在不在跑」用的是 `tasklist | findstr`，**必须是 `findstr` 不能是 `find`** —— Git Bash 的 PATH 里 MSYS 的 GNU find 排在 System32 前面，它不认 `/FI`/`/I`，退出码非 0，宏会把「还在跑」误判成「没在跑」，覆盖升级就退化成「文件被占用」。回归用 `scripts\verify_windows_upgrade.ps1` / `verify_windows_uninstall.ps1`，两个脚本都带正负对照，`ops_bash` 与宿主 `pwsh` 里都能跑（详见 verification.md 3.33）。
+**覆盖升级**：装新版不用先手动卸载。`installer.nsi` 的 `StopRunningApp` 宏在安装段与卸载段各调一次，先 `taskkill`（不带 `/F`，等于发 WM_CLOSE）再轮询，5 秒不退才强杀；判「在不在跑」用的是 `tasklist | findstr`，**必须是 `findstr` 不能是 `find`** —— Git Bash 的 PATH 里 MSYS 的 GNU find 排在 System32 前面，它不认 `/FI`/`/I`，退出码非 0，宏会把「还在跑」误判成「没在跑」，覆盖升级就退化成「文件被占用」。回归用 `scripts\verify_windows_upgrade.ps1` / `verify_windows_uninstall.ps1`，两个脚本都带正负对照，PowerShell 与 Git Bash 里都能跑（详见 verification.md 3.33）。
 
 v0.1.2 的发布结果（照上面两步做的）：Release id `421052828`，tag `v0.1.2` → `995da50`；asset id Windows `668400068`（58132233 字节，sha256 `B6940F682581CB4225A453F04ED8EB48747EC181A96B9E934EE99BC2D844223F`）、macOS `666686825`（27210696 字节，sha256 `8F775B39BF8979FA76D64FF477FC7E9DF38F5AD73248D0716EB1A35579D05166`）。两个包都下载回来重算过 SHA256，与本地一致。
 
