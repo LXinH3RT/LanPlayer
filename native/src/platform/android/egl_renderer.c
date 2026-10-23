@@ -286,9 +286,28 @@ int lp_render_set_window(LpPlayer *p, void *window, int width, int height)
     pthread_mutex_lock(&g_egl_lock);
     g_egl.view_w = width;
     g_egl.view_h = height;
-    int r = egl_init_display((ANativeWindow *)window);
+    /* 只记下窗口，不在这里 eglCreateWindowSurface。
+     *
+     * SurfaceTexture 同时只允许一个生产者连上去。硬解路径由 MediaCodec 直接
+     * 渲染进这个窗口，如果这里抢先连一次 EGL，MediaCodec 的 configure 就会
+     * 拿到 `BufferQueueProducer: connect: already connected (cur=1 req=3)` +
+     * `surfaceConnectWithListener returned an error: Invalid argument (-22)`，
+     * 硬解整个起不来。软解路径在 lp_render_draw() 里按需初始化 EGL（那里已经
+     * 有 egl_init_display 的兜底），所以延迟连接对两条路径都成立。
+     *
+     * 这个缺陷在 Windows/macOS 上不会出现（那边走的是 FlutterTexture 帧回调，
+     * 没有 ANativeWindow），只有 Android 真机能暴露。 */
+    if (g_egl.window != window) {
+        if (g_egl.surface != EGL_NO_SURFACE && g_egl.display != EGL_NO_DISPLAY) {
+            eglMakeCurrent(g_egl.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            eglDestroySurface(g_egl.display, g_egl.surface);
+            g_egl.surface = EGL_NO_SURFACE;
+        }
+        g_egl.window = (ANativeWindow *)window;
+        g_egl.ready = 0;
+    }
     pthread_mutex_unlock(&g_egl_lock);
-    return r == 0 ? LP_OK : LP_ERR_IO;
+    return LP_OK;
 }
 
 int lp_render_resize(LpPlayer *p, int width, int height)

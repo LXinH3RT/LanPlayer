@@ -333,6 +333,7 @@ void *lp_demux_thread_fn(void *arg)
         return NULL;
     }
     int waiting_eof = 0;
+    long long read_ok = 0;
 
     while (!lp_is_abort(p)) {
         if (atomic_exchange(&p->seek_req, 0)) {
@@ -360,7 +361,8 @@ void *lp_demux_thread_fn(void *arg)
             lp_pq_signal_eof(&p->video.pq, p->serial);
             lp_pq_signal_eof(&p->audio.pq, p->serial);
             waiting_eof = 1;
-            LP_INFO("demux", "end of stream");
+            LP_INFO("demux", "end of stream after %lld packet(s), pos %lld us",
+                    read_ok, (long long)p->fmt->pb->pos);
             continue;
         }
         if (r < 0) {
@@ -377,15 +379,28 @@ void *lp_demux_thread_fn(void *arg)
             continue;
         }
         if (pkt->stream_index == p->video.stream_index) {
+            read_ok++;
             if (lp_pq_put(&p->video.pq, pkt, p->serial) != 0) {
-                pkt = NULL; /* the queue freed it on failure - do not free twice */
-                break;
+                /* 队列已放掉这个包，不能重复释放。切轨会先 abort 队列再
+                 * restart，这时推包失败不代表播放结束 —— 以前直接 break 会
+                 * 让 demux 线程永久退出，之后没有任何线程喂包：播放停在切轨
+                 * 那一刻，q 恒为 0，主时钟空转到片尾也不结束（安卓上必现）。 */
+                pkt = av_packet_alloc();
+                if (!pkt || lp_is_abort(p)) {
+                    break;
+                }
+                av_usleep(2000);
+                continue;
             }
             pkt = av_packet_alloc();
         } else if (pkt->stream_index == p->audio.stream_index) {
             if (lp_pq_put(&p->audio.pq, pkt, p->serial) != 0) {
-                pkt = NULL; /* the queue freed it on failure - do not free twice */
-                break;
+                pkt = av_packet_alloc();
+                if (!pkt || lp_is_abort(p)) {
+                    break;
+                }
+                av_usleep(2000);
+                continue;
             }
             pkt = av_packet_alloc();
         } else {

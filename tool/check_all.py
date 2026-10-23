@@ -988,6 +988,118 @@ def check_track_selection() -> None:
                  "preference applied once per file")
 
 
+def check_android_playback() -> None:
+    """Guard the six defects found while bringing up Android playback.
+
+    Every one of them was invisible on Windows and macOS, and every one of them
+    came back from a plausible-looking simplification, so they get static
+    guards. The whole Android chain was verified on a real phone only through
+    adb logs; without these assertions the next cleanup pass can silently
+    reintroduce a black screen or a frozen UI and nothing on this machine would
+    notice until someone plugs in a phone again.
+
+    1. media_codec_decoder.c: MediaCodec wants Annex-B, FFmpeg hands out AVCC
+       for mp4. Without the conversion the decoder accepts every packet
+       (queueInputBuffer returns AMEDIA_OK) and never emits a frame.
+    2. Same file: csd-0/csd-1 must be the SPS/PPS split out of the avcC record,
+       not the raw record; Qualcomm's decoder drops the stream otherwise.
+    3. video.c: a hardware decoder reports LP_ERR_AGAIN (-7) while FFmpeg's
+       software path reports AVERROR(EAGAIN) (-11). Sharing one `again` test
+       frees the packet on the hardware path -> zero frames.
+    4. video.c / audio.c: after lp_pq_abort the queue still holds packets, so
+       lp_pq_eof stays false; the decode thread must also exit on
+       lp_pq_aborted(), otherwise pthread_join in a synchronous FFI call hangs
+       the Dart UI thread (the "audio track switch freezes the app" report).
+    5. demux.c: a failed lp_pq_put during a track switch is not end of file.
+       Breaking out of the demux loop there leaves nobody feeding the queues.
+    6. player.c: the tick thread must outlive close/open. Keying its loop off
+       abort_request kills it on the first file change, and then the second
+       file never reports POSITION or ENDED.
+    """
+    dec = ROOT / "native" / "src" / "platform" / "android" / "media_codec_decoder.c"
+    vid = ROOT / "native" / "src" / "core" / "video.c"
+    aud = ROOT / "native" / "src" / "core" / "audio.c"
+    dem = ROOT / "native" / "src" / "core" / "demux.c"
+    ply = ROOT / "native" / "src" / "core" / "player.c"
+
+    for path in (dec, vid, aud, dem, ply):
+        if not path.exists():
+            problems.append(f"{path.relative_to(ROOT)} missing")
+            return
+
+    dtext = dec.read_text(encoding="utf-8")
+    for needle, why in (
+        ("to_annexb(", "the AVCC -> Annex-B conversion is gone; MediaCodec would "
+                       "accept every packet and decode nothing (black screen)"),
+        ("apply_csd(", "the csd-0/csd-1 split from the avcC record is gone; "
+                       "Qualcomm drops the stream with 'The CSD is not calculated'"),
+        ("needs_annexb(", "nothing decides whether a stream is AVCC any more, so "
+                          "either Annex-B input gets mangled or AVCC is not converted"),
+    ):
+        if needle not in dtext:
+            problems.append(f"media_codec_decoder.c: {why}")
+
+    vtext = vid.read_text(encoding="utf-8")
+    if "lp_pq_aborted(" not in vtext:
+        problems.append("video.c no longer exits on lp_pq_aborted(); stopping the "
+                        "video thread would block in pthread_join whenever the "
+                        "queue still holds packets")
+    if "LP_ERR_AGAIN" not in vtext:
+        problems.append("video.c stopped distinguishing LP_ERR_AGAIN from "
+                        "AVERROR(EAGAIN); the hardware path would free every "
+                        "packet and decode nothing")
+
+    atext = aud.read_text(encoding="utf-8")
+    if "lp_pq_aborted(" not in atext:
+        problems.append("audio.c no longer exits on lp_pq_aborted(); switching "
+                        "tracks would hang the synchronous FFI call and freeze "
+                        "the whole UI")
+    # Mutex ownership: the ring's lock has to outlive open/close because the tick
+    # thread reads the audio clock every 20 ms.
+    ring = ROOT / "native" / "src" / "core" / "audio_ring.c"
+    rtext = ring.read_text(encoding="utf-8") if ring.exists() else ""
+    if "lp_ring_setup(" not in rtext or "lp_ring_teardown(" not in rtext:
+        problems.append("audio_ring.c lost lp_ring_setup/lp_ring_teardown; "
+                        "destroying the ring mutex on close makes the tick thread "
+                        "hit a destroyed mutex (FORTIFY abort on Android)")
+
+    demtext = dem.read_text(encoding="utf-8")
+    # The original shape: hand the queue the packet, and when it refuses, set
+    # pkt = NULL (the queue already freed it) and break out of the read loop.
+    if "pkt = NULL; /* the queue freed it on failure" in demtext:
+        problems.append("demux.c drops out of the read loop when a queue refuses "
+                        "a packet; a track switch aborts that queue, so the demux "
+                        "thread would exit and nobody feeds the decoders again")
+    elif demtext.count("lp_pq_put(&p->") and "lp_is_abort(p)" not in demtext:
+        problems.append("demux.c no longer checks lp_is_abort() after a rejected "
+                        "lp_pq_put; the retry would spin forever on a real stop")
+
+    ptext = ply.read_text(encoding="utf-8")
+    if "quit_request" not in ptext:
+        problems.append("player.c: the tick thread lost its quit_request flag; "
+                        "keying it off abort_request kills it on the first file "
+                        "change and the next file never reports ENDED")
+    if "atomic_load(&p->audio.eof)" not in ptext:
+        problems.append("player.c: lp_master_clock_us no longer checks audio.eof; "
+                        "once the audio ring drains the clock freezes and the last "
+                        "frames are never presented")
+
+    log = ROOT / "native" / "src" / "util" / "lp_log.c"
+    if log.exists():
+        ltext = log.read_text(encoding="utf-8")
+        # Match the call site, not the explanatory comment that quotes the old
+        # shape verbatim.
+        if '"LanPlayer/%s", tag ?' in ltext:
+            problems.append("lp_log.c passes the module name as the __android_log_print "
+                            "format string; every logcat line loses its message body")
+        if '"%s: %s", tag' not in ltext:
+            problems.append("lp_log.c no longer prints '<module>: <message>' on "
+                            "Android; adb logcat -s LanPlayer would show no modules")
+
+    notes.append("android playback: annex-b + csd split, queue-abort exits, demux "
+                 "retries, tick outlives close")
+
+
 def _ver_tuple(text: str) -> tuple[int, ...]:
     """Turn "12.0" / "10.14" into a comparable tuple.
 
@@ -1285,6 +1397,7 @@ def main() -> int:
     check_player_layout()
     check_powershell_scripts()
     check_track_selection()
+    check_android_playback()
     check_apple_wiring()
     check_hw_decode()
 

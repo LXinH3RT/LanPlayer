@@ -1567,7 +1567,13 @@ int lp_subtitle_add_file(LpPlayer *p, const char *url, const char *options_json)
 
 int lp_subtitle_open(LpPlayer *p)
 {
-    pthread_mutex_init(&p->subs.mutex, NULL);
+    /* p->subs.mutex 的生命周期跟播放器对象一致：lp_player_create 里 init
+     * 一次、lp_player_destroy 里 destroy 一次。这里以前每开一个文件就重新
+     * init，lp_subtitle_close 里又 destroy，于是关片之后紧接着的
+     * setOption("subtitle_delay") 会锁到一把已销毁的 mutex，bionic 的
+     * FORTIFY 直接 abort：
+     *   FORTIFY: pthread_mutex_lock called on a destroyed mutex
+     * 播放页每换一次片都会走这条路径，属于必现崩溃。 */
     p->subs_inited = 1;
     p->subs.nb_tracks = 0;
     p->subs.selected = -1;
@@ -1663,10 +1669,9 @@ void lp_subtitle_close(LpPlayer *p)
     }
     p->subs.nb_tracks = 0;
     p->subs.selected = -1;
-    if (p->subs_inited) {
-        pthread_mutex_destroy(&p->subs.mutex);
-        p->subs_inited = 0;
-    }
+    /* 不销毁 p->subs.mutex：它属于播放器对象本身（lp_player_destroy 负责
+     * 销毁）。关片之后 Dart 侧仍可能调 setOption("subtitle_delay")，那把
+     * 锁必须还活着。 */
 }
 
 void lp_subtitle_feed_packet(LpPlayer *p, int stream_index, AVPacket *pkt)

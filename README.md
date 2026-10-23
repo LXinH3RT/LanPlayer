@@ -166,7 +166,7 @@ macOS 删 app 就结束，状态在 `~/Library/Containers/dev.lanplayer.lanplaye
 |-|-|
 |C 内核 / libsmb2 / FFmpeg 链接|✅ Windows 上 Zig 编 14 个源文件 + 48 个 libsmb2 文件，0 error|
 |视频 + 音频播放|✅ h264 软解、AAC→float 立体声、位置推进正确|
-|硬解|✅ Windows D3D11VA（与软件参考均值差 ≤0.2 级）、macOS/iPad VideoToolbox|
+|硬解|✅ Windows D3D11VA（与软件参考均值差 ≤0.2 级）、macOS/iPad VideoToolbox、Android MediaCodec|
 |字幕|✅ 内嵌 + 外挂 SRT/ASS/VTT + 非 UTF-8 按代码页回退 + ASS 富文本 + PGS/VobSub 图形字幕|
 |SMB 浏览 / 凭据校验 / 局域网扫描|✅ 只读、共享名自填、不做枚举；扫描并发探 445|
 |列表封面缩略图|✅ 只解第一帧、`LPT2` 头落盘缓存、只对视频行请求|
@@ -177,11 +177,12 @@ macOS 删 app 就结束，状态在 `~/Library/Containers/dev.lanplayer.lanplaye
 |安装包覆盖升级|✅ 旧版在跑也能直接装新版，正负对照均有脚本|
 |Dart 测试|✅ `flutter test` 95 个用例全过；`flutter analyze` 无 issue|
 |Apple 端|✅ macOS 与实体 iPad 均真机跑通（VideoToolbox + AudioQueue + 字幕 + 进度续播）|
+|Android 端|✅ arm64 真机跑通（MediaCodec 硬解 + AAudio + 多音轨选轨 + 自动连播）；首次出包后修掉九个只在真机复现的缺陷|
 
 **已知限制**（见 [docs/roadmap.md](docs/roadmap.md)）：ASS 的 `\t` 动画、`\clip`、矢量绘图 `\p`、
 卡拉 OK `\k` 不渲染（其余行内标签都支持）；不枚举服务器共享名，共享名需手填；
-Windows 桌面端硬解已接 D3D11VA，仍缺 GPU 直出纹理与 WASAPI；Android 侧硬解只保证编译通过，
-未在真机验证。
+Windows 桌面端硬解已接 D3D11VA，仍缺 GPU 直出纹理与 WASAPI；Android 侧读 `/storage/emulated/0`
+的媒体权限要在系统设置里手动给（manifest 已声明，Dart 侧还没写运行时申请）。
 
 ## 开发约定
 

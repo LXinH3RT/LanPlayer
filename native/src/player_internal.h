@@ -153,6 +153,8 @@ AVPacket *lp_pq_get(LpPacketQueue *q, int *serial, int block);
 void lp_pq_signal_eof(LpPacketQueue *q, int serial);
 int lp_pq_size(LpPacketQueue *q);
 int lp_pq_eof(LpPacketQueue *q);
+/* 1 = 队列已被 abort（停止或切轨），解码线程必须立刻退出，不能再等 eof。 */
+int lp_pq_aborted(LpPacketQueue *q);
 
 /* ------------------------------------------------------------ audio ring */
 
@@ -184,6 +186,11 @@ typedef struct LpAudioRing {
     pthread_cond_t cond;
 } LpAudioRing;
 
+/* 锁与条件变量随播放器对象建/毁（setup/teardown），缓冲区本身随开片关片
+ * 分配/释放（init/destroy）。分开是因为 tick 线程会一直读环形缓冲区的时钟，
+ * 关片时毁掉锁会让它撞上 destroyed mutex 直接 abort。 */
+void lp_ring_setup(LpAudioRing *r);
+void lp_ring_teardown(LpAudioRing *r);
 int lp_ring_init(LpAudioRing *r, int channels, int sample_rate, int latency_ms);
 void lp_ring_destroy(LpAudioRing *r);
 void lp_ring_flush(LpAudioRing *r);
@@ -486,6 +493,11 @@ struct LpPlayer {
     int open_started;
     pthread_t tick_thread;
     int tick_started;
+    /* 只给 tick 线程用的退出标志。tick 线程活在整个播放器对象的生命周期里，
+     * 不能跟着 abort_request 走 —— abort_request 在每次关片（换片、连播）
+     * 时都会置位，tick 线程一旦跟着退出就再也没人发 POSITION / 判定 ENDED，
+     * 表现为连播第二个文件时进度条冻住、播完不结束。 */
+    atomic_int quit_request;
     int64_t read_timeout_ms;
 
     LpVideoStream video;
