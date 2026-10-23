@@ -541,6 +541,10 @@ Windows 包要先用 `flutter build windows --release`（或 `scripts\build_wind
 
 **覆盖升级**：装新版不用先手动卸载。`installer.nsi` 的 `StopRunningApp` 宏在安装段与卸载段各调一次，先 `taskkill`（不带 `/F`，等于发 WM_CLOSE）再轮询，5 秒不退才强杀。回归用 `scripts\verify_windows_upgrade.ps1` / `verify_windows_uninstall.ps1`，两个脚本都带正负对照；**必须在 Medium 完整性的宿主 pwsh 里跑**，从代理的 ops_bash 会话跑会因 Low 完整性标签静默失败（详见 verification.md 3.33）。
 
+v0.1.2 的发布结果（照上面两步做的）：Release id `421052828`，tag `v0.1.2` → `995da50`；asset id Windows `666686044`（58137270 字节，sha256 `50C71364AB1EAE706123B078F5B896D9F94693FF9481C5FEA6D0E040AF21E9F7`）、macOS `666686825`（27210696 字节，sha256 `8F775B39BF8979FA76D64FF477FC7E9DF38F5AD73248D0716EB1A35579D05166`）。两个包都下载回来重算过 SHA256，与本地一致。
+
+踩到的一个坑：用 Python 读 API 返回的 JSON 时写了 `json.load(open(...))`，Windows 上默认按 GBK 解码，中文 body 立刻 `UnicodeDecodeError: 'gbk' codec can't decode byte 0xad`。改成 `io.open(path, encoding='utf-8')`，或者干脆只让 `.ps1` 里用 `--ssl-no-revoke` 的 curl 落盘再读。
+
 静默安装到自定义目录时 `/D=` 必须是**最后一个参数**且不能带引号；PowerShell 里更稳的是 `Start-Process -ArgumentList '/S','/D=D:\path' -Wait`。
 ### 7.4 构建后自检
 ```bash
