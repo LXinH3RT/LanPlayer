@@ -1263,6 +1263,29 @@ def check_playback_profiles() -> None:
             problems.append(f"{rel} no longer calls profile_needs_software() from "
                             "lp_hw_decoder_init(); the guard would never run")
 
+    # 10-bit HEVC is a *different* failure on each platform, so the guard is not
+    # shared: VideoToolbox decodes it at 2-9 fps (audio clock runs away, the
+    # picture freezes), MediaCodec accepts every input buffer and dequeues none
+    # (Qin:456 DQout:0/456 Render:0 -- a black frame with a walking progress
+    # bar), and D3D11VA handles it fine, so Windows must NOT refuse it.
+    hevc = {
+        "native/src/platform/apple/videotoolbox_decoder.c": "VideoToolbox",
+        "native/src/platform/android/media_codec_decoder.c": "MediaCodec",
+    }
+    for rel, name in hevc.items():
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "AV_PROFILE_HEVC_MAIN_10" not in text:
+            problems.append(f"{rel}: {name} no longer refuses 10-bit HEVC; it "
+                            "decodes at a few fps or not at all and the picture freezes")
+    win = ROOT / "native" / "src" / "platform" / "win32" / "d3d11va_decoder.c"
+    if win.exists() and "AV_PROFILE_HEVC_MAIN_10" in win.read_text(encoding="utf-8"):
+        problems.append("d3d11va_decoder.c now refuses 10-bit HEVC, but D3D11VA "
+                        "decodes it at full speed on this machine -- that would "
+                        "silently drop hardware decoding for 51 shipping files")
+
     # Windows: the hwaccel can still hand back a system-memory frame mid-stream
     # (the software fallback happens after init for some bitstreams). Downloading
     # such a frame returns EINVAL and every picture is thrown away, so present()
@@ -1274,7 +1297,8 @@ def check_playback_profiles() -> None:
                         "and every frame is dropped")
 
     notes.append("playback profiles: hwaccel refuses 10-bit H.264 on all three "
-                 "platforms, d3d11va draws software frames instead of dropping them")
+                 "platforms, 10-bit HEVC on Apple + Android only, d3d11va draws "
+                 "software frames instead of dropping them")
 
 
 def _ver_tuple(text: str) -> tuple[int, ...]:

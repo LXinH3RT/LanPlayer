@@ -609,6 +609,7 @@ Error: Flutter failed to write to a file at "C:\Users\...\AppData\Roaming\.flutt
 |硬解直接回退软解|`lp_player_set_surface` 在 `open` 之后才调用；先创建纹理再 open（UI 已是这个顺序）|
 |4K 卡顿|APK 没开 `largeHeap`，或 SMB 读太慢：调大 `readahead_kb` 与 `timeout_ms`|
 |10-bit H.264（Hi10P / High 10）片源画面不动、进度条照走|正常：三端硬解都不实现这个 profile，`profile_needs_software()` 会把它挡在门外改走软解（日志里一条 `profile 110 is decoded better in software`）。别去「修」这条 WARN|
+|10-bit HEVC（Main10）在 Mac / Android 上画面不动|正常，同样是 `profile_needs_software()` 挡下来走软解（`profile 2 is decoded better in software`）。**Windows 例外**：D3D11VA 解 10-bit HEVC 是满帧的，那边故意不拦，改这一项时别三端照抄|
 |iOS 链接不到 `lp_*`|漏了 Bridging Header 或静态库没加到 Link Binary With Libraries|
 |字幕乱码|不是 UTF-8/UTF-16。Windows 上内核用 `MultiByteToWideChar` 依次试 GB18030/GBK/Big5/Shift-JIS/CP949；Android 需要 iconv 或先转 UTF-8|
 |`Building with plugins requires symlink support`|Windows 未开「开发者模式」或令牌无 `SeCreateSymbolicLink`：用 `scripts\fix_plugin_links.ps1` 建 junction，或直接 `scripts\build_windows_desktop.ps1`|
