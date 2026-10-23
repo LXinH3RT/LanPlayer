@@ -1340,6 +1340,26 @@ def check_playback_profiles() -> None:
     notes.append("nal framing: start code vs length prefix decided by walking the "
                  "whole chain, shared by VideoToolbox and MediaCodec")
 
+    video_c = ROOT / "native" / "src" / "core" / "video.c"
+    if video_c.exists():
+        text = video_c.read_text(encoding="utf-8")
+        if "frames_decoded == 0" not in text:
+            problems.append("native/src/core/video.c lost the start-up exemption in "
+                            "wait_for_presentation(); the master clock starts before "
+                            "the decoder is ready, so the first two seconds get "
+                            "dropped as if they were late")
+        if "-500000" not in text:
+            problems.append("native/src/core/video.c drops frames later than 250 ms "
+                            "again; hardware decoders legitimately run 200-300 ms "
+                            "behind the clock, so that threshold throws away good frames")
+    vt_c = ROOT / "native" / "src" / "platform" / "apple" / "videotoolbox_decoder.c"
+    if vt_c.exists() and "LP_VT_QUEUE 32" not in vt_c.read_text(encoding="utf-8"):
+        problems.append("native/src/platform/apple/videotoolbox_decoder.c shrank "
+                        "LP_VT_QUEUE below 32; VideoToolbox decodes ahead of the "
+                        "clock and a shallow queue makes push_frame() drop live frames")
+    notes.append("late frames: a 500 ms threshold plus no drops before the first "
+                 "frame keeps hardware decoder latency from looking like lag")
+
 
 def _ver_tuple(text: str) -> tuple[int, ...]:
     """Turn "12.0" / "10.14" into a comparable tuple.

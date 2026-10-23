@@ -16,7 +16,12 @@
 
 #include "player_internal.h"
 
-#define LP_VT_QUEUE 8
+/* Decoded frames waiting for the display. VideoToolbox decodes ahead of the
+ * clock (that is the whole point of the queue), so this must be deep enough
+ * to hold the decoder's lookahead plus the reorder delay of a B-frame stream.
+ * 8 was too shallow: on a 24 fps H.264 film the decoder filled it and
+ * push_frame() threw away one frame in seven. */
+#define LP_VT_QUEUE 32
 
 struct LpVideoDecoder {
     VTDecompressionSessionRef session;
@@ -233,6 +238,8 @@ static void push_frame(LpVideoDecoder *d, CVPixelBufferRef image, int64_t pts_us
     pthread_mutex_lock(&d->mutex);
     if (d->count >= LP_VT_QUEUE) {
         /* Drop the oldest frame: the display is behind. */
+        LP_INFO("videotoolbox", "queue full (%d), dropping oldest pts=%lld", d->count,
+                (long long)d->queue[d->head].pts_us);
         CVPixelBufferRelease(d->queue[d->head].image);
         d->queue[d->head].image = NULL;
         d->head = (d->head + 1) % LP_VT_QUEUE;
@@ -307,6 +314,16 @@ int lp_hw_decoder_init(LpVideoDecoder *d, const LpVideoDecoderConfig *cfg, char 
     }
     LP_INFO("videotoolbox", "session ready %dx%d (%s)", d->width, d->height,
             avcodec_get_name(cfg->codec_id));
+    /* 实时优先：播放器本来就是实时场景，让 VideoToolbox 别为了吞吐攒批。
+     * 注意这条**单独并不解决**丢帧（实测开与不开都是 18.5 fps / 丢 88 帧），
+     * 真正的原因是 wait_for_presentation 的 250 ms 阈值误伤了硬解的管线延迟
+     * —— 见 native/src/core/video.c。这里保留它是因为它表达的意图正确，
+     * 且对低延迟场景无副作用。 */
+    OSStatus rt = VTSessionSetProperty(d->session, kVTDecompressionPropertyKey_RealTime,
+                                       kCFBooleanTrue);
+    if (rt != noErr) {
+        LP_WARN("videotoolbox", "cannot ask for real-time decoding: %d", (int)rt);
+    }
     return LP_OK;
 }
 
@@ -419,7 +436,13 @@ int lp_hw_decoder_send(LpVideoDecoder *d, const AVPacket *pkt)
     if (st != noErr || !sb) {
         return LP_ERR_CODEC;
     }
-    VTDecodeFrameFlags flags = 0;
+    /* kVTDecodeFrame_EnableAsynchronousDecompression: 让解码发生在 VideoToolbox
+     * 自己的线程上，DecodeFrame 立刻返回，视频线程再从 push_frame/receive 的
+     * 队列里按主时钟节奏取帧 —— 队列本来就是为这个设计的。
+     * 坦白说这条**没有**改善丢帧（实测开与不开都是 18.5–17.9 fps、丢 88 帧），
+     * 真正的原因在 wait_for_presentation 的阈值（见 native/src/core/video.c）；
+     * 保留它是为了不把解码串行到播放线程上。 */
+    VTDecodeFrameFlags flags = kVTDecodeFrame_EnableAsynchronousDecompression;
     VTDecodeInfoFlags info = 0;
     LpVideoDecoder *dec = d;
     st = VTDecompressionSessionDecodeFrameWithOutputHandler(
