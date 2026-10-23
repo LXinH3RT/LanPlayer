@@ -3,13 +3,21 @@
 # real program. ASCII only on purpose: Windows PowerShell 5.1 reads BOM-less files as
 # ANSI, which breaks any non-ASCII literal.
 param(
-    [string]$Exe = 'D:\repo\LanPlayer\app\build\windows\x64\runner\Release\lanplayer.exe',
-    [string]$StateDir = 'D:\repo\LanPlayer\build\state-lanscan',
-    [string]$Out = 'D:\repo\LanPlayer\build\shots\lan-scan.png',
-    [string]$LogDir = 'D:\repo\LanPlayer\build\shots\lan-log',
+    [string]$Exe = '',
+    [string]$StateDir = '',
+    [string]$Out = '',
+    [string]$LogDir = '',
     [int]$WaitMs = 9000
 )
 $ErrorActionPreference = 'Stop'
+
+# Defaults hang off the repository this script lives in, not off one machine's
+# directory layout.
+$Root = Split-Path -Parent $PSScriptRoot
+if (-not $Exe) { $Exe = Join-Path $Root 'app\build\windows\x64\runner\Release\lanplayer.exe' }
+if (-not $StateDir) { $StateDir = Join-Path $Root 'build\state-lanscan' }
+if (-not $Out) { $Out = Join-Path $Root 'build\shots\lan-scan.png' }
+if (-not $LogDir) { $LogDir = Join-Path $Root 'build\shots\lan-log' }
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 
