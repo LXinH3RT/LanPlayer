@@ -93,3 +93,22 @@
 `scripts/capture_screen.ps1 -Browse file:///<生成的目录>` 截。`tool/check_all.py` 的
 `check_release_policy()` 会拦住「只对某一台机器适用的笔记类文件」入库，但**拦不住上面这些
 真实值** —— 那些靠写的人自觉，PR 里看到就改。
+
+### 7.1 已经写进历史里的内容，改写历史也未必删干净
+
+这个仓库的历史在公开前被整体重写过一遍（`git filter-repo`：抹掉真实值、删掉不该入库的
+文件、重写 commit message），commit hash 全部换新，旧分支与 tag 都强推覆盖了。**但强推不
+等于删除**：GitHub 仍会把旧的 commit 对象留在服务器上，只要知道 SHA 就能通过 API 读到，
+例如 `GET /repos/{owner}/{repo}/commits/{sha}` 与 `GET /repos/{owner}/{repo}/contents/{path}?ref={sha}`
+在强推之后依旧返回旧内容。这些对象不在任何分支或 tag 上，正常 clone 拿不到，所以
+`git clone` 之后用 `git log --all` 检查是查不出来的。
+
+要做到「旧 SHA 也读不到」，只有两条路：
+
+1. 让 GitHub 清理（给 support 提工单，说明仓库曾经包含凭据、已经强推改写，请求对不可达对象做
+   一次 gc）——**公开之前必须做完这一步**，否则等于没改。
+2. 删掉仓库再新建一个同名仓库重新推。代价是 issue、star、release 全部重来（本仓库的
+   release 可以用 `scripts/release_all.ps1` 重发一遍）。
+
+凭据类的值（SMB 账号密码、token）还应当**直接当作已泄露处理**：换密码，不要指望历史改写
+能把已经推出去的东西收回来。
