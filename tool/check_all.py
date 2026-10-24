@@ -206,6 +206,7 @@ REQUIRED = [
     "docs/images/desktop-d3d11va.png",
     "docs/images/ipad-player.png",
     "docs/images/desktop-subtitle-fonts.jpg",
+    "docs/images/desktop-subtitle-sheet.jpg",
 ]
 
 def check_texture_colors() -> None:
@@ -1224,6 +1225,74 @@ def check_subtitle_fonts() -> None:
                  "fontFamily with a CJK fallback")
 
 
+def check_subtitle_sheet_selection() -> None:
+    """Guard that picking a subtitle actually shows as picked.
+
+    User report: tapping a sidecar subtitle loaded the file, but the sheet kept
+    showing the previous selection.  Three links had to hold for the row to
+    update, and each of them can regress on its own:
+
+    1. `lp_player_add_subtitle()` has to select the track it just loaded and
+       emit `LP_EVENT_TRACKS`; without the event the host never rebuilds.
+    2. The sheet must rebuild from the live controller instead of a
+       `_player.media` snapshot taken before it opened.
+    3. The sheet must list every track the core reports (embedded *and* already
+       loaded sidecar files) in the radio group, and only list not-yet-loaded
+       files in the section below.  Splitting by "embedded vs external" instead
+       drops auto-loaded sidecar tracks out of the radio group entirely.
+    """
+    player = ROOT / "native" / "src" / "core" / "player.c"
+    if player.exists():
+        pt = player.read_text(encoding="utf-8")
+        marker = pt.find("int32_t lp_player_add_subtitle")
+        if marker < 0:
+            problems.append("native/src/core/player.c lost "
+                            "lp_player_add_subtitle()")
+        else:
+            body = pt[marker:marker + 1600]
+            if "lp_subtitle_select(p, index)" not in body:
+                problems.append("lp_player_add_subtitle() no longer selects the "
+                                "track it just loaded; a host that adds a sidecar "
+                                "file would keep showing the old subtitle")
+            if "LP_EVENT_TRACKS" not in body:
+                problems.append("lp_player_add_subtitle() no longer emits "
+                                "LP_EVENT_TRACKS; the subtitle sheet would not "
+                                "see the new track until something else fires")
+
+    screen = ROOT / "app" / "lib" / "ui" / "player_screen.dart"
+    if not screen.exists():
+        problems.append("app/lib/ui/player_screen.dart missing")
+    else:
+        st = screen.read_text(encoding="utf-8")
+        if "AnimatedBuilder(\n              animation: _player," not in st:
+            problems.append("player_screen.dart's track sheet stopped listening "
+                            "to the controller; the selection would be frozen at "
+                            "whatever it was when the sheet opened")
+        if "pendingSubtitleFiles(" not in st:
+            problems.append("player_screen.dart no longer filters the sidecar "
+                            "section through pendingSubtitleFiles(); a file that "
+                            "is already a track would show up twice")
+        if "for (final s in info.subtitles)" not in st:
+            problems.append("player_screen.dart's radio group no longer walks "
+                            "every track the core reports; an auto-loaded sidecar "
+                            "subtitle would have no row at all")
+
+    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    if models.exists():
+        mt = models.read_text(encoding="utf-8")
+        for needle, why in (
+            ("int externalSubtitleIndexOf(", "look up a loaded sidecar by name"),
+            ("List<T> pendingSubtitleFiles<T>(", "list only not-yet-loaded files"),
+            ("int selectedSubtitleIndex(", "read the selected track"),
+        ):
+            if needle not in mt:
+                problems.append(f"data/models.dart lost {needle.rstrip('(')}; "
+                                f"the sheet needs it to {why}")
+
+    notes.append("subtitle sheet: adding a sidecar selects it and emits TRACKS, "
+                 "one row per track, no duplicate file rows")
+
+
 def check_android_playback() -> None:
     """Guard the six defects found while bringing up Android playback.
 
@@ -1799,6 +1868,7 @@ def main() -> int:
     check_powershell_scripts()
     check_track_selection()
     check_subtitle_fonts()
+    check_subtitle_sheet_selection()
     check_android_playback()
     check_playback_profiles()
     check_apple_wiring()

@@ -35,7 +35,12 @@ param(
     # Explicit click point in client coordinates. The ratio defaults below were
     # measured on one window size; pass these to hit another one precisely.
     [int]$BtnX = 0,
-    [int]$BtnY = 0
+    [int]$BtnY = 0,
+    # Optional second click in client coordinates, sent after the sheet is open.
+    # Used to prove that picking a row inside the sheet actually changes the
+    # selection (the shot then shows the new radio state).
+    [int]$PickX = 0,
+    [int]$PickY = 0
 )
 
 $ErrorActionPreference = 'Continue'
@@ -192,6 +197,14 @@ Start-Sleep -Milliseconds 700
 Click-Here $btnX $btnY
 Write-Output "clicked $Button at client ($btnX,$btnY)"
 Start-Sleep -Milliseconds 1800
+
+# Second click inside the open sheet, for the "picking a row really selects it"
+# scenario. The row under the pointer must be on screen; nothing scrolls here.
+if ($PickX -gt 0) {
+    Click-Here $PickX $PickY
+    Write-Output "picked row at client ($PickX,$PickY)"
+    Start-Sleep -Milliseconds 1200
+}
 
 # Settings is a long ListView and the language tiles live below the fold, so the
 # shot needs a scroll. Sent as wheel notches at the centre of the list.

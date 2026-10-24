@@ -689,7 +689,21 @@ int32_t lp_player_add_subtitle(LpPlayer *p, const char *url, const char *options
     if (!p || !url) {
         return LP_ERR_ARGUMENT;
     }
-    return lp_subtitle_add_file(p, url, options_json && *options_json ? options_json : p->options_json);
+    int32_t index = lp_subtitle_add_file(p, url, options_json && *options_json ? options_json : p->options_json);
+    if (index < 0) {
+        return index;
+    }
+    /* 选中刚加载的那份字幕，并把新的轨道表发出去。以前这里既不改 selected
+     * 也不发 LP_EVENT_TRACKS：宿主点了一份外挂字幕，内核确实把它读进来了
+     * （lp_subtitle_add_file 只在一条轨都没有时才顺手选中），但轨道表还是
+     * 旧的、选中项还停在内嵌那条，于是界面（用户报的原话）「点选之后确实
+     * 完成了文件的选择，但是却并没有显示选中这个文件」。 */
+    lp_subtitle_select(p, index);
+    char *info = lp_media_info_json(p);
+    if (info) {
+        emit_owned_json(p, LP_EVENT_TRACKS, 0, info);
+    }
+    return index;
 }
 
 int32_t lp_player_set_subtitle_delay(LpPlayer *p, int64_t delay_ms)
