@@ -443,7 +443,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_deskto
 "DART_DEFINES=TEFOUExBWUVSX1VJPWFkZC1zZXJ2ZXI="   # base64("LANPLAYER_UI=add-server")
 ```
 
-## 6. 桌面（CI / 调试用）
+## 6. 桌面（无窗口：调试与自动检查）
 ```bash
 cmake -B build -DLP_FFMPEG_ROOT=native/third_party/ffmpeg/desktop \
       -DLP_SMB2_ROOT=native/third_party/libsmb2
