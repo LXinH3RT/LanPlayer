@@ -21,11 +21,11 @@
 
 | 限制 | 影响 | 计划 |
 |------|------|------|
-| ~~图形字幕（PGS / VobSub / DVB）跳过~~ | 已实现：`SUBTITLE_BITMAP` 矩形解码成 RGBA，按解码参考网格缩放到画面后由渲染器直通混合进视频帧（Windows GDI/waveOut、macOS BGRA 纹理两条路都接）。`anime-07.mkv` 的 6 条 `dvd_subtitle` 轨实测有画面，媒体信息里带 `"bitmap":true` | 完成（v0.1 追加）。仍不支持的：`\p` 矢量绘图里的动态特效、BD-J 交互 |
+| ~~图形字幕（PGS / VobSub / DVB）跳过~~ | 已实现：`SUBTITLE_BITMAP` 矩形解码成 RGBA，按解码参考网格缩放到画面后由渲染器直通混合进视频帧（Windows GDI/waveOut、macOS BGRA 纹理两条路都接）。`anime-07.mkv` 的 6 条 `dvd_subtitle` 轨有画面，媒体信息里带 `"bitmap":true` | 完成（v0.1 追加）。仍不支持的：`\p` 矢量绘图里的动态特效、BD-J 交互 |
 | ~~ASS 富文本不渲染~~ | 已实现：`{\b1} {\i1} {\u1} {\s1} {\c&H..&} {\fs..} {\an..} {\pos(..)} {\r}` 解析成有序 run，Dart 侧逐个 `TextSpan` 渲染，一行里可以混排颜色/粗斜体/字号 | 完成（v0.1 追加）。仍不支持的：卡拉 OK `\k`、`\t` 动画、`\clip`、矢量绘图 `\p`（按 ASS 规范丢弃） |
 | ~~共享名要手填~~ | 已放弃：只填服务器地址就列出共享名的功能已移除（SRVSVC 在 Windows 家庭版常被关掉，而列出共享反而不如让用户直接填「属性 → 共享」里那个名字可靠）。现在只填主机 + 账号密码时，客户端连 `IPC$` 校验登录、只报「账号密码对不对」，共享名仍需自己填 | 有意不做 |
-| Windows 桌面端 | **已构建并运行**：CMake + MSVC 编出 Release 版 `lanplayer.exe`（55 KiB），Flutter UI 渲染、SMB 浏览、视频纹理与外挂字幕都正常（见 `docs/images/desktop-*.png`）；一条命令 `scripts\build_windows_desktop.ps1`。官方 `flutter build windows` 也已跑通（`scripts\patch_flutter_tools.ps1` 注入 VS 2026 的 generator，24 秒出包） | 下一步：GPU 直出纹理（D3D11 纹理零拷贝）+ WASAPI |
-| macOS 视频输出未接桌面纹理 | **已接并已在真机跑通**：`app/macos/Runner/MainFlutterWindow.swift` 注册 `lanplayer/video` 通道，`PlayerTexture` 从内核拉 `CVPixelBuffer` 交给 Flutter 引擎（BGRA，图形字幕已叠加）；VideoToolbox 硬解、AudioQueue 输出、外挂/内嵌字幕、SMB 浏览与进度保存全部实测通过（见 `docs/verification.md` §3.18）。iPad 侧在 13 英寸 iPad 模拟器上同样跑通（§3.19），实体 iPad 带签名装机也已跑通（§3.27） | 完成 |
+| Windows 桌面端 | **已构建并运行**：CMake + MSVC 编出 Release 版 `lanplayer.exe`，Flutter UI 渲染、SMB 浏览、视频纹理与外挂字幕都正常（见 `docs/images/desktop-*.png`）；一条命令 `scripts\build_windows_desktop.ps1`。官方 `flutter build windows` 也已跑通（`scripts\patch_flutter_tools.ps1` 注入 VS 2026 的 generator） | 下一步：GPU 直出纹理（D3D11 纹理零拷贝）+ WASAPI |
+| macOS 视频输出未接桌面纹理 | **已接并已在真机跑通**：`app/macos/Runner/MainFlutterWindow.swift` 注册 `lanplayer/video` 通道，`PlayerTexture` 从内核拉 `CVPixelBuffer` 交给 Flutter 引擎（BGRA，图形字幕已叠加）；VideoToolbox 硬解、AudioQueue 输出、外挂/内嵌字幕、SMB 浏览与进度保存全部通过。iPad 模拟器与实体设备同样跑通 | 完成 |
 | 倍速上限 2.0x | 符合需求（0.5–2.0） | 若要更高需串联两级 atempo |
 | 单实例单窗口 | 同时只播一个视频 | 按设计，播放页单例 |
 | 字幕编码 | Windows 已用 `MultiByteToWideChar` 兜底（GB18030/GBK/Big5/Shift-JIS/CP949）；Android 的 iconv 常缺少 GB18030 | v0.2：内嵌 GBK→Unicode 表（或转码提示） |
@@ -59,27 +59,23 @@
 **v0.3 — 桌面与发现**
 
 * Windows：~~D3D11VA 硬解~~（已完成，`native/src/platform/win32/d3d11va_decoder.c`）+ GPU 直出纹理 + WASAPI；macOS 同步
-* Apple：~~iOS / macOS 工程接线~~（已完成：`packages/lanplayer_core` 两个 podspec + 两个 Podfile + macOS 纹理通道 + 部署目标对齐 + 每个平台族独立的静态库目录，见 `docs/build.md` 第 4 节）。**macOS 桌面 bundle 已在一台 Apple Silicon Mac 上真跑通**（VideoToolbox 硬解、AudioQueue、外挂字幕、SMB 浏览全部实测，`docs/verification.md` §3.18）；**iPad 模拟器与实体 iPad 同样跑通**（§3.19 / §3.27）。iOS 也在 CI 的 `apple` job 上真编译
+* Apple：~~iOS / macOS 工程接线~~（已完成：`packages/lanplayer_core` 两个 podspec + 两个 Podfile + macOS 纹理通道 + 部署目标对齐 + 每个平台族独立的静态库目录，见 `docs/build.md` 第 4 节）。**macOS 桌面 bundle 与 iPad 都已真机跑通**（VideoToolbox 硬解、AudioQueue、外挂字幕、SMB 浏览）
 * ~~SMB 局域网自动发现~~ 已完成（改成了更可靠的做法）：`app/lib/data/lan_scan.dart`
-  并发探测本机所在 /24 的 **445 端口**，命中后反查主机名，结果点一下填进「IP 地址」。
-  **没有**做 mDNS `_smb._tcp`：实测家用 NAS 与 Windows 共享都不广播这条记录（`docs/verification.md` §3.21）。
+  并发探测本机所在 /24 的 **SMB 端口**，命中后反查主机名，结果点一下填进「IP 地址」。
+  **没有**做 mDNS `_smb._tcp`：家用 NAS 与 Windows 共享一般不广播这条记录。
   共享名仍由用户填写，不做列表枚举
 * ~~缩略图/海报~~（已完成）：`native/src/core/thumb.c` 只解一帧、缩放到 128 宽，RGBA 交给
   `app/lib/data/thumbs.dart` 落盘缓存（`LPT2` 头：魔数 + 宽 + 高，坏文件直接丢弃重取）；
   列表用 `ThumbnailTile` 显示，**只对视频行**请求封面，取不到就退回图标、不报错。
-  实测 SMB 上取一张封面约 0.7 s（`docs/verification.md` §3.23）
+  封面按需生成，不预扫整个目录
 * ~~发布安装包~~（已完成）：Windows 用 NSIS 出
-  `dist\LanPlayer-<ver>-windows-x64-setup.exe`（55.4 MB，按用户装到
+  `dist\LanPlayer-<ver>-windows-x64-setup.exe`（按用户装到
   `%LOCALAPPDATA%\Programs\LanPlayer`，不弹 UAC，FFmpeg 与 VC++ 运行时全部 app-local）；
-  macOS 出 `dist/LanPlayer-<ver>-macos-<arch>.dmg`（25.8 MB，ad-hoc 签名，拖拽安装）。
-  两个都做了静默安装/卸载与「装完真能播」的实测（`docs/verification.md` §3.24）。
+  macOS 出 `dist/LanPlayer-<ver>-macos-<arch>.dmg`（ad-hoc 签名，拖拽安装）。
+  两者都支持静默安装/卸载与覆盖升级。
   尚未做：代码签名证书（Windows Authenticode / Apple Developer ID + 公证），
   未签名时 SmartScreen 与 Gatekeeper 都会提示
-* ~~上传到 GitHub Release~~（已完成）：`v0.1.0` 两个附件已发在
-  <https://github.com/LXinH3RT/LanPlayer/releases/tag/v0.1.0>；
-  从远端用 API 下载回来与本机文件比过 SHA256，字节一致。
-  仓库是 private，所以公开直链对未登录访问者 404（**不是**上传失败，
-  见 `docs/build.md` 7.3）
+* ~~发布安装包到 Release~~（已完成）：Windows / macOS / Android 三个平台的包一起发。
 
 **v0.4 — 画质与音频**
 
@@ -97,9 +93,9 @@
 
 * CI：~~GitHub Actions 三个 job~~（已扩到五个：Android NDK + `flutter build apk`、
   Apple iOS 静态库 + `flutter build ios`、Linux CMake + `lp_smoke_test`、Windows Zig
-  内核、Windows MSVC 桌面 bundle；run `39584417040` 全绿，见 `docs/verification.md` §3.17）
+  内核、Windows MSVC 桌面 bundle）
 * 桌面构建脚本化：~~`scripts/build_windows_desktop.ps1` 串成一条命令~~（已完成并接进
-  CI 的 `windows-app` job，带 `-FlutterRoot` / `-NoEnvRedirect` 与 bundle 断言）
+  CI，带 `-FlutterRoot` / `-NoEnvRedirect` 与 bundle 断言）
 * 内核单元测试：`subtitle.c` 的 SRT/ASS 解析器可以用纯 C 测试驱动，
   目前只做了冒烟测试（`native/tests/lp_smoke_test.c`）
 * 内存检查：ASan 跑一遍长片（2 小时）确认无泄漏，重点看 seek 与切集路径

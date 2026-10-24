@@ -138,7 +138,7 @@ unzip -q ndk.zip -d ~ && export ANDROID_NDK_HOME=~/android-ndk-r26b
 
 装机：`adb install -r app/build/app/outputs/flutter-apk/app-release.apk`。MIUI 上第一次会报 `INSTALL_FAILED_USER_RESTRICTED`，是开发者选项里的「USB 安装」没开，不是包的问题。
 
-`/storage/emulated/0` 的媒体读权限由 app 自己申请：manifest 只声明 `READ_MEDIA_VIDEO`（不声明 audio，否则一次弹两个框），`MainActivity.kt` 的 `lanplayer/permissions` 通道负责 `requestPermissions`，`app/lib/ui/media_permission.dart` 在 `_openLocal()` 进目录前调用，返回值带 `partial` 以覆盖 Android 14 的「选择部分」。要点与实测见 `docs/verification.md` 3.34 (j)。
+`/storage/emulated/0` 的媒体读权限由 app 自己申请：manifest 只声明 `READ_MEDIA_VIDEO`（不声明 audio，否则一次弹两个框），`MainActivity.kt` 的 `lanplayer/permissions` 通道负责 `requestPermissions`，`app/lib/ui/media_permission.dart` 在 `_openLocal()` 进目录前调用，返回值带 `partial` 以覆盖 Android 14 的「选择部分」。
 
 看内核日志：`adb logcat -s LanPlayer`（`native/src/util/lp_log.c` 把模块名放进正文，tag 固定是 `LanPlayer`）。
 ## 4. iOS / iPadOS / macOS
@@ -189,15 +189,10 @@ flutter --version --no-version-check
 flutter precache --macos
 ```
 
-仓库克隆（GitHub 已关掉 HTTPS 密码认证，用 SSH）：
+克隆仓库后先给脚本加可执行位（仓库里 `.sh` 是 100644，不加会 `permission denied`）：
 
 ```bash
-ssh-keygen -t ed25519 -C "you@mac"
-# 把 ~/.ssh/id_ed25519.pub 贴到 GitHub → Settings → SSH and GPG keys
-ssh -T git@github.com           # 看到 "Hi <user>! You've successfully authenticated"
-git clone git@github.com:LXinH3RT/LanPlayer.git
-cd LanPlayer
-chmod +x scripts/*.sh           # 仓库里 .sh 是 100644，不 chmod 会 permission denied
+chmod +x scripts/*.sh
 ```
 
 首次 `pod install` 要拉 Specs 仓库（约 250 MB 到 `~/.cocoapods/repos/master`），慢的话先 `git clone --depth 1 https://github.com/CocoaPods/Specs.git ~/.cocoapods/repos/master`。
@@ -236,7 +231,7 @@ flutter build macos --release     # 或 flutter build ios --release --no-codesig
 ### 4.4 桌面纹理与音频
 `app/macos/Runner/MainFlutterWindow.swift` 注册 `lanplayer/video` 通道，`PlayerTexture` 从内核拉 `CVPixelBuffer` 交给引擎（BGRA，带图形字幕叠加）；iOS 侧是 `app/ios/Runner/AppDelegate.swift` 的同款实现。音频走 `native/src/platform/apple/coreaudio_sink.c`（AudioQueue，3×20 ms），视频解码走 `native/src/platform/apple/videotoolbox_decoder.c`。
 ### 4.5 权限
-`app/ios/Runner/Info.plist` 已含 `NSLocalNetworkUsageDescription`、`NSBonjourServices`(`_smb._tcp`)、`UIBackgroundModes=audio`、`UIFileSharingEnabled`、四个方向。`app/macos/Runner/{DebugProfile,Release}.entitlements` 已含 `com.apple.security.network.client`（**没有它会拦掉 445 出站**）与 `com.apple.security.files.user-selected.read-only`。
+`app/ios/Runner/Info.plist` 已含 `NSLocalNetworkUsageDescription`、`NSBonjourServices`(`_smb._tcp`)、`UIBackgroundModes=audio`、`UIFileSharingEnabled`、四个方向。`app/macos/Runner/{DebugProfile,Release}.entitlements` 已含 `com.apple.security.network.client`（**没有它会拦掉 SMB 端口出站**）与 `com.apple.security.files.user-selected.read-only`。
 ### 4.6 真机/模拟器
 ```bash
 flutter devices
@@ -283,7 +278,7 @@ TEAM_ID=<TEAM_ID> ./scripts/ios_device_install.sh
 SLICES=iphoneos ./scripts/build_apple_deps.sh
 ```
 
-没登录 Apple ID 的机器可以先用 `flutter build ios --release --no-codesign` 验证代码能否为 arm64 编过。三个必踩点（详见 `docs/verification.md` 3.27）：
+没登录 Apple ID 的机器可以先用 `flutter build ios --release --no-codesign` 验证代码能否为 arm64 编过。三个必踩点：
 
 ```bash
 security find-certificate -c "Apple Development" -p \
@@ -380,7 +375,7 @@ mount_smbfs "//share:pass@192.168.1.10/%E5%A4%9A%E5%AA%92%E4%BD%93%E6%96%87%E4%B
 | `xattr -dr com.apple.quarantine` 输出一屏 `Permission denied` | SDK 的 `bin/cache/artifacts` 与 `.git/objects` 里有只读/已签名文件 | **正常现象，忽略**。这条命令本来就可以跳过 |
 | `"flutter" 已损坏，无法打开` / Gatekeeper 拦截 | 手动解压的 SDK 带 quarantine 属性 | `xattr -dr com.apple.quarantine ~/development/flutter` |
 | `flutter pub get` 卡在 pub.dev | 没设 `PUB_HOSTED_URL` | `export PUB_HOSTED_URL=https://pub.flutter-io.cn`（写进 `~/.zshrc`） |
-| App 能开但连不上 SMB | macOS 沙盒拦 445 出站 | 确认 `Runner/*.entitlements` 里有 `com.apple.security.network.client` |
+| App 能开但连不上 SMB | macOS 沙盒拦 SMB 端口出站 | 确认 `Runner/*.entitlements` 里有 `com.apple.security.network.client` |
 
 `pod install` 顺序不要搞反：**先 `build_apple_deps.sh` 产出静态库，再 `flutter pub get`，最后 `flutter build macos`**。`flutter build` 内部会自动跑 `pod install`；单独手跑 `pod install` 必须先 `flutter pub get` 过，否则报 `Flutter/Flutter-generated.xcconfig must exist`。
 ## 5. Flutter Windows 桌面端
@@ -461,27 +456,6 @@ flutter build windows --release
 ```
 
 这条路径**只用于调试 UI 与插件桥**，内核仍是 `scripts/build_windows.ps1` 出的 `lanplayer.dll`（用 `-DeployTo` 拷到 exe 旁边）。VS 自带 `C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`，`build_windows_desktop.ps1` 用的就是它，A/B 两种都不缺 CMake。
-## 6.6 GitHub Actions 的额度：为什么 job 会「3 秒失败、日志 404」
-私有仓库的 Actions 有免费额度（Free 计划 **2000 分钟/月**），且**按平台乘系数扣**：Linux ×1、Windows ×2、macOS ×10。实测一次全量 CI ≈ **55 计费分钟**，其中 macOS 那个 job 一个人占 25 分钟；32 次提交累计 1746 计费分钟，30 多次推送就能烧光额度。
-
-额度用尽的表现很有欺骗性：`steps` 是空数组、`runner_name` 为空、`started_at` 与 `completed_at` 只差 3 秒、`ci_log.py` 拉日志报 `HTTP Error 404: The specified blob does not exist`。真正的错误藏在 **check-run annotations** 里：
-
-```
-The job was not started because recent account payments have failed
-or your spending limit needs to be increased.
-Please check the 'Billing & plans' section in your settings
-```
-
-排查命令（读 Windows 凭据管理器里的 token）：
-
-```powershell
-.tools\python\python.exe .tools\ci_probe.py            # 列最近 run 与失败 step
-.tools\python\python.exe .tools\ci_cost.py             # 按计费分钟统计各 job
-.tools\python\python.exe .tools\ci_usage.py            # 当月 usage（官方 billing/usage）
-.tools\python\python.exe .tools\ci_annot.py <run_id>   # 打印 check-run annotations
-```
-
-修复方向（前两条已落实）：① `.github/workflows/build.yml` 加 `paths-ignore`（`**.md`、`docs/**`、`LICENSE`、`.gitignore`、`.gitattributes`），改文档不再触发整套构建；② `concurrency: build-${{ github.ref }}` + `cancel-in-progress: true`，连推只留最后一次；③ 把仓库改 public（公共仓库免费），或去 *Settings → Billing* 提高 spending limit。额度用尽**不影响本地构建**：`build_windows.ps1`、`build_windows_desktop.ps1`、Mac 上的 `build_apple_deps.sh` + `flutter build macos` 全部照常，`tool/check_all.py` 也不依赖 CI。
 ## 7. 打安装包
 两个平台各一条命令，产物落在 `dist/`（已在 `.gitignore` 里，属发布资产而非源码）。
 ### 7.1 Windows（NSIS）
@@ -522,7 +496,7 @@ powershell -File scripts\verify_windows_upgrade.ps1     # 旧版运行中 -> 装
 powershell -File scripts\verify_windows_uninstall.ps1   # 应用运行中 -> 卸载
 ```
 
-两个都装到 `D:\lp-upgrade-test` / `D:\lp-uninstall-test` 这类 scratch 目录，跑完恢复注册表与快捷方式，不动真实安装；它们做**正负对照**：把宏拆掉的安装器（`.tools\tmp` 里由 `mknokill.py` / `mknoun.py` 生成）必须让脚本报失败，否则说明断言没在测东西（见 `verification.md` 3.33）。跑时注意两点：**先把安装包 `Copy-Item` 到 `%TEMP%` 再执行**（仓库里的文件带 Low 完整性标签，复制出去跑是为了不弄脏 `dist\`）；**别用 `Start-Process -PassThru` + `$p.HasExited` 轮询**（在本机会死锁），用同步的 `cmd /c "<setup>" /S`。PowerShell 与 Git Bash 都可以跑——**但只要你从 Git Bash 跑，就要确认 `where find` 命中 `C:\Windows\System32\find.exe`**，PATH 里 MSYS 的 GNU find 会把覆盖升级验成 FAILED（宏已改用 `findstr` 规避，详见 3.33）。
+两个都装到 `D:\lp-upgrade-test` / `D:\lp-uninstall-test` 这类 scratch 目录，跑完恢复注册表与快捷方式，不动真实安装；它们做**正负对照**：把宏拆掉的安装器（`.tools\tmp` 里由 `mknokill.py` / `mknoun.py` 生成）必须让脚本报失败，否则说明断言没在测东西。跑时注意两点：**先把安装包 `Copy-Item` 到 `%TEMP%` 再执行**（仓库里的文件带 Low 完整性标签，复制出去跑是为了不弄脏 `dist\`）；**别用 `Start-Process -PassThru` + `$p.HasExited` 轮询**（在本机会死锁），用同步的 `cmd /c "<setup>" /S`。PowerShell 与 Git Bash 都可以跑——**但只要你从 Git Bash 跑，就要确认 `where find` 命中 `C:\Windows\System32\find.exe`**，PATH 里 MSYS 的 GNU find 会把覆盖升级验成 FAILED（宏已改用 `findstr` 规避，详见 3.33）。
 ### 7.2 macOS（dmg）
 ```bash
 # 前置：scripts/build_apple_deps.sh 与 flutter build macos --release 都已完成
@@ -531,60 +505,21 @@ VERSION=0.1.0 ./scripts/build_macos_dmg.sh
 ```
 
 脚本流程：检查 `.app` → `ditto` 拷到暂存目录 → `ln -s /Applications` → `codesign --verify --deep --strict` → `hdiutil create -ov -format UDZO -imagekey zlib-level=9` → `hdiutil verify` → 打印 SHA256。两个坑（`check_installers()` 也盯着）：**必须用 `ditto` 而不是 `cp -R`**（`cp -R` 丢扩展属性与代码签名，`codesign --verify` 直接失败）；**不要在同目录建小写别名**（APFS 默认大小写不敏感，`LanPlayer.app` 与 `lanplayer.app` 是同一目录，随后的清理会把刚拷好的 app 删掉，dmg 只有 11 KB 且里面是空的就这原因）。签名默认 ad-hoc（`codesign -dv` 显示 `Signature=adhoc`），自用足够；**分发需要 Developer ID 证书 + 公证**，否则对方打开会被 Gatekeeper 拦（`已损坏，无法打开` / `无法验证开发者`）。
-### 7.3 发布到 GitHub Release
-两个包打出来后直接传到 Release，不需要 `gh` CLI，用 REST API 两步：先建 release（顺带建 tag），再逐个上传 asset。
+### 7.3 版本号来源与覆盖升级
+版本号只有一个来源：`app/pubspec.yaml` 的 `version:`。`scripts\build_windows_desktop.ps1` 用正则读出它写进 `generated_config.cmake` 的 `FLUTTER_VERSION`，`Runner.rc` 再把它变成 exe 的 `FileVersion`/`ProductVersion`；`build_windows_installer.ps1` 的 `-Version`、`build_macos_dmg.sh` 与 `build_android_apk.sh` 的 `VERSION` 留空时同样取它。所以升版本只改 pubspec，别去改脚本里的字面量。
 
-```bash
-# 1. 建 release + tag（tag 指向 main 当前 HEAD）
-#    Windows 自带 curl 需加 --ssl-no-revoke（见下）
-curl -sS -X POST \
-  -H "Authorization: token $GH_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  -H "Content-Type: application/json" \
-  https://api.github.com/repos/LXinH3RT/LanPlayer/releases \
-  -d '{"tag_name":"v0.1.0","target_commitish":"main","name":"LanPlayer 0.1.0","body":"...","draft":false,"prerelease":false}'
+Windows 包必须先 `flutter build windows --release`（或 `scripts\build_windows_desktop.ps1`）把产物放到 `app/build/windows/x64/runner/Release/`——**安装脚本只认这个路径**，再用 `build_windows.ps1 -DeployTo` 把新内核 DLL 覆盖进去，否则打进去的仍是旧 DLL。macOS 先 `flutter build macos --release` 再 `./scripts/build_macos_dmg.sh`；Android 先 `./scripts/build_android_deps.sh arm64-v8a` 再 `./scripts/build_android_apk.sh`。三个打包脚本都要能在 `PATH` 里找到 `flutter`，找不到时 dmg 会安静地把上一次的 `.app` 打进去。
 
-# 2. 传 asset（注意是 uploads.github.com，不是 api.github.com）
-curl -sS -X POST \
-  -H "Authorization: token $GH_TOKEN" \
-  -H "Content-Type: application/octet-stream" \
-  --data-binary @dist/LanPlayer-0.1.0-windows-x64-setup.exe \
-  "https://uploads.github.com/repos/LXinH3RT/LanPlayer/releases/<release_id>/assets?name=LanPlayer-0.1.0-windows-x64-setup.exe"
-```
+**覆盖升级**：装新版不用先手动卸载。`scripts/windows/installer.nsi` 的 `StopRunningApp` 宏在安装段与卸载段各调一次：先 `taskkill`（不带 `/F`，等于发 WM_CLOSE），轮询 5 秒不退才强杀。判断「在不在跑」必须用 `tasklist | findstr`，**不能用 `find`** —— 某些 shell 的 `PATH` 里 GNU find 排在 System32 前面，它不认 `/FI`、`/I`，退出码非 0，宏会把「还在跑」误判成「没在跑」，覆盖升级就退化成「文件被占用」。回归用 `scripts\verify_windows_upgrade.ps1` / `verify_windows_uninstall.ps1`，两个脚本都装到临时目录、跑完恢复注册表与快捷方式，不动真实安装。
 
-两个必须记住的坑：**必须加 `--ssl-no-revoke`**——Windows 自带 curl 走 schannel，检查吊销列表时报 `CRYPT_E_NO_REVOCATION_CHECK (0x80092012)`；**上传目标主机是 `uploads.github.com`**——用 `api.github.com` 传会 404。验证：用 `Accept: application/octet-stream` 下载 `https://api.github.com/repos/.../releases/assets/<asset_id>`，与本机文件比 SHA256。仓库是 private 时，`https://github.com/.../releases/download/v0.1.0/...` 这类公开直链对未登录访问者返回 404——这是私有库的正常行为，不是上传失败；让协作者登录后从 Release 页面下载，或把仓库改成 public（顺带解决 6.6 的额度问题）。
-#### 7.3.1 发布记录（v0.1.1 – v0.1.3）
-两个包的实测大小：Windows 10/11 x64 的 `LanPlayer-0.1.1-windows-x64-setup.exe` 55.4 MB、`LanPlayer-0.1.2-windows-x64-setup.exe` 55.4 MB；macOS 12+ (Apple Silicon) 的 `LanPlayer-0.1.1-macos-arm64.dmg` 25.7 MB、`LanPlayer-0.1.2-macos-arm64.dmg` 25.9 MB。
-
-**版本号只有一个来源**：`app/pubspec.yaml` 的 `version:`。`scripts\build_windows_desktop.ps1` 用正则读出它写进 `generated_config.cmake` 的 `FLUTTER_VERSION`，`Runner.rc` 再把它变成 exe 的 `FileVersion`/`ProductVersion`——所以改版本只改 pubspec，别去改脚本里的字面量。**从 0.1.3 起，三种安装包也自己读 pubspec**：`build_windows_installer.ps1` 的 `-Version`、`build_macos_dmg.sh` 与 `build_android_apk.sh` 的 `VERSION` 都改成「留空就取 pubspec」，只有想故意打个别的版本号时才去覆盖。`verify_windows_upgrade.ps1` 也跟着从 pubspec 取新版本、从 `dist\` 里挑版本号最大的那个当旧包，所以升完版本直接跑回归即可，不用再手工传路径。
-
-Windows 包要先用 `flutter build windows --release`（或 `scripts\build_windows_desktop.ps1`）把产物放到 `app/build/windows/x64/runner/Release/`——**安装脚本只认这个路径**，再 `build_windows.ps1 -DeployTo` 把新内核 DLL 覆盖进去，不能漏，否则打的还是旧 DLL。`build_windows_desktop.ps1` 现在自己就把编好的 bundle 复制到那个目录（第 9 步），因为它实际编译输出在 `app/windows/out/build/...`。macOS 侧先 `flutter build macos --release`，再 `./scripts/build_macos_dmg.sh`（版本自己从 pubspec 读）。Android 同理：先在 Mac 上 `./scripts/build_android_deps.sh arm64-v8a`，再 `./scripts/build_android_apk.sh`。**Mac 上 Flutter 不在 `/opt/homebrew/bin`**，脚本里要能找到 `flutter`，否则 `build_macos_dmg.sh` 会安静地把上一次的 `app` 打进 dmg——本次就踩了：第一次 dmg 的 sha256 是旧的 app 打出来的，补 `export PATH="$HOME/development/flutter/bin:$PATH"` 重打才是新的。
-
-**覆盖升级**：装新版不用先手动卸载。`installer.nsi` 的 `StopRunningApp` 宏在安装段与卸载段各调一次，先 `taskkill`（不带 `/F`，等于发 WM_CLOSE）再轮询，5 秒不退才强杀；判「在不在跑」用的是 `tasklist | findstr`，**必须是 `findstr` 不能是 `find`** —— Git Bash 的 PATH 里 MSYS 的 GNU find 排在 System32 前面，它不认 `/FI`/`/I`，退出码非 0，宏会把「还在跑」误判成「没在跑」，覆盖升级就退化成「文件被占用」。回归用 `scripts\verify_windows_upgrade.ps1` / `verify_windows_uninstall.ps1`，两个脚本都带正负对照，PowerShell 与 Git Bash 里都能跑（详见 verification.md 3.33）。
-
-v0.1.3 的发布结果：Release id `422432409`，tag `v0.1.3`；三个 asset —— Windows `670874361`（58133401 字节，sha256 `C51384A6629FFA98AE6418C731C6C987911ACF56C04F62680B43279359A15BD6`）、macOS `670875553`（27213687 字节，sha256 `4E6A7DFD45B15EEDF4E354848A0455D30B37214E5AA8DCC46EB193EB9D8F2D50`）、Android `670875692`（34735077 字节，sha256 `BF9923256C67E618727EF5F83438239767572857F66FE23ED9B07C494BE5B570`）。`release_all.ps1 -Verify` 把三个包都下载回来重算过 SHA256，与本地一致。这是第一个带 Android 包的版本。
-
-v0.1.2 的发布结果（照上面两步做的）：Release id `421052828`，tag `v0.1.2` → `995da50`；asset id Windows `668400068`（58132233 字节，sha256 `B6940F682581CB4225A453F04ED8EB48747EC181A96B9E934EE99BC2D844223F`）、macOS `666686825`（27210696 字节，sha256 `8F775B39BF8979FA76D64FF477FC7E9DF38F5AD73248D0716EB1A35579D05166`）。两个包都下载回来重算过 SHA256，与本地一致。
-
-Windows 那个包是**重传过一回**的：第一版（asset `666686044`，sha256 `50C71364…21E9F7`）里的 `StopRunningApp` 宏还在用 `find /I`，从 Git Bash 调用会解析到 GNU find、把「旧版在跑」误判成「没在跑」，覆盖升级失效。改成 `findstr` 后重打包，先 `DELETE /releases/assets/666686044` 再重新上传（GitHub 不允许同名 asset 覆盖，必须删了再传）。教训：**安装器的行为可能依赖调用者的 PATH**，所以回归必须至少在一个真实会遇到的 shell 里跑过 —— 只在宿主 PowerShell 里验是漏的。macOS 的 dmg 不受影响，没有重传。
-
-踩到的一个坑：用 Python 读 API 返回的 JSON 时写了 `json.load(open(...))`，Windows 上默认按 GBK 解码，中文 body 立刻 `UnicodeDecodeError: 'gbk' codec can't decode byte 0xad`。改成 `io.open(path, encoding='utf-8')`，或者干脆只让 `.ps1` 里用 `--ssl-no-revoke` 的 curl 落盘再读。
-
-`release_all.ps1` 自己在 Windows PowerShell 5.1 上踩过两个坑，写在这里免得下次换个脚本又踩一遍：
-
-- **`& $array` 不会展开参数**。把 `curl.exe` 和参数攒进一个数组再 `& $args_array`，5.1 会把这个数组拼成一个字符串当命令名，报「无法将 “curl.exe -sS ...” 识别为 cmdlet」。正确写法是命令与参数分开：`& $curl @curlArgs`。
-- **`ConvertTo-Json` 会把 `Get-Content -Raw` 的返回值包一层**。`$body = Get-Content -Path x.md -Raw -Encoding UTF8` 之后 `ConvertTo-Json` 输出的是 `"body": {"value": "...", "ReadCount": 1, ...}`，GitHub 直接回 `Invalid request. For 'properties/body'`。加一个 `[string]` 强制转换就好：`[string]$body = Get-Content ... -Raw`。
-
-还有一个连带教训：API 报错时 `curl` 的退出码仍是 0，所以「创建 release 成功没有」不能靠 `$LASTEXITCODE` 判断，要看返回体里有没有 `id`。脚本现在拿不到 `id` 就带着 GitHub 的原文直接退出。
-
-静默安装到自定义目录时 `/D=` 必须是**最后一个参数**且不能带引号；PowerShell 里更稳的是 `Start-Process -ArgumentList '/S','/D=D:\path' -Wait`。
+静默安装到自定义目录时 `/D=` 必须是**最后一个参数**且不能带引号；PowerShell 里更稳的写法是 `Start-Process -ArgumentList '/S','/D=D:\path' -Wait`。
 ### 7.4 构建后自检
 ```bash
 python tool/check_all.py            # 一把梭：C 语法/符号、Dart 解析、原生冒烟、Dart 测试
 cd app && flutter analyze && flutter test # 有 Flutter SDK 时的完整检查
 ```
 
-`tool/check_all.py` 会自动跳过缺失的工具链（没有 Flutter 就不做 UI 检查），并顺带跑一遍 Windows 上已编译的 `build\win-x64\lp_smoke_test.exe`。实测输出见 [verification.md](verification.md)。
+`tool/check_all.py` 会自动跳过缺失的工具链（没有 Flutter 就不做 UI 检查），并顺带跑一遍 Windows 上已编译的 `build\win-x64\lp_smoke_test.exe`。
 
 **Windows 上 `flutter analyze` / `flutter test` 要包一层**：`%APPDATA%` 与 `%LOCALAPPDATA%` 不可写时 flutter_tools 会失败在
 

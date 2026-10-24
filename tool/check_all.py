@@ -251,7 +251,7 @@ def check_texture_colors() -> None:
     media = ROOT / "scripts" / "make_test_media.ps1"
     if media.exists() and "duration=60" not in media.read_text(encoding="utf-8"):
         problems.append("colour probe clip is short again; capturing it becomes a race "
-                        "against playback ending (see docs/verification.md 3.14)")
+                        "against playback ending")
     notes.append("texture colour order: R<->B swapped once, alpha forced opaque")
 
 def check_required_files() -> None:
@@ -390,7 +390,7 @@ def check_thumbnails() -> None:
         problems.append("the browser list must only request covers for videos")
 
     # Regression guards for the "opening a folder full of .flv hangs" bug.
-    # Each of these was a real defect (see docs/verification.md 3.28):
+    # Each of these was a real defect:
     #   * lp_io_read spinning at the cache boundary,
     #   * avio_read_cb handing 0 back to FFmpeg instead of AVERROR_EOF,
     #   * av_seek_frame given microseconds instead of stream ticks,
@@ -702,6 +702,32 @@ def check_release_policy() -> None:
                                 f"exclude file says it must not be; a "
                                 f"checkout-only file reached the repository")
 
+    # Published prose is read by strangers: it may describe how to build and
+    # use the product, not how this particular checkout was published. Token
+    # endpoints and upload hostnames in a Markdown file are a copy-paste
+    # invitation to attach credentials to them, and a reference to a note
+    # that is not in the repository is a dead link for everyone else.
+    forbidden_doc_strings = (
+        "api.github.com",
+        "uploads.github.com",
+        "Authorization: token",
+        "ghp_",
+        "docs/verification.md",
+    )
+    for rel in [p for p in tracked if p.endswith(".md")]:
+        path = ROOT / rel
+        if not path.is_file():
+            continue
+        try:
+            body = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for needle in forbidden_doc_strings:
+            if needle in body:
+                problems.append(f"{rel} mentions {needle!r}; published prose "
+                                f"must not carry publishing endpoints or point "
+                                f"at notes that are not in the repository")
+
     notes.append("release: one release uploads Windows + macOS + Android, "
                  "checkout-only notes stay out of the repository")
 
@@ -914,7 +940,7 @@ def check_player_layout() -> None:
     top = text[start:end if end > 0 else start + 4000]
     if "mainAxisSize: MainAxisSize.min" not in top:
         problems.append("_topBar() lost mainAxisSize.min; the back button will "
-                        "return to the vertical centre (see docs/verification.md)")
+                        "return to the vertical centre")
     if "_backKey" not in top:
         problems.append("_topBar() lost the _backKey hook used by the layout probe")
 

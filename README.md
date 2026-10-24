@@ -68,7 +68,7 @@ New-SmbShare -Name Movies -Path D:\Movies -ReadAccess lanplay
 
 **2. 添加服务器**：`添加 → 填地址、共享名、用户名、密码 → 连接并浏览`。
 共享名就是 Windows「属性 → 共享」里填的那个名字；客户端不会去枚举服务器的共享列表。
-不知道 IP 时点「扫描局域网」——并发探测本机所在网段（默认 `/24`）的 445 端口，列出开放的主机，
+不知道 IP 时点「扫描局域网」——并发探测本机所在网段（默认 `/24`）的 SMB 端口，列出开放的主机，
 点一行就自动填进地址框（只填地址，共享名仍要自己填）。
 
 **3. 播放**：点视频即播。字幕默认自动加载同目录同名文件（`S01E01.zh-CN.srt` 之类），
@@ -151,16 +151,12 @@ macOS 删 app 就结束，状态在 `~/Library/Containers/dev.lanplayer.lanplaye
 
 ### 已发布的安装包
 
-最新版 **v0.1.2**：<https://github.com/LXinH3RT/LanPlayer/releases>
+最新版 **v0.1.3**：<https://github.com/LXinH3RT/LanPlayer/releases>
 更早的 v0.1.1 修掉了「打开含视频的文件夹卡死」，v0.1.0 有卡死缺陷、**不要再装**。
-
-> 仓库是 private，公开直链对未登录访问者返回 404。要么登录 GitHub 后从 Release 页面点附件，
-> 要么把仓库改成 public。上传方式与两个坑（`--ssl-no-revoke`、`uploads.github.com`）见
-> [docs/build.md](docs/build.md) 7.3。
 
 ## 已验证
 
-实测输出逐条记在 [docs/verification.md](docs/verification.md)，这里只列结论：
+结论如下：
 
 |项|结论|
 |-|-|
@@ -168,16 +164,16 @@ macOS 删 app 就结束，状态在 `~/Library/Containers/dev.lanplayer.lanplaye
 |视频 + 音频播放|✅ h264 软解、AAC→float 立体声、位置推进正确|
 |硬解|✅ Windows D3D11VA（与软件参考均值差 ≤0.2 级）、macOS/iPad VideoToolbox、Android MediaCodec|
 |字幕|✅ 内嵌 + 外挂 SRT/ASS/VTT + 非 UTF-8 按代码页回退 + ASS 富文本 + PGS/VobSub 图形字幕|
-|SMB 浏览 / 凭据校验 / 局域网扫描|✅ 只读、共享名自填、不做枚举；扫描并发探 445|
+|SMB 浏览 / 凭据校验 / 局域网扫描|✅ 只读、共享名自填、不做枚举；扫描并发探 SMB 端口|
 |列表封面缩略图|✅ 只解第一帧、`LPT2` 头落盘缓存、只对视频行请求|
-|含 FLV 的文件夹不再卡死|✅ 修掉内核三处缺陷 + 一处并发过载：16 个 flv 从「单文件无限挂起」到 16/16 成功、总 2.86 s|
+|含 FLV 的文件夹不再卡死|✅ 修掉内核三处缺陷 + 一处并发过载|
 |浏览列表只留媒体|✅ `.txt`/`.docx`/`.DS_Store` 等不显示，字幕归到对应视频|
 |多音轨 / 多字幕默认轨|✅ 按首选/次选语言挑，音轨与字幕面板拆开，不再默认英语评论轨|
 |音量|✅ 0–200% 滑杆，内核 `lp_ring_set_gain` 直接作用在环形缓冲上|
 |安装包覆盖升级|✅ 旧版在跑也能直接装新版，正负对照均有脚本|
 |Dart 测试|✅ `flutter test` 95 个用例全过；`flutter analyze` 无 issue|
 |Apple 端|✅ macOS 与实体 iPad 均真机跑通（VideoToolbox + AudioQueue + 字幕 + 进度续播）|
-|Android 端|✅ arm64 真机跑通（MediaCodec 硬解 + AAudio + 多音轨选轨 + 自动连播 + 运行时媒体权限）；首次出包后修掉十个缺陷，前九个只在真机复现|
+|Android 端|✅ arm64 真机跑通（MediaCodec 硬解 + AAudio + 多音轨选轨 + 自动连播 + 运行时媒体权限）|
 
 **已知限制**（见 [docs/roadmap.md](docs/roadmap.md)）：ASS 的 `\t` 动画、`\clip`、矢量绘图 `\p`、
 卡拉 OK `\k` 不渲染（其余行内标签都支持）；不枚举服务器共享名，共享名需手填；
@@ -185,19 +181,15 @@ Windows 桌面端硬解已接 D3D11VA，仍缺 GPU 直出纹理与 WASAPI。
 
 ## 开发约定
 
-- 改完代码自动推送：`git commit` 后的钩子会 `git push`，钩子失效时用
-  `scripts\sync_github.ps1 -Message "..."` 兜底，新克隆跑一次 `scripts\install_git_hooks.ps1`。
 - `.ps1` 要么纯 ASCII，要么带 UTF-8 BOM（PowerShell 5.1 会按 cp936 解码无 BOM 脚本，
   偶数字节的中文注释会把下一行吞进注释里，静默不报错）。`tool/check_all.py` 有护栏。
 - C 源码 UTF-8 无 BOM、以换行结尾。
 - 生成物一律不入库：`build/`、`dist/`、`.tools/`、`app/build/`、`app/windows/out/`、`native/third_party/`。
-- 发布一个新版本时，Windows / macOS / Android 三个包必须同时上传到同一个 GitHub Release，
-  缺任何一个都不算发完。用 `scripts/release_all.ps1` 一条命令完成上传与校验。
 - 文档、脚本、注释、commit message、截图中**不写真实环境**：IP 用 `192.168.1.10` 这类示例
   地址，账号用 `share`，设备只写平台（`Mac` / `iPad` / `Android 手机`），不写具体型号、系统
   版本、UDID、开发者团队 ID 或本机用户名路径；素材与截图用 `scripts/make_doc_media.ps1`
-  生成的合成文件重拍，不要贴真实影音画面。理由是这个仓库准备公开，而网络拓扑、设备清单、
-  片单本身就能定位到具体的人和机器。详见 [docs/security.md](docs/security.md)。
+  生成的合成文件重拍，不要贴真实影音画面 —— 网络拓扑、设备清单、片单本身就能定位到具体的
+  人和机器。详见 [docs/security.md](docs/security.md)。
 
 自检一次性跑完：`.tools\python\python.exe tool\check_all.py`（静态检查、dart 语法与编译、
 dart 用例、安装器与发布断言都在里面）。
@@ -222,7 +214,7 @@ LanPlayer/
 │  └─ tests/                无依赖测试可执行文件
 ├─ scripts/                 各平台构建、截图、安装包与升级/卸载对照脚本
 ├─ tool/                    静态检查、依赖下载、测试素材生成
-└─ docs/                    架构、构建、协议、安全、路线图、验证记录
+└─ docs/                    架构、构建、协议、安全、路线图
 ```
 
 ## 文档
@@ -232,7 +224,6 @@ LanPlayer/
 * [媒体源与协议扩展](docs/media-source.md)
 * [安全边界](docs/security.md)
 * [路线图与已知限制](docs/roadmap.md)
-* [验证记录](docs/verification.md)
 
 ## 许可
 

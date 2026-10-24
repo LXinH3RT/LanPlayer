@@ -2,7 +2,7 @@
 #
 # Why a dedicated script: Flutter offers no CLI way to inject pointer events, and
 # the player page cannot be proven by screen capture (once the external video
-# texture is registered, CopyFromScreen reads black -- see docs/verification.md).
+# texture is registered, CopyFromScreen reads black).
 # So the app prints `LanPlayer controls: shown|hidden` whenever the transport UI
 # really appears or disappears, and this script moves the pointer over the window
 # and asserts on those paired lines in stdout.

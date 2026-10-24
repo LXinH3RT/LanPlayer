@@ -112,7 +112,7 @@ Swift 切到主线程 `textureFrameAvailable`。
 **桌面/CI**：`platform/stub` 提供空渲染 + 空音频设备，但音频设备线程真实按 10 ms 拉取，
 所以主时钟、同步、字幕时序都能在没有设备的机器上跑通（`native/tests/lp_smoke_test.c`）。
 Windows 上线程原语由 `platform/desktop/win32_pthread.h` 提供（SRWLOCK/CONDITION_VARIABLE），
-因此同一份内核源码在 Windows x64 实测可编译、可播放（见 docs/build.md §0.5）。
+因此同一份内核源码在 Windows x64 可编译、可播放（见 docs/build.md §0.5）。
 
 ## 8. 字幕
 

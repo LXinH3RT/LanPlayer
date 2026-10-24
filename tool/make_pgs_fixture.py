@@ -9,7 +9,7 @@ Usage:
     python tool/make_pgs_fixture.py <out.sup>
 
 The output is a valid `.sup` stream: `ffprobe` should report one
-hdmv_pgs_subtitle stream.  See `docs/verification.md` for how it is used.
+hdmv_pgs_subtitle stream.
 """
 
 import struct
