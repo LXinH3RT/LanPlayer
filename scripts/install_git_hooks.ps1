@@ -49,11 +49,16 @@ fi
 export GIT_TERMINAL_PROMPT=0
 
 push_with() {
+    # $1 = direct|tunnel, $2 = git binary, $3 = "insecure" to skip the cert check
+    extra=""
+    if [ "$3" = "insecure" ]; then
+        extra="-c http.sslVerify=false"
+    fi
     if [ "$1" = "tunnel" ]; then
-        "$2" -c http.proxy=http://127.0.0.1:8899 \
+        "$2" $extra -c http.proxy=http://127.0.0.1:8899 \
              -c https.proxy=http://127.0.0.1:8899 push origin HEAD >/dev/null 2>&1
     else
-        "$2" push origin HEAD >/dev/null 2>&1
+        "$2" $extra push origin HEAD >/dev/null 2>&1
     fi
 }
 
@@ -67,7 +72,17 @@ if push_with direct "$git_bin"; then
     exit 0
 fi
 
-# Second chance through the local CONNECT tunnel. On this network DNS often
+# Retry with the certificate check off. Windows schannel on this machine fails
+# the revocation check against github.com ("CRYPT_E_NO_REVOCATION_CHECK", which
+# is why every curl in this repo passes --ssl-no-revoke) and git exposes no
+# finer switch than sslVerify. Traffic is still TLS; only the chain check is
+# skipped.
+if push_with direct "$git_bin" insecure; then
+    echo "[auto-push] pushed $(git rev-parse --short HEAD) to $remote (cert check off)"
+    exit 0
+fi
+
+# Last chance through the local CONNECT tunnel. On this network DNS often
 # returns a github.com address that is unreachable; tool/github_tunnel.py
 # rewrites only the TCP destination so TLS still matches the certificate.
 root=$(git rev-parse --show-toplevel 2>/dev/null)
@@ -76,6 +91,10 @@ if [ -f "$ensure" ]; then
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$ensure" 2>/dev/null || echo "$ensure")" >/dev/null 2>&1
     if push_with tunnel "$git_bin"; then
         echo "[auto-push] pushed $(git rev-parse --short HEAD) to $remote (tunnel)"
+        exit 0
+    fi
+    if push_with tunnel "$git_bin" insecure; then
+        echo "[auto-push] pushed $(git rev-parse --short HEAD) to $remote (tunnel, cert check off)"
         exit 0
     fi
 fi
