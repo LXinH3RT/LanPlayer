@@ -4,7 +4,17 @@ param(
 )
 
 $Root = Split-Path -Parent $PSScriptRoot
-if (-not $Setup) { $Setup = Join-Path $Root 'dist\LanPlayer-0.1.2-windows-x64-setup.exe' }
+
+# The package under test is the version app/pubspec.yaml declares, so this
+# script cannot end up testing an installer two releases old.
+if (-not $Setup) {
+    $line = Select-String -Path (Join-Path $Root 'app\pubspec.yaml') -Pattern '^\s*version:\s*([0-9]+\.[0-9]+\.[0-9]+)' | Select-Object -First 1
+    if (-not $line) {
+        Write-Host 'error: cannot read the version from app/pubspec.yaml' -ForegroundColor Red
+        exit 1
+    }
+    $Setup = Join-Path $Root ("dist\LanPlayer-$($line.Matches[0].Groups[1].Value)-windows-x64-setup.exe")
+}
 if (-not $Scratch) { $Scratch = Join-Path ([System.IO.Path]::GetTempPath()) 'lp-uninstall-test' }
 
 # Verify that the uninstaller asks a running copy to quit. Without that, Delete

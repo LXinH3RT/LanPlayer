@@ -659,6 +659,22 @@ def check_release_policy() -> None:
             problems.append("scripts/build_android_apk.sh no longer reads the "
                             "version from app/pubspec.yaml")
 
+    # The other two builders used to carry a hard-coded default version, which
+    # meant a release could publish 0.1.2 file names built from 0.1.3 sources
+    # after somebody forgot the flag. They must read pubspec too.
+    for builder, needle in (
+        ("build_macos_dmg.sh", "pubspec.yaml"),
+        ("build_windows_installer.ps1", "pubspec.yaml"),
+    ):
+        path = ROOT / "scripts" / builder
+        if not path.is_file():
+            continue
+        body = path.read_text(encoding="utf-8", errors="replace")
+        if needle not in body:
+            problems.append(f"scripts/{builder} no longer reads the version "
+                            f"from app/pubspec.yaml; its packages would be "
+                            f"named with a stale version")
+
     # Checkout-only rules live in .git/info/exclude rather than a tracked
     # ignore list: naming such files in a published file would announce what
     # this machine runs, which is exactly what we are trying not to publish.

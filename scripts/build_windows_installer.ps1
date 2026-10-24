@@ -17,7 +17,7 @@
 # the parser. Keep every comment and string here in plain ASCII.
 [CmdletBinding()]
 param(
-    [string]$Version = '0.1.2',
+    [string]$Version = '',
     [string]$Release = '',
     [string]$OutDir = '',
     [switch]$KeepStage,
@@ -27,6 +27,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $root
+
+# The version comes from app/pubspec.yaml unless -Version says otherwise, so
+# the installer name cannot drift from the tag and from the other two packages.
+if (-not $Version) {
+    $pubspec = Join-Path $root 'app\pubspec.yaml'
+    $line = Select-String -Path $pubspec -Pattern '^\s*version:\s*([0-9]+\.[0-9]+\.[0-9]+)' | Select-Object -First 1
+    if (-not $line) { Write-Host 'error: cannot read the version from app/pubspec.yaml' -ForegroundColor Red; exit 1 }
+    $Version = $line.Matches[0].Groups[1].Value
+}
 
 # makensis writes temp files under %TEMP%, which the sandbox blocks by default.
 $tmp = Join-Path $root '.tools\tmp'
