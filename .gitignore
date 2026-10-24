@@ -55,6 +55,11 @@ app/android/app/build/
 *.iml
 .DS_Store
 
+# Machine-local ignore rules live in .git/info/exclude instead of here: they
+# name files that only make sense on one checkout, and spelling them out in a
+# tracked file publishes the list to everyone. Keep this file for patterns
+# that apply to anybody who clones the repository.
+
 # Python bytecode (tool/*.py gets imported by the check scripts)
 __pycache__/
 *.pyc
