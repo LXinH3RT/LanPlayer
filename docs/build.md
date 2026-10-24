@@ -1,5 +1,6 @@
 # 构建指南
 本仓库只含源码：FFmpeg 与 libsmb2 要自己编译，产物放进 `native/third_party/`（已被 `.gitignore` 忽略）。顺序：装工具链（0.5 Windows / 4.1 Apple）→ 编依赖与内核（1、2 节，或用 `scripts/` 一键脚本）→ 编 app 与安装包（3、4、5、7 节）。报错先查 4.7 / 4.8 / 第 8 节。
+
 ## 0. 目录约定
 ```
 native/third_party/
@@ -17,6 +18,7 @@ native/third_party/
 ```
 
 `<family>` = `macosx` / `iphoneos` / `iphonesimulator`。每个平台族写自己的目录，podspec 用 `$(PLATFORM_NAME)` 选目录，所以 macOS 与 iOS 的库能共存、交错构建不互相覆盖（`apple/lib` 只是给老路径兜底的扁平副本）。整个 `native/third_party/` 是生成物（几百 MB），不进 git，删了重跑 `scripts\build_windows.ps1` 或 `SLICES=macosx ./scripts/build_apple_deps.sh`；`native/CMakeLists.txt` 用 `LP_FFMPEG_ROOT` / `LP_SMB2_ROOT` 找它们（Android 由 Gradle 传参、Apple 由 Xcode 传参）。
+
 ## 0.5 Windows（Zig，一条命令）
 不需要 Visual Studio 或 MSYS2：`tool/fetch_deps.py` 把固定版本的工具与依赖下到 `.tools/`，`scripts/build_windows.ps1` 负责编译、链接并复制运行时 DLL。
 
@@ -85,6 +87,7 @@ done
 ```
 
 `--enable-mediacodec` 只影响 FFmpeg 自带的 hwaccel；本项目的 MediaCodec 零拷贝路径是自己实现的，这个开关属「备用」，开着无害。
+
 ### iOS / macOS
 ```bash
 ./configure --prefix=/tmp/ff/apple --enable-cross-compile \
@@ -95,6 +98,7 @@ done
 ```
 
 要为 `iphoneos`（arm64）、`iphonesimulator`（arm64/x86_64）、`macosx` 各编一份，再用 `lipo` 合并模拟器的两个架构。注意本项目**直接调用 VTDecompressionSession**（`platform/apple/videotoolbox_decoder.c`），FFmpeg 只负责解封装与音频。
+
 ## 2. libsmb2
 ```bash
 git clone https://github.com/sahlberg/libsmb2
@@ -111,6 +115,7 @@ cmake --build build-apple -j && cmake --install build-apple
 ```
 
 要求 libsmb2 **≥ 4.0**（用到 `smb2_stat_64`、`smb2_lseek`、目录接口）。要在 SMB 层做断线重连，可在 `smb.c` 里调 `smb2_set_autoreconnect(ctx, 1)`（4.1+）。
+
 ## 3. Android
 ```bash
 cd app
@@ -141,8 +146,10 @@ unzip -q ndk.zip -d ~ && export ANDROID_NDK_HOME=~/android-ndk-r26b
 `/storage/emulated/0` 的媒体读权限由 app 自己申请：manifest 只声明 `READ_MEDIA_VIDEO`（不声明 audio，否则一次弹两个框），`MainActivity.kt` 的 `lanplayer/permissions` 通道负责 `requestPermissions`，`app/lib/ui/media_permission.dart` 在 `_openLocal()` 进目录前调用，返回值带 `partial` 以覆盖 Android 14 的「选择部分」。
 
 看内核日志：`adb logcat -s LanPlayer`（`native/src/util/lp_log.c` 把模块名放进正文，tag 固定是 `LanPlayer`）。
+
 ## 4. iOS / iPadOS / macOS
 Apple 侧没有 CMake 也不用 MSBuild：**先在 Mac 上把 FFmpeg / libsmb2 / C 内核编成静态库，再由 CocoaPods 链进 Runner。**
+
 ### 4.1 准备（只需一次）
 ```bash
 xcode-select --install          # 先装命令行工具
@@ -196,6 +203,7 @@ chmod +x scripts/*.sh
 ```
 
 首次 `pod install` 要拉 Specs 仓库（约 250 MB 到 `~/.cocoapods/repos/master`），慢的话先 `git clone --depth 1 https://github.com/CocoaPods/Specs.git ~/.cocoapods/repos/master`。
+
 ### 4.2 编静态库
 ```bash
 cd /path/to/LanPlayer
@@ -218,6 +226,7 @@ ARCHS="arm64 x86_64" ./scripts/build_apple_deps.sh   # Intel Mac 再加 x86_64
 
 - `-DCMAKE_DISABLE_FIND_PACKAGE_GSSAPI=TRUE` / `..._OpenSSL=TRUE`：libsmb2 无条件 `find_package(GSSAPI)`，macOS 自带 `libgssapi_krb5.tbd` 与 `gssapi/gssapi.h`，于是 `HAVE_LIBKRB5` 被定义并去编 `lib/krb5-wrapper.c`——它用的 `gss_const_OID`、`gss_acquire_cred_with_password`、`gss_buffer_set_t`、`gss_set_neg_mechs`、`gss_inquire_sec_context_by_oid` 都是 MIT/Heimdal 扩展，Apple 的 GSS.framework 没有，Xcode 15 起隐式函数声明是硬错误，于是 `17 warnings and 18 errors` 卡在 `krb5-wrapper.c.o`。本项目只用 NTLM，关掉即可。（**不要**加 `-DUSE_KRB5=OFF`：libsmb2 没这个变量，CMake 只会打一句 `Manually-specified variables were not used by the project`。）
 - `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`：libsmb2 v4.0.0 写的是 `cmake_minimum_required(VERSION 3.2)`，CMake 4.x 删除了 `< 3.5` 兼容性，配置阶段直接报 `Compatibility with CMake < 3.5 has been removed`。
+
 ### 4.3 接进 Flutter 工程
 **不需要打开 Xcode 点任何东西**，仓库里已配好：`packages/lanplayer_core/` 是 `ffiPlugin: true` 的 Dart 空包，`ios/` 与 `macos/` 各一个 podspec（把 `native/include` 加进 `HEADER_SEARCH_PATHS`、库目录加进 `LIBRARY_SEARCH_PATHS`、`-llanplayer -lavformat -lavcodec -lswresample -lavfilter -lswscale -lavutil -lsmb2` 加进 `OTHER_LDFLAGS`，并链接 VideoToolbox CoreMedia CoreVideo AudioToolbox CoreFoundation Security 与 `z bz2 lzma iconv`）；`app/pubspec.yaml` 已声明 `lanplayer_core: {path: ../packages/lanplayer_core}`；`app/{ios,macos}/Podfile` 的 `platform` 是 15.0 / 12.0，与 `build_apple_deps.sh` 的 `MIN_IOS`/`MIN_MACOS` 对齐，`post_install` 会把每个 pod 的部署目标统一抬到 15.0 / 12.0（第三方插件自带更低数字，低于 Xcode 受支持下限会报 `Target Integrity`）；四个 xcconfig 首行用 `#include?` 引入 Pods 配置，没跑过 `pod install` 也不会配置失败；`SWIFT_OBJC_BRIDGING_HEADER` 已写进两个工程，Swift 才看得到 `lp_player_*`。
 
@@ -228,10 +237,13 @@ flutter build macos --release     # 或 flutter build ios --release --no-codesig
 ```
 
 `library not found for -llanplayer` = 4.2 没跑或没成功；`building for iOS 14.0, but linking in object file built for iOS 15.0` = 依赖用了更高的 `MIN_IOS`，把工程目标同步调高或重跑 4.2。
+
 ### 4.4 桌面纹理与音频
 `app/macos/Runner/MainFlutterWindow.swift` 注册 `lanplayer/video` 通道，`PlayerTexture` 从内核拉 `CVPixelBuffer` 交给引擎（BGRA，带图形字幕叠加）；iOS 侧是 `app/ios/Runner/AppDelegate.swift` 的同款实现。音频走 `native/src/platform/apple/coreaudio_sink.c`（AudioQueue，3×20 ms），视频解码走 `native/src/platform/apple/videotoolbox_decoder.c`。
+
 ### 4.5 权限
 `app/ios/Runner/Info.plist` 已含 `NSLocalNetworkUsageDescription`、`NSBonjourServices`(`_smb._tcp`)、`UIBackgroundModes=audio`、`UIFileSharingEnabled`、四个方向。`app/macos/Runner/{DebugProfile,Release}.entitlements` 已含 `com.apple.security.network.client`（**没有它会拦掉 SMB 端口出站**）与 `com.apple.security.files.user-selected.read-only`。
+
 ### 4.6 真机/模拟器
 ```bash
 flutter devices
@@ -240,6 +252,7 @@ flutter build ipa --release           # 打包（需要签名）
 ```
 
 iPad 与 iPhone 同一个包（`TARGETED_DEVICE_FAMILY = "1,2"`）。模拟器测不了 SMB 真实吞吐，但能测 UI、字幕与交互。已跑通：VideoToolbox 硬解、AudioQueue 48 kHz 立体声、外挂 SRT 字幕、纹理上屏。
+
 #### 4.6.1 真机：Xcode 27 里找不到「Devices and Simulators」
 Xcode 27 把它拆成独立 app `Device Hub`，所以 `Window` 菜单里没有这一项：
 
@@ -250,12 +263,14 @@ xcrun devicectl device info details --device <UDID> # 看配对/开发者模式
 ```
 
 `xcrun xcdevice list` 在 Xcode 27 上**只列模拟器**——它没坏，只是不再枚举实体设备。
+
 #### 4.6.2 USB 插上了但设备不出现
 `ioreg -p IOUSB -w0 -l` 里能看到设备（`idVendor = 1452`）而 `devicectl` 只有模拟器，几乎都是 **iPad 锁屏了**：锁屏时不启用暴露 `com.apple.mobiledevice` 的 data 配置，也弹不出「信任这台电脑吗」。解锁后立刻能列出。
 
 ```bash
 $HOME/.lpvenv/bin/pymobiledevice3 usbmux list   # 空数组 [] = 没枚举到
 ```
+
 #### 4.6.3 无线调试默认是关的
 `flutter devices` 只看 USB 设备；无线调试打开一次后长期生效：
 
@@ -265,6 +280,7 @@ pymobiledevice3 lockdown wifi-connections     # 确认 EnableWifiConnections: tr
 ```
 
 之后 `usbmux list` 会有两条同 UDID 记录（`Network` 与 `USB`）。`flutter devices` 末尾仍打印 `No wireless devices were found.`——它在找**只**在网络上的设备，不代表无线没通。
+
 #### 4.6.4 真机安装：`flutter install` 在 Xcode 27 上不可用
 Xcode 27 删掉了旧的 MobileDevice 栈，装真机要走 `devicectl`：
 
@@ -318,6 +334,7 @@ xcrun simctl launch --console-pty <dev> dev.lanplayer.lanplayer   # 内核日志
 ```
 
 `--console-pty` 是关键：内核的 `[LanPlayer I ...]` 只出现在 app 的 stdout/stderr，`xcrun simctl spawn <dev> log show` 只能看到 `flutter:` 那些。模拟器截图可用（`xcrun simctl io <dev> screenshot --type=png out.png`），这点与 macOS 桌面端相反。
+
 #### 4.6.5 macOS 往共享里写 `.DS_Store`：不是本 app 干的
 **结论：写入者是 Finder / macOS 的 SMB 客户端，不是播放器。** 内核访问 SMB 只有 `smb2_open(..., O_RDONLY)` 与 `smb2_opendir()` 两种调用（`native/src/source/smb.c`），全仓库搜不到 `smb2_write` / `smb2_create` / `smb2_unlink` / `O_CREAT`。正解是在 Mac 上关掉这个行为（用户级，不需要 root）：
 
@@ -334,6 +351,7 @@ mount_smbfs "//share:pass@192.168.1.10/%E5%A4%9A%E5%AA%92%E4%BD%93%E6%96%87%E4%B
 ```
 
 开关只影响这台 Mac，别的 Mac 与 Windows 资源管理器（`Thumbs.db`/`desktop.ini`）各写各的。所以内核另做一层过滤：列表里不显示 `.DS_Store`、`._*`、`desktop.ini`、`Thumbs.db`、`.Trashes` 等元数据文件（`lp_is_os_junk_name()`，SMB 与本地路径都走）。回归测试 `native/tests/lp_junk_test.c`：负向对照去掉过滤后立刻报 `entries=6 leaked=5`。
+
 ### 4.7 iOS 上会遇到的错误
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
@@ -347,6 +365,7 @@ mount_smbfs "//share:pass@192.168.1.10/%E5%A4%9A%E5%AA%92%E4%BD%93%E6%96%87%E4%B
 | `Failed to codesign .../Flutter.framework/Flutter with identity ...`（`security show-keychain-info` 报 `User interaction is not allowed.`） | SSH 非交互会话没有钥匙串访问权 | `security unlock-keychain -p "" ~/Library/Keychains/login.keychain-db`（见 4.6.4） |
 | `error 10002 ... its profile has not been explicitly trusted by the user` | 卸载重装后开发者信任被重置；profile 仍报 `Valid` | 在 `设置 → 通用 → VPN与设备管理` 点一次信任（见 4.6.4） |
 | `error: Signing for "Runner" requires a development team.` | 没有 `DEVELOPMENT_TEAM`，且没登录 Apple ID（`security find-identity -v -p codesigning` 返回 0 valid identities） | 登录 Apple ID 生成 Apple Development 证书，再 `TEAM_ID=<TEAM_ID> ./scripts/ios_device_install.sh`（见 4.6.4） |
+
 ### 4.8 macOS 上首次构建会遇到的错误
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
@@ -378,6 +397,7 @@ mount_smbfs "//share:pass@192.168.1.10/%E5%A4%9A%E5%AA%92%E4%BD%93%E6%96%87%E4%B
 | App 能开但连不上 SMB | macOS 沙盒拦 SMB 端口出站 | 确认 `Runner/*.entitlements` 里有 `com.apple.security.network.client` |
 
 `pod install` 顺序不要搞反：**先 `build_apple_deps.sh` 产出静态库，再 `flutter pub get`，最后 `flutter build macos`**。`flutter build` 内部会自动跑 `pod install`；单独手跑 `pod install` 必须先 `flutter pub get` 过，否则报 `Flutter/Flutter-generated.xcconfig must exist`。
+
 ## 5. Flutter Windows 桌面端
 桌面端三块：Flutter 的 runner（`app/windows/`）、我方插件（`packages/lanplayer_video/`）、带 Win32 输出适配的 `lanplayer.dll`。**推荐一条命令：**
 
@@ -433,6 +453,7 @@ cmake --build build -j
 ```
 
 桌面走 `platform/stub`：无窗口、无声音，但有真实的音频拉取线程，可验证解封装、解码、时钟、字幕时序。Windows 上更完整的是 `scripts/build_windows.ps1` 产物（`lanplayer.dll` 带 GDI/waveOut，`lanplayer_preview.exe` 是原生界面）。
+
 ## 6.5 用 Visual Studio 打开仓库时，CMake 提示要不要启用
 VS「打开文件夹」选中仓库根目录会弹出「检测到 CMakeLists.txt，是否启用 Visual Studio 的 CMake 支持？」——**选「不启用」**。Windows 上真正的内核构建是 `scripts/build_windows.ps1`（Zig，不走 CMake、不走 MSVC），**没有任何 CMake 目标会产出 `build/win-x64/lanplayer.dll`**。六个 `CMakeLists.txt` 各有主人，除 `native/`（手工 CMake / CI 的 Android、Apple 构建）外都靠 flutter_tools 或 Gradle 传参，VS 里单独配不了：`app/windows/`、`app/windows/flutter/`、`app/windows/runner/`（`flutter build windows` 传 `-DFLUTTER_ROOT=…`）、`packages/lanplayer_video/windows/`（由 `generated_plugins.cmake` include 的插件子目录）、`app/android/app/src/main/cpp/`（Gradle 的 `externalNativeBuild`）。
 
@@ -456,8 +477,10 @@ flutter build windows --release
 ```
 
 这条路径**只用于调试 UI 与插件桥**，内核仍是 `scripts/build_windows.ps1` 出的 `lanplayer.dll`（用 `-DeployTo` 拷到 exe 旁边）。VS 自带 `C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`，`build_windows_desktop.ps1` 用的就是它，A/B 两种都不缺 CMake。
+
 ## 7. 打安装包
 两个平台各一条命令，产物落在 `dist/`（已在 `.gitignore` 里，属发布资产而非源码）。
+
 ### 7.1 Windows（NSIS）
 ```powershell
 python tool\fetch_deps.py nsis        # 只装 NSIS 3.10 到 .tools\nsis（约 2.2 MB）
@@ -497,6 +520,7 @@ powershell -File scripts\verify_windows_uninstall.ps1   # 应用运行中 -> 卸
 ```
 
 两个都装到 `D:\lp-upgrade-test` / `D:\lp-uninstall-test` 这类 scratch 目录，跑完恢复注册表与快捷方式，不动真实安装；它们做**正负对照**：把宏拆掉的安装器（`.tools\tmp` 里由 `mknokill.py` / `mknoun.py` 生成）必须让脚本报失败，否则说明断言没在测东西。跑时注意两点：**先把安装包 `Copy-Item` 到 `%TEMP%` 再执行**（仓库里的文件带 Low 完整性标签，复制出去跑是为了不弄脏 `dist\`）；**别用 `Start-Process -PassThru` + `$p.HasExited` 轮询**（在本机会死锁），用同步的 `cmd /c "<setup>" /S`。PowerShell 与 Git Bash 都可以跑——**但只要你从 Git Bash 跑，就要确认 `where find` 命中 `C:\Windows\System32\find.exe`**，PATH 里 MSYS 的 GNU find 会把覆盖升级验成 FAILED（宏已改用 `findstr` 规避，详见 3.33）。
+
 ### 7.2 macOS（dmg）
 ```bash
 # 前置：scripts/build_apple_deps.sh 与 flutter build macos --release 都已完成
@@ -505,6 +529,7 @@ VERSION=0.1.0 ./scripts/build_macos_dmg.sh
 ```
 
 脚本流程：检查 `.app` → `ditto` 拷到暂存目录 → `ln -s /Applications` → `codesign --verify --deep --strict` → `hdiutil create -ov -format UDZO -imagekey zlib-level=9` → `hdiutil verify` → 打印 SHA256。两个坑（`check_installers()` 也盯着）：**必须用 `ditto` 而不是 `cp -R`**（`cp -R` 丢扩展属性与代码签名，`codesign --verify` 直接失败）；**不要在同目录建小写别名**（APFS 默认大小写不敏感，`LanPlayer.app` 与 `lanplayer.app` 是同一目录，随后的清理会把刚拷好的 app 删掉，dmg 只有 11 KB 且里面是空的就这原因）。签名默认 ad-hoc（`codesign -dv` 显示 `Signature=adhoc`），自用足够；**分发需要 Developer ID 证书 + 公证**，否则对方打开会被 Gatekeeper 拦（`已损坏，无法打开` / `无法验证开发者`）。
+
 ### 7.3 版本号来源与覆盖升级
 版本号只有一个来源：`app/pubspec.yaml` 的 `version:`。`scripts\build_windows_desktop.ps1` 用正则读出它写进 `generated_config.cmake` 的 `FLUTTER_VERSION`，`Runner.rc` 再把它变成 exe 的 `FileVersion`/`ProductVersion`；`build_windows_installer.ps1` 的 `-Version`、`build_macos_dmg.sh` 与 `build_android_apk.sh` 的 `VERSION` 留空时同样取它。所以升版本只改 pubspec，别去改脚本里的字面量。
 
@@ -513,6 +538,7 @@ Windows 包必须先 `flutter build windows --release`（或 `scripts\build_wind
 **覆盖升级**：装新版不用先手动卸载。`scripts/windows/installer.nsi` 的 `StopRunningApp` 宏在安装段与卸载段各调一次：先 `taskkill`（不带 `/F`，等于发 WM_CLOSE），轮询 5 秒不退才强杀。判断「在不在跑」必须用 `tasklist | findstr`，**不能用 `find`** —— 某些 shell 的 `PATH` 里 GNU find 排在 System32 前面，它不认 `/FI`、`/I`，退出码非 0，宏会把「还在跑」误判成「没在跑」，覆盖升级就退化成「文件被占用」。回归用 `scripts\verify_windows_upgrade.ps1` / `verify_windows_uninstall.ps1`，两个脚本都装到临时目录、跑完恢复注册表与快捷方式，不动真实安装。
 
 静默安装到自定义目录时 `/D=` 必须是**最后一个参数**且不能带引号；PowerShell 里更稳的写法是 `Start-Process -ArgumentList '/S','/D=D:\path' -Wait`。
+
 ### 7.4 构建后自检
 ```bash
 python tool/check_all.py            # 一把梭：C 语法/符号、Dart 解析、原生冒烟、Dart 测试
@@ -546,6 +572,7 @@ Error: Flutter failed to write to a file at "C:\Users\...\AppData\Roaming\.flutt
 | `dist\` | 两个安装包 | `scripts\build_windows_installer.ps1` / `scripts\build_macos_dmg.sh` |
 
 **不能删**：`.tools\`（工具链本体 2.7 GB，只能重新 `fetch_deps.py` 下载）、`.tools\flutter-sdk\.git`（Flutter 工具会校验，删了报「不是 GitHub 仓库的克隆」）、`.tools\flutter-sdk\bin\mingit`（这台机器上唯一可用的 git）。
+
 ## 8. 常见问题
 |现象|原因 / 处理|
 |-|-|
