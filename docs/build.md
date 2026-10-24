@@ -126,7 +126,7 @@ flutter build apk --release --target-platform android-arm64
 
 配置已就位：`android/app/build.gradle.kts` 的 `minSdk 26`（AAudio）、`abiFilters arm64-v8a`（只出这一种 ABI）、`externalNativeBuild` 指向 `src/main/cpp/CMakeLists.txt` 并传 `LP_FFMPEG_ROOT` / `LP_SMB2_ROOT`；`src/main/cpp/CMakeLists.txt` 做 `add_subdirectory(native)`；`AndroidManifest.xml` 有网络/媒体读权限与 `usesCleartextTraffic`。产物：`liblanplayer.so`（含 JNI 符号）+ 随包打入的 FFmpeg `.so`。
 
-`ndkVersion` 是 `System.getenv("LP_ANDROID_NDK") ?: "26.1.10909125"`，CI 用环境变量覆盖。要先有 NDK 和交叉编译出来的依赖：
+`ndkVersion` 是 `System.getenv("LP_ANDROID_NDK") ?: "26.1.10909125"`，可用环境变量覆盖。要先有 NDK 和交叉编译出来的依赖：
 
 ```bash
 # NDK r26b 正是 26.1.10909125
@@ -500,7 +500,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_instal
 | 语言 | 简体中文 + English（NSIS 自带 `SimpChinese.nlf`） |
 | 卸载 | 删全部文件与快捷方式、清两类注册表键；**用户数据 `%APPDATA%\lanplayer` 只弹窗询问，默认保留** |
 | `.nsi` 编码 | 必须 **UTF-8 with BOM**，无 BOM 时 `makensis` 报 `Bad text encoding: scripts\windows\installer.nsi:1`（`check_installers()` 会检查） |
-| 临时目录 | `makensis` 往 `%TEMP%` 写临时文件，被拒时表现为 `Internal compiler error #12345: error creating mmap the size of 35644314.`；脚本已把 `TMP`/`TEMP` 重定向到 `.tools\tmp` |
+| 临时目录 | `makensis` 往 `%TEMP%` 写临时文件，被拒时表现为 `Internal compiler error #12345: error creating mmap`（后面还跟着一个字节数）；脚本已把 `TMP`/`TEMP` 重定向到 `.tools\tmp` |
 | 脚本编码 | `build_windows_installer.ps1` **必须纯 ASCII 注释**：PS 5.1 按 ANSI 读无 BOM 的 `.ps1`，中文注释会变乱码并吃掉后面的引号，报 `ParserError: Unexpected token ')'`（仓库所有 `.ps1` 都遵守） |
 
 静默安装/卸载：
