@@ -25,7 +25,7 @@ if (-not $Scratch) { $Scratch = Join-Path ([System.IO.Path]::GetTempPath()) 'lp-
 # setup into a scratch directory first, launches the app from there, and then
 # runs uninstall.exe while the app is still up. Pass a build with the
 # StopRunningApp insert stripped for the negative control: it leaves 13 of 17
-# files behind (measured, see docs/verification.md).
+# files behind.
 #
 # Installing and uninstalling rewrite HKCU\Software\LanPlayer, the Uninstall
 # key and the desktop / Start Menu shortcuts, none of which are scoped to

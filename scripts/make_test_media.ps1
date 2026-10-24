@@ -60,7 +60,7 @@ if ($LASTEXITCODE -ne 0) { throw 'ffmpeg failed for subbed.mkv' }
 # The clip is deliberately 60 s long: capturing a 4 s probe is a race against
 # playback ending (the window then shows the ended state, not the frame), which
 # made the screenshot evidence flaky.  A flat colour compresses to a few KiB, so
-# the length costs nothing.  See docs/verification.md 3.14.
+# the length costs nothing.
 Write-Host '== colortest\red.mp4 (BGRA->RGBA probe)'
 $colorDir = Join-Path $OutDir 'colortest'
 New-Item -ItemType Directory -Force -Path $colorDir | Out-Null
