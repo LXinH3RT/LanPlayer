@@ -210,7 +210,7 @@ LanPlayer/
 │  ├─ include/lanplayer/    公共 ABI（dart:ffi 的唯一契约）
 │  ├─ src/core/             解封装、解码、同步、字幕、封面、控制
 │  ├─ src/source/           LpSource：SMB / 本地 / 自定义 AVIO
-│  ├─ src/platform/         android / apple / win32 / stub（CI）
+│  ├─ src/platform/         android / apple / win32 / stub（无窗口）
 │  └─ tests/                无依赖测试可执行文件
 ├─ scripts/                 各平台构建、截图、安装包与升级/卸载对照脚本
 ├─ tool/                    静态检查、依赖下载、测试素材生成

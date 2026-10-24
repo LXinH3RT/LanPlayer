@@ -91,7 +91,7 @@
 
 ## 工程质量待办
 
-* CI：~~GitHub Actions 三个 job~~（已扩到五个：Android NDK + `flutter build apk`、
+* CI：~~三个 job~~（已扩到五个目标：Android NDK + `flutter build apk`、
   Apple iOS 静态库 + `flutter build ios`、Linux CMake + `lp_smoke_test`、Windows Zig
   内核、Windows MSVC 桌面 bundle）
 * 桌面构建脚本化：~~`scripts/build_windows_desktop.ps1` 串成一条命令~~（已完成并接进
