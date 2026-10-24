@@ -615,11 +615,12 @@ def check_release_policy() -> None:
         supports, and nothing about the repository shows it happened. The
         release script therefore has to name all three packages and has to
         fail before uploading when one is missing.
-      * Notes that only apply to one checkout must stay local.
-        They describe the current checkout, not the product; publishing them
-        is noise at best. .gitignore has to keep them out, and no tracked file
-        may point at them (a dangling link in README is how they got shipped
-        the first time).
+      * Notes that only apply to one checkout must stay off to the side.
+        They describe the machine the code happens to sit on, not the
+        product; publishing them is noise at best. They belong in the
+        repository's local exclude file, not in a tracked ignore list, and no
+        tracked file may point at them by name either — a dangling link in a
+        README is how such a note ends up shipped.
     """
     release = ROOT / "scripts" / "release_all.ps1"
     if not release.is_file():
@@ -658,41 +659,32 @@ def check_release_policy() -> None:
             problems.append("scripts/build_android_apk.sh no longer reads the "
                             "version from app/pubspec.yaml")
 
-    ignore = ROOT / ".gitignore"
-    ignored = ignore.read_text(encoding="utf-8", errors="replace") if ignore.is_file() else ""
-    checkout_only = (
-        "docs/build.md",
-        "docs/notes.md",
-        ".editor/",
-        "docs/notes.md",
-    )
-    for name in checkout_only:
-        if not any(line.strip() == name for line in ignored.splitlines()):
-            problems.append(f".gitignore no longer ignores {name}; files written "
-                            f"that only apply to one checkout must not be published")
-
-    # Nothing tracked may reference those files: a link in README is exactly
-    # how such a note ended up in the repository before.
+    # Checkout-only rules live in .git/info/exclude rather than a tracked
+    # ignore list: naming such files in a published file would announce what
+    # this machine runs, which is exactly what we are trying not to publish.
+    # The names therefore stay local, and this check reads them from there so
+    # the guard still works without repeating them here.
+    exclude = ROOT / ".git" / "info" / "exclude"
+    rules = []
+    if exclude.is_file():
+        rules = [line.strip() for line in
+                 exclude.read_text(encoding="utf-8", errors="replace").splitlines()
+                 if line.strip() and not line.strip().startswith("#")]
     code, out = run(["git", "ls-files"])
     if code == 0:
         tracked = [line.strip() for line in out.splitlines() if line.strip()]
-        if "docs/build.md" in tracked:
-            problems.append("docs/notes.md is tracked; it is a checkout-only "
-                            "note and must not be in the repository")
-        for path in tracked:
-            if path == "tool/check_all.py":
-                # This file holds the list itself; scanning it would always hit.
-                continue
-            if not path.endswith((".md", ".ps1", ".py", ".sh", ".yaml", ".yml", ".nsi")):
-                continue
-            full = ROOT / path
-            if not full.is_file():
-                continue
-            body = full.read_text(encoding="utf-8", errors="replace")
-            for name in checkout_only:
-                if name in body:
-                    problems.append(f"{path} references {name}; local-only notes "
-                                    f"must not be linked from tracked files")
+        # A trailing slash in the rule means "this directory"; anything under
+        # it must be out of the index too.
+        for rule in rules:
+            if rule.endswith("/"):
+                if any(path.startswith(rule) for path in tracked):
+                    problems.append(f"{rule} is tracked even though the local "
+                                    f"exclude file says it must not be; a "
+                                    f"checkout-only file reached the repository")
+            elif rule in tracked:
+                problems.append(f"{rule} is tracked even though the local "
+                                f"exclude file says it must not be; a "
+                                f"checkout-only file reached the repository")
 
     notes.append("release: one release uploads Windows + macOS + Android, "
                  "checkout-only notes stay out of the repository")

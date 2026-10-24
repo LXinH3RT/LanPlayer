@@ -91,5 +91,5 @@
 
 写新文档时用同一套占位值；重拍截图时先跑 `scripts/make_doc_media.ps1`，再用
 `scripts/capture_screen.ps1 -Browse file:///<生成的目录>` 截。`tool/check_all.py` 的
-`check_release_policy()` 会拦住「只对本机适用的笔记类文件」入库，但**拦不住上面这些
+`check_release_policy()` 会拦住「只对某一台机器适用的笔记类文件」入库，但**拦不住上面这些
 真实值** —— 那些靠写的人自觉，PR 里看到就改。
