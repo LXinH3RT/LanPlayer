@@ -205,6 +205,7 @@ REQUIRED = [
     "docs/images/desktop-color-red.png",
     "docs/images/desktop-d3d11va.png",
     "docs/images/ipad-player.png",
+    "docs/images/desktop-subtitle-fonts.jpg",
 ]
 
 def check_texture_colors() -> None:
@@ -603,6 +604,46 @@ def check_installers() -> None:
     notes.append("upgrade: installer and uninstaller both stop a running copy "
                  "first (verified against a stripped negative control)")
     notes.append("iOS device: team id injected, devicectl install")
+
+    # Uninstalling used to leave the saved servers and settings behind (user
+    # report: a fresh install reconnected to the old share on its own), and the
+    # path it tried to clear was wrong anyway -- %APPDATA%\lanplayer does not
+    # exist, because path_provider puts the support directory under
+    # %APPDATA%\<CompanyName>\<ProductName>. Two independent things have to stay
+    # right: the option must exist, and it must cover every directory the app
+    # can actually write to.
+    if "!macro PurgeUserData" not in nsi_code:
+        problems.append("installer.nsi has no PurgeUserData macro; uninstalling "
+                        "would keep the saved servers and settings on disk")
+    else:
+        purge = nsi_code[nsi_code.find("!macro PurgeUserData"):]
+        purge = purge[:purge.find("!macroend")]
+        for target, why in (
+            ("$APPDATA\\${APP_COMPANY}\\${APP_PRODUCT}\\lanplayer",
+             "the real state directory (path_provider appends the company and "
+             "product name)"),
+            ("$LOCALAPPDATA\\lanplayer", "the local-appdata fallback"),
+            ("$INSTDIR\\state", "the portable-install fallback"),
+            ("$TEMP\\lanplayer", "the temporary fallback"),
+        ):
+            if target not in purge:
+                problems.append(f"PurgeUserData no longer clears {target}; the "
+                                f"state the app left there would survive an "
+                                f"uninstall that promised to remove it ({why})")
+        if "RMDir /r \"$APPDATA\\${APP_COMPANY}\"" in purge:
+            problems.append("PurgeUserData deletes the whole "
+                            "$APPDATA\\${APP_COMPANY} tree recursively; another "
+                            "product of the same vendor would be wiped too")
+    if "UninstPage custom" not in nsi_code:
+        problems.append("installer.nsi lost the uninstall options page; there "
+                        "would be no way to ask for the saved data to be removed")
+    if "/PURGE" not in nsi_code:
+        problems.append("installer.nsi no longer recognises /PURGE, so a silent "
+                        "uninstall could not delete the saved data")
+    if "$purgeWanted" not in nsi_code:
+        problems.append("installer.nsi lost the purge decision variable")
+    notes.append("uninstall: saved servers/settings/caches removable from the "
+                 "options page or with /PURGE, every candidate directory covered")
 
 
 def check_release_policy() -> None:
@@ -1117,6 +1158,70 @@ def check_track_selection() -> None:
 
     notes.append("track selection: separate audio/subtitle sheets, language "
                  "preference applied once per file")
+
+
+def check_subtitle_fonts() -> None:
+    """Guard the ASS font plumbing, which broke in two places at once.
+
+    An ASS file names a family in its `Style:` line (`新宋体`, `Microsoft YaHei`)
+    and an inline `\\fn` can change it mid-line.  User report: subtitles came out
+    in the platform default font no matter what the file asked for.  Two links
+    were missing, and both have to stay:
+
+    1. The core parsed the inline `\\fn` tag into nothing: `apply_override()`'s
+       `case 'f'` only handled `\\fs` and `\\fscx/\\fscy`, so the family name was
+       skipped and the run carried no font at all.
+    2. The renderer never read `style.font`, so even the cue-level family (which
+       the core did parse) never reached a `TextStyle`.
+
+    `sans-serif` is the core's placeholder for "no preference" and must not be
+    requested as a family: doing so defeats the platform default and can land on
+    a face without CJK glyphs.
+    """
+    sub = ROOT / "native" / "src" / "core" / "subtitle.c"
+    if not sub.exists():
+        problems.append("native/src/core/subtitle.c missing")
+    else:
+        st = sub.read_text(encoding="utf-8")
+        if "b->st.font_name[n] = '\\0';" not in st:
+            problems.append("subtitle.c lost the inline \\fn parser; an ASS line "
+                            "that changes family mid-sentence would be painted "
+                            "in the cue style's font")
+        if "lp_str_append_json_str(out, r->font_name)" not in st:
+            problems.append("subtitle.c no longer emits a per-run font name; the "
+                            "host would have nothing to put in fontFamily")
+
+    overlay = ROOT / "app" / "lib" / "ui" / "widgets" / "subtitle_overlay.dart"
+    if not overlay.exists():
+        problems.append("ui/widgets/subtitle_overlay.dart missing")
+    else:
+        ot = overlay.read_text(encoding="utf-8")
+        if ot.count("fontFamily: family,") < 2:
+            problems.append("subtitle_overlay.dart stopped putting the cue or run "
+                            "family into both TextStyles (the stroked and the "
+                            "filled one); whatever family the file asks for is "
+                            "ignored and the platform default is used")
+        if ot.count("fontFamilyFallback: family == null ? null : _fallback") < 2:
+            problems.append("subtitle_overlay.dart dropped the CJK fallback list "
+                            "from one of the two TextStyles; a family missing on "
+                            "this machine would render CJK text as boxes")
+        if "trimmed.toLowerCase() == 'sans-serif'" not in ot:
+            problems.append("subtitle_overlay.dart no longer treats sans-serif as "
+                            "the 'no preference' placeholder")
+
+    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    if models.exists():
+        mt = models.read_text(encoding="utf-8")
+        if "final String font; // '' = inherit from the cue style" not in mt:
+            problems.append("data/models.dart lost SubtitleSpan.font; the run "
+                            "level \\fn would be dropped while parsing")
+        if "r.font.isNotEmpty" not in mt:
+            problems.append("SubtitleLine.styled ignores r.font; a line whose "
+                            "only override is a family would collapse to plain "
+                            "text and lose the font")
+
+    notes.append("subtitle fonts: inline \\fn parsed, cue and run families reach "
+                 "fontFamily with a CJK fallback")
 
 
 def check_android_playback() -> None:
@@ -1693,6 +1798,7 @@ def main() -> int:
     check_player_layout()
     check_powershell_scripts()
     check_track_selection()
+    check_subtitle_fonts()
     check_android_playback()
     check_playback_profiles()
     check_apple_wiring()

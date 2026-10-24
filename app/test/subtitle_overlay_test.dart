@@ -232,6 +232,115 @@ void main() {
     expect(leaves[2].style!.color, const Color(0xFF00FF00));
   });
 
+  // A style line names a concrete family (`新宋体`, `Microsoft YaHei`) and the
+  // renderer has to pass it through, otherwise every cue is painted in the
+  // platform default and the file's typography is lost.
+  testWidgets('the cue style font reaches the span as a font family',
+      (tester) async {
+    final cue = _cue(
+      text: 'FONTED',
+      override: const SubtitleStyle(
+        color: 0xFFFFFFFF,
+        outlineColor: 0xFF000000,
+        outline: 1,
+        fontScale: 0.05,
+        font: '新宋体',
+      ),
+    );
+    final span = await _pump(tester, cue);
+    final style = _leaves(span).first.style!;
+    expect(style.fontFamily, '新宋体');
+    // A family can be missing on the machine that plays the file, so the
+    // CJK-capable list is always kept behind it.
+    expect(style.fontFamilyFallback, isNotNull);
+    expect(style.fontFamilyFallback, isNotEmpty);
+  });
+
+  testWidgets('a run can override the font family of the cue', (tester) async {
+    final cue = _cue(
+      text: 'sameshift',
+      override: const SubtitleStyle(
+        color: 0xFFFFFFFF,
+        outlineColor: 0xFF000000,
+        outline: 1,
+        fontScale: 0.05,
+        font: '新宋体',
+      ),
+      lines: const [
+        SubtitleLine(
+          text: 'sameshift',
+          runs: [
+            SubtitleSpan(text: 'same'),
+            SubtitleSpan(text: 'shift', font: 'Microsoft YaHei'),
+          ],
+        ),
+      ],
+    );
+    final span = await _pump(tester, cue);
+    final leaves = _leaves(span);
+    expect(leaves[0].style!.fontFamily, '新宋体',
+        reason: 'a run without a font inherits the cue style');
+    expect(leaves[1].style!.fontFamily, 'Microsoft YaHei',
+        reason: 'an inline \\fn must reach the span');
+  });
+
+  // `sans-serif` is the core's placeholder for "no preference", not a family
+  // that has to exist on the machine - requesting it as a family would defeat
+  // the platform default and could fall back to a face without CJK glyphs.
+  testWidgets('the sans-serif placeholder means the platform default',
+      (tester) async {
+    final cue = _cue(text: 'PLAIN');
+    expect(cue.style.font, 'sans-serif');
+    final span = await _pump(tester, cue);
+    final style = _leaves(span).first.style!;
+    expect(style.fontFamily, isNull);
+    expect(style.fontFamilyFallback, isNull);
+  });
+
+  testWidgets('the core JSON carries the run font through to the span',
+      (tester) async {
+    // Copied from `lp_smoke_test.exe` on the ASS fixture whose first style is
+    // `CHS,新宋体,52` and whose line starts with `{\fnMicrosoft YaHei}`.
+    final json = <String, dynamic>{
+      'text': '神奇动物在哪里',
+      'start': 12870000,
+      'end': 25810000,
+      'style': <String, dynamic>{
+        'bold': true,
+        'italic': false,
+        'underline': false,
+        'strikeout': false,
+        'color': 4294967295,
+        'outline_color': 2164260863,
+        'outline': 1,
+        'align': 2,
+        'font_scale': 0.065,
+        'pos_x': -1.0,
+        'pos_y': -1.0,
+        'font': '新宋体',
+      },
+      'runs': [
+        {
+          'text': '神奇动物在哪里',
+          'runs': [
+            {
+              'text': '神奇动物在哪里',
+              'bold': true,
+              'color': 4279834903,
+              'scale': 0.125,
+              'font': '新宋体',
+            },
+          ],
+        },
+      ],
+    };
+    final cue = SubtitleCue.fromJson(json);
+    expect(cue.style.font, '新宋体');
+    expect(cue.lines.single.runs.single.font, '新宋体');
+    final span = await _pump(tester, cue);
+    expect(_leaves(span).first.style!.fontFamily, '新宋体');
+  });
+
   // The tests above assert the *span tree*; this one asserts actual painted
   // pixels.  flutter_test rasterises the scene itself, so it needs no window
   // and cannot be confused by the DPI virtualisation that makes screen capture

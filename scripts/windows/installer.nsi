@@ -9,7 +9,9 @@
 ;     也不会往 Program Files 写 —— 这样「双击就能用」而不弹 UAC。
 ;   * FFmpeg 的 av*.dll 与 VC++ 运行库全部 app-local 打包（暂存目录里已带），
 ;     用户不需要另装 Visual C++ Redistributable。
-;   * 卸载时不删用户数据（服务器列表、设置、缩略图缓存），只在结束时提示位置。
+;   * 卸载时默认保留用户数据（服务器列表、设置、缩略图缓存），但在卸载选项页里
+;     给一个「同时删除」的勾选项（默认不勾），静默卸载要显式给 /PURGE 才删。
+;     数据目录不止一处，见 PurgeUserData 宏。
 
 Unicode true
 SetCompressor /SOLID lzma
@@ -19,6 +21,7 @@ SetCompressorDictSize 64
 !include "FileFunc.nsh"
 !include "LogicLib.nsh"
 !include "WinVer.nsh"
+!include "nsDialogs.nsh"
 
 ; ---- 由命令行传入（有默认值，便于直接右键编译调试）----
 !ifndef APP_VERSION
@@ -39,6 +42,15 @@ SetCompressorDictSize 64
 !define APP_EXE     "lanplayer.exe"
 !define APP_ID      "LanPlayer"
 !define UNINST_KEY  "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}"
+
+; 应用把状态目录拼成 %APPDATA%\<CompanyName>\<ProductName>\lanplayer：
+; CompanyName 与 ProductName 取自 app/windows/runner/Runner.rc 的版本资源
+; （path_provider_windows 的 getApplicationSupportDirectory() 按这两个字段
+; 建子目录），末尾那段 lanplayer 是 app/lib/data/stores.dart 自己加的。
+; 这三处必须与 Runner.rc 保持一致，否则卸载会去清一个不存在的目录 ——
+; tool/check_all.py 的 check_installers() 会比对。
+!define APP_COMPANY "dev.lanplayer"
+!define APP_PRODUCT "lanplayer"
 
 Name "${APP_NAME} ${APP_VERSION}"
 OutFile "${OUTFILE}"
@@ -76,6 +88,7 @@ VIAddVersionKey /LANG=2052 "LegalCopyright"  "MIT License"
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_CONFIRM
+UninstPage custom un.UserDataPage un.UserDataPageLeave
 !insertmacro MUI_UNPAGE_INSTFILES
 
 !insertmacro MUI_LANGUAGE "SimpChinese"
@@ -143,6 +156,38 @@ LangString DESC_Assoc     ${LANG_ENGLISH}     "Associate common video files (mp4
       Pop $R7
       Sleep 600
     ${EndIf}
+  ${EndIf}
+!macroend
+
+; ---------------- 卸载时清理用户数据 ----------------
+; 应用的状态目录是 app/lib/data/stores.dart 里按顺序试出来的，第一个能写就用：
+;   1. %APPDATA%\<CompanyName>\<ProductName>\lanplayer   （正常路径，见文件头注释）
+;   2. <安装目录>\state                                  （便携安装、只能写安装目录的沙盒）
+;   3. %LOCALAPPDATA%\lanplayer
+;   4. %TEMP%\lanplayer
+; 卸载要把这四处都清一遍，只清第一处会漏掉其余三种情况。前两层的
+; %APPDATA%\<Company>\<Product> 用不带 /r 的 RMDir 收尾：目录非空时它什么也不做，
+; 不会误删同一家公司名下的其它数据。
+!macro PurgeUserData
+  RMDir /r "$APPDATA\${APP_COMPANY}\${APP_PRODUCT}\lanplayer"
+  RMDir    "$APPDATA\${APP_COMPANY}\${APP_PRODUCT}"
+  RMDir    "$APPDATA\${APP_COMPANY}"
+  RMDir /r "$LOCALAPPDATA\lanplayer"
+  RMDir /r "$INSTDIR\state"
+  RMDir /r "$TEMP\lanplayer"
+!macroend
+
+; 判断上述任一处是否真的存有配置。结果放在 $R9（1 = 有）。
+!macro UserDataExists
+  StrCpy $R9 0
+  ${If} ${FileExists} "$APPDATA\${APP_COMPANY}\${APP_PRODUCT}\lanplayer\*.*"
+    StrCpy $R9 1
+  ${ElseIf} ${FileExists} "$LOCALAPPDATA\lanplayer\*.*"
+    StrCpy $R9 1
+  ${ElseIf} ${FileExists} "$INSTDIR\state\*.*"
+    StrCpy $R9 1
+  ${ElseIf} ${FileExists} "$TEMP\lanplayer\*.*"
+    StrCpy $R9 1
   ${EndIf}
 !macroend
 
@@ -239,6 +284,62 @@ Function .onInit
     Abort
   ${EndIf}
 FunctionEnd
+
+; ---------------- 卸载：是否连用户数据一起删 ----------------
+; 用全局变量而不是 $R8：Section "Uninstall" 开头的 StopRunningApp 宏会改写 $R8/$R9。
+Var chkPurge
+Var purgeState
+Var purgeWanted
+
+; 静默卸载没有页面，只能靠命令行开关表达意图；交互模式默认不勾（保守），
+; 用户主动勾上才删。
+Function un.onInit
+  StrCpy $purgeWanted 0
+  ${GetParameters} $R0
+  ${GetOptions} $R0 "/PURGE" $R1
+  ${If} ${Errors}
+    ${GetOptions} $R0 "/PURGE=" $R1
+  ${EndIf}
+  ${IfNot} ${Errors}
+    StrCpy $purgeWanted 1
+  ${EndIf}
+FunctionEnd
+
+Function un.UserDataPage
+  !insertmacro MUI_HEADER_TEXT "卸载选项" "是否同时删除已保存的服务器、设置与缩略图缓存。"
+  !insertmacro UserDataExists
+  ${If} $R9 == 0
+    ; 没有可删的数据就不打扰用户，直接跳过这一页。
+    Abort
+  ${EndIf}
+
+  nsDialogs::Create 1018
+  Pop $0
+  ${If} $0 == error
+    Abort
+  ${EndIf}
+
+  ${NSD_CreateLabel} 0 0 100% 44u "LanPlayer 在你的用户目录里保存了服务器地址、登录信息、播放设置和缩略图缓存。留着它们，重装后可以直接接着用；勾选下面一项，卸载后本机不再残留任何登录信息。"
+  Pop $0
+
+  ${NSD_CreateCheckbox} 0 52u 100% 12u "同时删除已保存的服务器列表、设置和缩略图缓存"
+  Pop $chkPurge
+  ${If} $purgeWanted == 1
+    ${NSD_Check} $chkPurge
+  ${EndIf}
+
+  nsDialogs::Show
+FunctionEnd
+
+Function un.UserDataPageLeave
+  ${NSD_GetState} $chkPurge $purgeState
+  ${If} $purgeState == ${BST_CHECKED}
+    StrCpy $purgeWanted 1
+  ${Else}
+    StrCpy $purgeWanted 0
+  ${EndIf}
+FunctionEnd
+
 ; ---------------- 卸载 ----------------
 Section "Uninstall"
   SetShellVarContext current
@@ -275,11 +376,12 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\${APP_ID}"
   DeleteRegKey HKCU "${UNINST_KEY}"
 
-  ; 用户数据（服务器列表 / 设置 / 缩略图缓存）保留，避免升级或卸载丢配置
-  IfFileExists "$APPDATA\lanplayer\*.*" 0 done
-    MessageBox MB_YESNO|MB_ICONQUESTION \
-      "是否同时删除已保存的服务器列表、设置和缩略图缓存？$\r$\n（位于 $APPDATA\lanplayer）" \
-      IDNO done
-    RMDir /r "$APPDATA\lanplayer"
-  done:
+  ; 用户数据（服务器列表 / 设置 / 缩略图缓存）：由卸载选项页的勾选框决定，
+  ; 静默卸载时由命令行开关 /PURGE 决定。
+  ${If} $purgeWanted == 1
+    DetailPrint "删除已保存的服务器列表、设置和缩略图缓存。"
+    !insertmacro PurgeUserData
+  ${Else}
+    DetailPrint "保留用户数据（$APPDATA\${APP_COMPANY}\${APP_PRODUCT}\lanplayer）。"
+  ${EndIf}
 SectionEnd

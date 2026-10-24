@@ -626,6 +626,7 @@ typedef struct SubRunState {
     unsigned flags;
     uint32_t color;    /* 0 = inherit the cue style */
     double font_scale; /* 0 = inherit the cue style */
+    char font_name[64]; /* empty = inherit the cue style */
 } SubRunState;
 
 typedef struct SubRich {
@@ -671,7 +672,8 @@ static int sub_rich_append(SubRich *b, const char *text, size_t len)
     if (b->nb > 0) {
         LpSubRun *last = &b->runs[b->nb - 1];
         if (last->flags == b->st.flags && last->color == b->st.color &&
-            last->font_scale == b->st.font_scale) {
+            last->font_scale == b->st.font_scale &&
+            !strcmp(last->font_name, b->st.font_name)) {
             size_t old = strlen(last->text);
             char *grown = realloc(last->text, old + len + 1);
             if (!grown) {
@@ -703,6 +705,7 @@ static int sub_rich_append(SubRich *b, const char *text, size_t len)
     r->flags = b->st.flags;
     r->color = b->st.color;
     r->font_scale = b->st.font_scale;
+    snprintf(r->font_name, sizeof(r->font_name), "%s", b->st.font_name);
     b->nb++;
     return 0;
 }
@@ -809,12 +812,26 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
             break;
         }
         case 'f':
-            /* \fs48 (size), \fscx/\fscy (scale) */
+            /* \fs48 (size), \fscx/\fscy (scale), \fn<name> (family) */
             if (*p == 's' && tag_has_arg(p + 1)) {
                 p++;
                 if (tag_number(&p, &num) == 0 && num > 0 && ctx->play_h > 0) {
                     b->st.font_scale = num / ctx->play_h;
                 }
+            } else if (*p == 'n') {
+                /* \fnArial / \fn新宋体: the family runs to the next tag or the
+                 * end of the override block.  A bare \fn resets to the style. */
+                p++;
+                const char *start = p;
+                while (*p && *p != '\\' && *p != '}') {
+                    p++;
+                }
+                size_t n = (size_t)(p - start);
+                if (n >= sizeof(b->st.font_name)) {
+                    n = sizeof(b->st.font_name) - 1;
+                }
+                memcpy(b->st.font_name, start, n);
+                b->st.font_name[n] = '\0';
             } else {
                 while (*p && *p != '\\' && *p != '}' && *p != '(') {
                     p++;
@@ -877,6 +894,7 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
             b->st.flags = 0;
             b->st.color = 0;
             b->st.font_scale = 0;
+            b->st.font_name[0] = '\0';
             b->cue->align_override = 0;
             (void)name; /* named style switching is left to the cue style */
             break;
@@ -1027,7 +1045,8 @@ static int sub_compile_text(const char *in, LpSubCue *cue, const AssCtx *ctx)
         /* Drop the runs entirely when nothing overrides the cue style. */
         int styled = 0;
         for (int i = 0; i < b.nb; i++) {
-            if (b.runs[i].flags || b.runs[i].color || b.runs[i].font_scale != 0) {
+            if (b.runs[i].flags || b.runs[i].color || b.runs[i].font_scale != 0 ||
+                b.runs[i].font_name[0]) {
                 styled = 1;
                 break;
             }
@@ -1062,6 +1081,8 @@ static int merge_cue_into(SubRich *dst, LpSubCue *src)
             dst->st.flags = src->runs[i].flags;
             dst->st.color = src->runs[i].color;
             dst->st.font_scale = src->runs[i].font_scale;
+            snprintf(dst->st.font_name, sizeof(dst->st.font_name), "%s",
+                     src->runs[i].font_name);
             if (sub_rich_append(dst, src->runs[i].text, strlen(src->runs[i].text)) != 0) {
                 return -1;
             }
@@ -1070,6 +1091,7 @@ static int merge_cue_into(SubRich *dst, LpSubCue *src)
         dst->st.flags = 0;
         dst->st.color = 0;
         dst->st.font_scale = 0;
+        dst->st.font_name[0] = '\0';
         if (sub_rich_append(dst, src->text, strlen(src->text)) != 0) {
             return -1;
         }
@@ -1077,6 +1099,7 @@ static int merge_cue_into(SubRich *dst, LpSubCue *src)
     dst->st.flags = 0;
     dst->st.color = 0;
     dst->st.font_scale = 0;
+    dst->st.font_name[0] = '\0';
     return 0;
 }
 
@@ -1915,6 +1938,10 @@ static void append_runs_json(LpStr *out, LpSubtitleTrack *t, const int *idx, int
                 }
                 if (r->font_scale > 0) {
                     lp_str_append(out, ",\"scale\":%.4f", r->font_scale);
+                }
+                if (r->font_name[0]) {
+                    lp_str_append(out, ",\"font\":");
+                    lp_str_append_json_str(out, r->font_name);
                 }
                 lp_str_append(out, "}");
             }
