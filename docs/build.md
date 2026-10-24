@@ -553,20 +553,29 @@ curl -sS -X POST \
 ```
 
 两个必须记住的坑：**必须加 `--ssl-no-revoke`**——Windows 自带 curl 走 schannel，检查吊销列表时报 `CRYPT_E_NO_REVOCATION_CHECK (0x80092012)`；**上传目标主机是 `uploads.github.com`**——用 `api.github.com` 传会 404。验证：用 `Accept: application/octet-stream` 下载 `https://api.github.com/repos/.../releases/assets/<asset_id>`，与本机文件比 SHA256。仓库是 private 时，`https://github.com/.../releases/download/v0.1.0/...` 这类公开直链对未登录访问者返回 404——这是私有库的正常行为，不是上传失败；让协作者登录后从 Release 页面下载，或把仓库改成 public（顺带解决 6.6 的额度问题）。
-#### 7.3.1 发布记录（v0.1.1 / v0.1.2）
+#### 7.3.1 发布记录（v0.1.1 – v0.1.3）
 两个包的实测大小：Windows 10/11 x64 的 `LanPlayer-0.1.1-windows-x64-setup.exe` 55.4 MB、`LanPlayer-0.1.2-windows-x64-setup.exe` 55.4 MB；macOS 12+ (Apple Silicon) 的 `LanPlayer-0.1.1-macos-arm64.dmg` 25.7 MB、`LanPlayer-0.1.2-macos-arm64.dmg` 25.9 MB。
 
-**版本号只有一个来源**：`app/pubspec.yaml` 的 `version:`。`scripts\build_windows_desktop.ps1` 用正则读出它写进 `generated_config.cmake` 的 `FLUTTER_VERSION`，`Runner.rc` 再把它变成 exe 的 `FileVersion`/`ProductVersion`——所以改版本只改 pubspec，别去改脚本里的字面量。安装包的版本仍由 `-Version` 参数（`build_windows_installer.ps1`）与 `VERSION` 环境变量（`build_macos_dmg.sh`）决定，三者要对齐。
+**版本号只有一个来源**：`app/pubspec.yaml` 的 `version:`。`scripts\build_windows_desktop.ps1` 用正则读出它写进 `generated_config.cmake` 的 `FLUTTER_VERSION`，`Runner.rc` 再把它变成 exe 的 `FileVersion`/`ProductVersion`——所以改版本只改 pubspec，别去改脚本里的字面量。**从 0.1.3 起，三种安装包也自己读 pubspec**：`build_windows_installer.ps1` 的 `-Version`、`build_macos_dmg.sh` 与 `build_android_apk.sh` 的 `VERSION` 都改成「留空就取 pubspec」，只有想故意打个别的版本号时才去覆盖。`verify_windows_upgrade.ps1` 也跟着从 pubspec 取新版本、从 `dist\` 里挑版本号最大的那个当旧包，所以升完版本直接跑回归即可，不用再手工传路径。
 
-Windows 包要先用 `flutter build windows --release`（或 `scripts\build_windows_desktop.ps1`）把产物放到 `app/build/windows/x64/runner/Release/`——**安装脚本只认这个路径**，再 `build_windows.ps1 -DeployTo` 把新内核 DLL 覆盖进去，不能漏，否则打的还是旧 DLL。`build_windows_desktop.ps1` 现在自己就把编好的 bundle 复制到那个目录（第 9 步），因为它实际编译输出在 `app/windows/out/build/...`。macOS 侧先 `flutter build macos --release`，再 `VERSION=0.1.2 ./scripts/build_macos_dmg.sh`。
+Windows 包要先用 `flutter build windows --release`（或 `scripts\build_windows_desktop.ps1`）把产物放到 `app/build/windows/x64/runner/Release/`——**安装脚本只认这个路径**，再 `build_windows.ps1 -DeployTo` 把新内核 DLL 覆盖进去，不能漏，否则打的还是旧 DLL。`build_windows_desktop.ps1` 现在自己就把编好的 bundle 复制到那个目录（第 9 步），因为它实际编译输出在 `app/windows/out/build/...`。macOS 侧先 `flutter build macos --release`，再 `./scripts/build_macos_dmg.sh`（版本自己从 pubspec 读）。Android 同理：先在 Mac 上 `./scripts/build_android_deps.sh arm64-v8a`，再 `./scripts/build_android_apk.sh`。**Mac 上 Flutter 不在 `/opt/homebrew/bin`**，脚本里要能找到 `flutter`，否则 `build_macos_dmg.sh` 会安静地把上一次的 `app` 打进 dmg——本次就踩了：第一次 dmg 的 sha256 是旧的 app 打出来的，补 `export PATH="$HOME/development/flutter/bin:$PATH"` 重打才是新的。
 
 **覆盖升级**：装新版不用先手动卸载。`installer.nsi` 的 `StopRunningApp` 宏在安装段与卸载段各调一次，先 `taskkill`（不带 `/F`，等于发 WM_CLOSE）再轮询，5 秒不退才强杀；判「在不在跑」用的是 `tasklist | findstr`，**必须是 `findstr` 不能是 `find`** —— Git Bash 的 PATH 里 MSYS 的 GNU find 排在 System32 前面，它不认 `/FI`/`/I`，退出码非 0，宏会把「还在跑」误判成「没在跑」，覆盖升级就退化成「文件被占用」。回归用 `scripts\verify_windows_upgrade.ps1` / `verify_windows_uninstall.ps1`，两个脚本都带正负对照，PowerShell 与 Git Bash 里都能跑（详见 verification.md 3.33）。
+
+v0.1.3 的发布结果：Release id `422432409`，tag `v0.1.3`；三个 asset —— Windows `670874361`（58133401 字节，sha256 `C51384A6629FFA98AE6418C731C6C987911ACF56C04F62680B43279359A15BD6`）、macOS `670875553`（27213687 字节，sha256 `4E6A7DFD45B15EEDF4E354848A0455D30B37214E5AA8DCC46EB193EB9D8F2D50`）、Android `670875692`（34735077 字节，sha256 `BF9923256C67E618727EF5F83438239767572857F66FE23ED9B07C494BE5B570`）。`release_all.ps1 -Verify` 把三个包都下载回来重算过 SHA256，与本地一致。这是第一个带 Android 包的版本。
 
 v0.1.2 的发布结果（照上面两步做的）：Release id `421052828`，tag `v0.1.2` → `995da50`；asset id Windows `668400068`（58132233 字节，sha256 `B6940F682581CB4225A453F04ED8EB48747EC181A96B9E934EE99BC2D844223F`）、macOS `666686825`（27210696 字节，sha256 `8F775B39BF8979FA76D64FF477FC7E9DF38F5AD73248D0716EB1A35579D05166`）。两个包都下载回来重算过 SHA256，与本地一致。
 
 Windows 那个包是**重传过一回**的：第一版（asset `666686044`，sha256 `50C71364…21E9F7`）里的 `StopRunningApp` 宏还在用 `find /I`，从 Git Bash 调用会解析到 GNU find、把「旧版在跑」误判成「没在跑」，覆盖升级失效。改成 `findstr` 后重打包，先 `DELETE /releases/assets/666686044` 再重新上传（GitHub 不允许同名 asset 覆盖，必须删了再传）。教训：**安装器的行为可能依赖调用者的 PATH**，所以回归必须至少在一个真实会遇到的 shell 里跑过 —— 只在宿主 PowerShell 里验是漏的。macOS 的 dmg 不受影响，没有重传。
 
 踩到的一个坑：用 Python 读 API 返回的 JSON 时写了 `json.load(open(...))`，Windows 上默认按 GBK 解码，中文 body 立刻 `UnicodeDecodeError: 'gbk' codec can't decode byte 0xad`。改成 `io.open(path, encoding='utf-8')`，或者干脆只让 `.ps1` 里用 `--ssl-no-revoke` 的 curl 落盘再读。
+
+`release_all.ps1` 自己在 Windows PowerShell 5.1 上踩过两个坑，写在这里免得下次换个脚本又踩一遍：
+
+- **`& $array` 不会展开参数**。把 `curl.exe` 和参数攒进一个数组再 `& $args_array`，5.1 会把这个数组拼成一个字符串当命令名，报「无法将 “curl.exe -sS ...” 识别为 cmdlet」。正确写法是命令与参数分开：`& $curl @curlArgs`。
+- **`ConvertTo-Json` 会把 `Get-Content -Raw` 的返回值包一层**。`$body = Get-Content -Path x.md -Raw -Encoding UTF8` 之后 `ConvertTo-Json` 输出的是 `"body": {"value": "...", "ReadCount": 1, ...}`，GitHub 直接回 `Invalid request. For 'properties/body'`。加一个 `[string]` 强制转换就好：`[string]$body = Get-Content ... -Raw`。
+
+还有一个连带教训：API 报错时 `curl` 的退出码仍是 0，所以「创建 release 成功没有」不能靠 `$LASTEXITCODE` 判断，要看返回体里有没有 `id`。脚本现在拿不到 `id` 就带着 GitHub 的原文直接退出。
 
 静默安装到自定义目录时 `/D=` 必须是**最后一个参数**且不能带引号；PowerShell 里更稳的是 `Start-Process -ArgumentList '/S','/D=D:\path' -Wait`。
 ### 7.4 构建后自检
