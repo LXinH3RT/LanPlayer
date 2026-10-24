@@ -18,7 +18,15 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/app/build/macos/Build/Products/Release/lanplayer.app"
-VERSION="${VERSION:-0.1.2}"
+# The version comes from app/pubspec.yaml unless VERSION says otherwise, so the
+# dmg name cannot drift from the tag and from the other two packages.
+if [ -z "${VERSION:-}" ]; then
+  VERSION="$(sed -n 's/^version:[[:space:]]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$ROOT/app/pubspec.yaml" | head -1)"
+fi
+if [ -z "$VERSION" ]; then
+  echo "error: cannot read the version from app/pubspec.yaml; pass VERSION=x.y.z" >&2
+  exit 1
+fi
 ARCH="$(uname -m)"
 OUT="$ROOT/dist"
 DMG="$OUT/LanPlayer-${VERSION}-macos-${ARCH}.dmg"

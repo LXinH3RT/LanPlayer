@@ -5,9 +5,53 @@ param(
 )
 
 $Root = Split-Path -Parent $PSScriptRoot
-if (-not $OldSetup) { $OldSetup = Join-Path $Root 'dist\LanPlayer-0.1.1-windows-x64-setup.exe' }
-if (-not $NewSetup) { $NewSetup = Join-Path $Root 'dist\LanPlayer-0.1.2-windows-x64-setup.exe' }
+
+# Versions are read rather than written down: the "new" package is whichever
+# version app/pubspec.yaml declares, and the "old" one is the newest earlier
+# installer that happens to be in dist\. Hard-coding 0.1.1 / 0.1.2 meant this
+# script silently tested a pair of packages two releases behind.
+function Get-PubspecVersion {
+    $line = Select-String -Path (Join-Path $Root 'app\pubspec.yaml') -Pattern '^\s*version:\s*([0-9]+\.[0-9]+\.[0-9]+)' | Select-Object -First 1
+    if (-not $line) { return '' }
+    return $line.Matches[0].Groups[1].Value
+}
+function ConvertTo-VersionKey([string]$v) {
+    $n = 0
+    foreach ($part in $v.Split('.')) { $n = $n * 1000 + [int]$part }
+    return $n
+}
+$currentVersion = Get-PubspecVersion
+if (-not $NewSetup -and $currentVersion) {
+    $NewSetup = Join-Path $Root "dist\LanPlayer-$currentVersion-windows-x64-setup.exe"
+}
+if (-not $OldSetup) {
+    $candidates = Get-ChildItem (Join-Path $Root 'dist') -Filter 'LanPlayer-*-windows-x64-setup.exe' -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            if ($_.Name -match '^LanPlayer-([0-9]+\.[0-9]+\.[0-9]+)-windows-x64-setup\.exe$') {
+                [pscustomobject]@{ Path = $_.FullName; Version = $matches[1] }
+            }
+        } |
+        Where-Object { $_.Version -ne $currentVersion } |
+        Sort-Object { ConvertTo-VersionKey $_.Version }
+    if ($candidates) { $OldSetup = $candidates[-1].Path }
+}
 if (-not $Scratch) { $Scratch = Join-Path ([System.IO.Path]::GetTempPath()) 'lp-upgrade-test' }
+if (-not (Test-Path $OldSetup)) {
+    Write-Host "error: no old installer found; build one or pass -OldSetup" -ForegroundColor Red
+    exit 1
+}
+if (-not (Test-Path $NewSetup)) {
+    Write-Host "error: no new installer at $NewSetup; build it first" -ForegroundColor Red
+    exit 1
+}
+
+# Only used for readable log lines.
+function Get-SetupVersion([string]$path) {
+    if ($path -match 'LanPlayer-([0-9]+\.[0-9]+\.[0-9]+)-windows') { return $matches[1] }
+    return 'unknown'
+}
+$oldVersion = Get-SetupVersion $OldSetup
+$newVersion = Get-SetupVersion $NewSetup
 
 # Verify that the installer upgrades over a *running* old version without asking
 # the user to uninstall first -- the bug this script exists to catch.
@@ -27,10 +71,10 @@ if (-not $Scratch) { $Scratch = Join-Path ([System.IO.Path]::GetTempPath()) 'lp-
 #     repo carry a Low integrity label, and keeping the run away from the repo
 #     also means a half-finished install can never touch dist\. (This was long
 #     blamed for silent installer no-ops; that diagnosis was wrong -- see 7.)
-#  2. The launcher exe is byte-identical between 0.1.1 and 0.1.2 (same size,
-#     same sha256), so its size proves nothing on its own. Append marker bytes
-#     first; if the installer overwrites the file the size drops back to 90624.
-#     The deleted DLL is the second, independent signal.
+#  2. The launcher exe is byte-identical between releases (same size, same
+#     sha256), so its size proves nothing on its own. Append marker bytes
+#     first; if the installer overwrites the file the size drops back. The
+#     deleted DLL is the second, independent signal.
 #  3. Start-Process -PassThru + $p.HasExited can hang forever on this machine,
 #     and `cmd /c "..." &` from a sandboxed shell leaves tasklist without a
 #     usable stdin. Run `cmd /c "<setup>" /S` synchronously instead, and poll
@@ -60,8 +104,8 @@ if (-not $Scratch) { $Scratch = Join-Path ([System.IO.Path]::GetTempPath()) 'lp-
 
 $ErrorActionPreference = 'Stop'
 
-$oldTmp = Join-Path $env:TEMP 'lp-verify-011.exe'
-$newTmp = Join-Path $env:TEMP 'lp-verify-012.exe'
+$oldTmp = Join-Path $env:TEMP 'lp-verify-old.exe'
+$newTmp = Join-Path $env:TEMP 'lp-verify-new.exe'
 $exe    = Join-Path $Scratch 'lanplayer.exe'
 $dll    = Join-Path $Scratch 'swscale-10.dll'
 $regApp = 'HKCU\Software\LanPlayer'
@@ -120,14 +164,14 @@ try {
 
     # Point the registry at the scratch dir and let both installs find it the
     # way a double-clicking user would -- no /D. That also covers the real
-    # upgrade path: the 0.1.2 installer must honour the InstallDir left behind
-    # by 0.1.1 instead of falling back to the default location.
+    # upgrade path: the new installer must honour the InstallDir left behind by
+    # the old one instead of falling back to the default location.
     & cmd /c "reg add $regApp /v InstallDir /t REG_SZ /d `"$Scratch`" /f >nul 2>&1"
     $seen = (& cmd /c "reg query $regApp /v InstallDir 2>&1") -join ' '
     if ($seen -notlike "*$Scratch*") { throw "could not point InstallDir at scratch: $seen" }
 
-    if ((Run-Setup $oldTmp "/S") -ne 0) { throw 'baseline 0.1.1 install failed' }
-    Show-State 'baseline-0.1.1'
+    if ((Run-Setup $oldTmp "/S") -ne 0) { throw "baseline install of $oldVersion failed" }
+    Show-State "baseline-$oldVersion"
     if (-not (Test-Path $exe)) { throw 'baseline install did not land in the scratch dir' }
 
     # Append marker bytes so "was the exe replaced" is byte-exact, then remove a
