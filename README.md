@@ -177,7 +177,7 @@ macOS 删 app 就结束，状态在 `~/Library/Containers/dev.lanplayer.lanplaye
 |多音轨 / 多字幕默认轨|✅ 按首选/次选语言挑，音轨与字幕面板拆开，不再默认英语评论轨|
 |音量|✅ 0–200% 滑杆，内核 `lp_ring_set_gain` 直接作用在环形缓冲上|
 |安装包覆盖升级|✅ 旧版在跑也能直接装新版，正负对照均有脚本|
-|Dart 测试|✅ `flutter test` 99 个用例全过；`flutter analyze` 无 issue|
+|Dart 测试|✅ `flutter test` 109 个用例全过；`flutter analyze` 无 issue|
 |Apple 端|✅ macOS 与实体 iPad 均真机跑通（VideoToolbox + AudioQueue + 字幕 + 进度续播）|
 |Android 端|✅ arm64 真机跑通（MediaCodec 硬解 + AAudio + 多音轨选轨 + 自动连播 + 运行时媒体权限）|
 
@@ -209,7 +209,7 @@ LanPlayer/
 │  ├─ lib/data/             模型、存储、媒体源仓库、局域网扫描、封面缓存、选轨偏好
 │  ├─ lib/player/           播放列表与集数识别
 │  ├─ lib/ui/               五个界面 + 字幕气泡 + 封面格 + 音量/音轨面板
-│  └─ test/                 99 个用例（字幕像素与字体、设置、扫描、封面、选轨、音量）
+│  └─ test/                 109 个用例（字幕像素与字体、设置、扫描、封面、选轨、音量）
 ├─ packages/lanplayer_video/ Windows 纹理插件（C++，把内核的 BGRA 帧交给 Flutter）
 ├─ packages/lanplayer_core/  iOS / macOS 的 FFI 插件（把静态库链进 Runner）
 ├─ native/                  C11 播放内核

@@ -487,6 +487,53 @@ class MediaInfo {
   }
 }
 
+/// 当前正在显示的外挂字幕的文件名，没有则 null。
+String? activeExternalSubtitleTitle(MediaInfo info) {
+  for (final s in info.subtitles) {
+    if (s.selected && s.external) return s.title;
+  }
+  return null;
+}
+
+/// 按文件名找外挂轨的索引；没加载过就返回 [noSubtitleTrack]。
+///
+/// 已经读进来的文件不该再读一次 —— `lp_player_add_subtitle` 每调一次就多一条
+/// 轨；内核现在也会对同一个 URL 直接返回已有索引，这里先用文件名挡一遍，好让
+/// 界面把「已加载」的文件从待选列表里拿掉。
+int externalSubtitleIndexOf(String name, MediaInfo info) {
+  for (final s in info.subtitles) {
+    if (s.external && s.title == name) return s.index;
+  }
+  return noSubtitleTrack;
+}
+
+/// 还没进轨道表的外挂文件，顺序与 [files] 一致。
+///
+/// 字幕面板因此可以分成两栏而不重复：单选清单列出轨道表里现有的每一条，这一栏
+/// 只列「点一下就能读进来」的文件。已经加载过的不再出现，避免同一份字幕在两处
+/// 各显示一次。
+List<T> pendingSubtitleFiles<T>(
+  List<T> files,
+  String Function(T) nameOf,
+  MediaInfo info,
+) {
+  return [
+    for (final f in files)
+      if (externalSubtitleIndexOf(nameOf(f), info) == noSubtitleTrack) f,
+  ];
+}
+
+/// 弹框里清单顶部的「关闭字幕」那一项用到的哨兵值：内核用负数表示不选。
+const int noSubtitleTrack = -1;
+
+/// 当前选中的字幕轨索引；没有选中时返回 [noSubtitleTrack]。
+int selectedSubtitleIndex(MediaInfo info) {
+  for (final s in info.subtitles) {
+    if (s.selected) return s.index;
+  }
+  return noSubtitleTrack;
+}
+
 class SubtitleStyle {
   final bool bold;
   final bool italic;

@@ -88,6 +88,49 @@ for ($e = 1; $e -le 4; $e++) {
 New-Clip -Path (Join-Path $root2 'movies\movie-01.mkv') -Seconds 4
 New-Clip -Path (Join-Path $root2 'movies\movie-02.mp4') -Seconds 4
 
+# --- one video with an embedded subtitle and two sidecar files -------------
+# This is the subtitle-sheet screenshot: the sheet has to list the embedded
+# track and both sidecars in one radio group, and the row that was picked has
+# to look picked.  The embedded track is muxed from a one-cue .srt; the two
+# sidecars are plain .ass files with ASCII names.
+$sub = Join-Path $root2 'sidecar'
+New-Item -ItemType Directory -Force -Path $sub | Out-Null
+$srt = @('1', '00:00:00,500 --> 00:00:28,000', 'embedded subtitle track', '') -join "`r`n"
+$srtPath = Join-Path $sub 'embedded.srt'
+[IO.File]::WriteAllText($srtPath, $srt, (New-Object System.Text.UTF8Encoding($false)))
+& $ff -hide_banner -loglevel error -y `
+    -f lavfi -i "testsrc2=size=1280x720:rate=30:duration=30" `
+    -f lavfi -i "sine=frequency=440:duration=30" `
+    -i $srtPath -map 0:v -map 1:a -map 2:s `
+    -c:v libx264 -preset veryfast -crf 28 -pix_fmt yuv420p -c:a aac -c:s srt `
+    -metadata:s:s:0 language=eng -metadata:s:s:0 title=Embedded `
+    (Join-Path $sub 'embed.mkv')
+if ($LASTEXITCODE -ne 0) { throw 'ffmpeg failed for embed.mkv' }
+Remove-Item -Force $srtPath
+
+function New-Ass {
+    param([string]$Path)
+    $ass = @(
+        '[Script Info]',
+        'Title: Sidecar',
+        'ScriptType: v4.00+',
+        '',
+        '[V4+ Styles]',
+        ('Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, ' +
+            'BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, ' +
+            'BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding'),
+        ('Style: CHS,Microsoft YaHei,44,&H00FFFFFF,&H000000FF,&H80000000,&H80000000,' +
+            '0,0,0,0,100,100,0,0,1,2,0,8,40,40,40,1'),
+        '',
+        '[Events]',
+        'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+        'Dialogue: 0,0:00:01.00,0:00:28.00,CHS,,0,0,0,,sidecar subtitle'
+    ) -join "`r`n"
+    [IO.File]::WriteAllText($Path, $ass, (New-Object System.Text.UTF8Encoding($false)))
+}
+New-Ass -Path (Join-Path $sub 'embed.ass')
+New-Ass -Path (Join-Path $sub 'embed.zh.ass')
+
 Write-Host "== doc media built at $OutDir"
 Get-ChildItem -Recurse -File $OutDir |
     Group-Object Extension |

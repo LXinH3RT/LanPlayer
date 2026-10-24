@@ -437,96 +437,133 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   /// 「字幕」面板：内嵌字幕轨 + 外挂字幕文件 + 同步微调。
+  ///
+  /// 面板整体跟着 `_player` 一起重建，不在打开时抓一份 `_player.media` 快照：
+  /// 点一份外挂字幕之后内核会重算轨道表并发新的 LP_EVENT_TRACKS，用快照的话
+  /// 选中项永远停在旧值（用户报的就是「点了之后确实选上了，但界面还显示默认
+  /// 字幕」）。
+  ///
+  /// 两栏的分界是「有没有进轨道表」而不是「内嵌还是外挂」：单选清单列的是轨道
+  /// 表里现有的每一条（内嵌的 + 已经加载过的外挂），下面那一栏只列还没加载的
+  /// 文件。同一份外挂字幕不能在两处各出现一次，否则用户会以为有两个不同的字幕。
   Future<void> _openTracksSheet() async {
     _hideTimer?.cancel();
-    final info = _player.media;
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheet) => SafeArea(
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              _SheetHeader('字幕（${info.subtitles.length} 条内嵌）'),
-              RadioListTile<int>(
-                value: -1,
-                groupValue: _currentSubtitleIndex(info),
-                title: const Text('关闭字幕'),
-                onChanged: (_) {
-                  _player.selectSubtitle(-1);
-                  setSheet(() {});
-                },
-              ),
-              for (final s in info.subtitles)
-                RadioListTile<int>(
-                  value: s.index,
-                  groupValue: _currentSubtitleIndex(info),
-                  title: Text(s.label),
-                  onChanged: (_) {
-                    _player.selectSubtitle(s.index);
-                    setSheet(() {});
-                  },
-                ),
-              if (widget.subtitles.isNotEmpty) ...[
-                const _SheetHeader('外挂字幕文件'),
-                for (final f in widget.subtitles)
-                  ListTile(
-                    leading: const Icon(Icons.subtitles_outlined),
-                    title: Text(f.name),
-                    onTap: () {
-                      final url = widget.location.credentialized(f.path);
-                      final rc =
-                          _player.addSubtitle(url, widget.location.options);
-                      if (rc < 0) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                              content: Text('字幕加载失败：请确认文件编码为 UTF-8')),
-                        );
-                      }
-                      setSheet(() {});
-                    },
-                  ),
-              ],
-              const _SheetHeader('字幕同步'),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: Row(
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            AnimatedBuilder(
+              animation: _player,
+              builder: (ctx, _) {
+                final info = _player.media;
+                final current = _currentSubtitleIndex(info);
+                final embedded =
+                    info.subtitles.where((s) => !s.external).length;
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    OutlinedButton(
-                      onPressed: () => _nudgeSubtitle(-100, setSheet),
-                      child: const Text('-0.1s'),
+                    _SheetHeader(info.subtitles.isEmpty
+                        ? '字幕'
+                        : '字幕（$embedded 条内嵌、'
+                            '${info.subtitles.length - embedded} 条外挂）'),
+                    RadioListTile<int>(
+                      value: noSubtitleTrack,
+                      groupValue: current,
+                      title: const Text('关闭字幕'),
+                      onChanged: (_) => _player.selectSubtitle(noSubtitleTrack),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Center(
-                        child: Text(
-                            '${(_subtitleDelay / 1000).toStringAsFixed(1)} s',
-                            style: const TextStyle(fontFamily: 'monospace')),
+                    for (final s in info.subtitles)
+                      RadioListTile<int>(
+                        value: s.index,
+                        groupValue: current,
+                        title: Text(s.label),
+                        onChanged: (_) => _player.selectSubtitle(s.index),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    OutlinedButton(
-                      onPressed: () => _nudgeSubtitle(100, setSheet),
-                      child: const Text('+0.1s'),
-                    ),
                   ],
-                ),
+                );
+              },
+            ),
+            AnimatedBuilder(
+              animation: _player,
+              builder: (ctx, _) {
+                final info = _player.media;
+                // 已经进轨道表的文件不在这里重复列，它们在上面的单选清单里。
+                final pending = pendingSubtitleFiles(
+                  widget.subtitles,
+                  (f) => f.name,
+                  info,
+                );
+                if (pending.isEmpty) return const SizedBox.shrink();
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const _SheetHeader('外挂字幕文件'),
+                    for (final f in pending) _externalSubtitleTile(ctx, f),
+                  ],
+                );
+              },
+            ),
+            const _SheetHeader('字幕同步'),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
+                children: [
+                  OutlinedButton(
+                    onPressed: () => _nudgeSubtitle(-100),
+                    child: const Text('-0.1s'),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Center(
+                      child: Text(
+                          '${(_subtitleDelay / 1000).toStringAsFixed(1)} s',
+                          style: const TextStyle(fontFamily: 'monospace')),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton(
+                    onPressed: () => _nudgeSubtitle(100),
+                    child: const Text('+0.1s'),
+                  ),
+                ],
               ),
-              const SizedBox(height: 12),
-            ],
-          ),
+            ),
+            const SizedBox(height: 12),
+          ],
         ),
       ),
     );
     _scheduleHide();
   }
 
-  void _nudgeSubtitle(int deltaMs, StateSetter setSheet) {
+  /// 一份**还没加载**的外挂字幕文件的行。
+  ///
+  /// 已经进轨道表的文件不走到这里（它们在单选清单里，有选中态）。这一栏只负责
+  /// 「读进来」这个动作，所以点了之后轨道表会多一条、界面随之换成选中态。
+  Widget _externalSubtitleTile(BuildContext ctx, MediaEntry f) {
+    return ListTile(
+      leading: const Icon(Icons.subtitles_outlined),
+      title: Text(f.name),
+      onTap: () async {
+        final url = widget.location.credentialized(f.path);
+        final rc = _player.addSubtitle(url, widget.location.options);
+        if (rc < 0) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('字幕加载失败：请确认文件编码为 UTF-8')),
+          );
+        }
+      },
+    );
+  }
+
+  void _nudgeSubtitle(int deltaMs) {
     _subtitleDelay += deltaMs;
     _player.setSubtitleDelay(_subtitleDelay);
-    setSheet(() {});
   }
 
   int _currentAudioIndex(MediaInfo info) {
@@ -534,12 +571,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return info.audio.isEmpty ? -1 : info.audio.first.index;
   }
 
-  int _currentSubtitleIndex(MediaInfo info) {
-    for (final s in info.subtitles) {
-      if (s.selected) return s.index;
-    }
-    return -1;
-  }
+  int _currentSubtitleIndex(MediaInfo info) => selectedSubtitleIndex(info);
 
   Future<void> _openSpeedSheet() async {
     _hideTimer?.cancel();

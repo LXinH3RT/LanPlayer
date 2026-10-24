@@ -1523,6 +1523,16 @@ int lp_subtitle_add_file(LpPlayer *p, const char *url, const char *options_json)
     }
     pthread_mutex_lock(&p->subs.mutex);
     int nb = p->subs.nb_tracks;
+    /* 同一个文件读第二次就把原来那条交出去，不要再叠一条新的：调用方（字幕面板）
+     * 每点一次这个文件就调一次本函数，重复点会得到两条一模一样的轨道，用户看到
+     * 的就是「同一个字幕出现了两次、还都标着外挂」。 */
+    for (int i = 0; i < nb; i++) {
+        if (p->subs.tracks[i].is_external && strcmp(p->subs.tracks[i].path, url) == 0) {
+            int existing = p->subs.tracks[i].index;
+            pthread_mutex_unlock(&p->subs.mutex);
+            return existing;
+        }
+    }
     pthread_mutex_unlock(&p->subs.mutex);
     if (nb >= LP_MAX_SUBTITLE_TRACKS) {
         return LP_ERR_NOMEM;
