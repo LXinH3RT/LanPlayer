@@ -547,6 +547,7 @@ class SubtitleSpan {
   final bool strikeout;
   final int color; // 0 = inherit from the cue style
   final double scale; // 0 = inherit from the cue style
+  final String font; // '' = inherit from the cue style
 
   const SubtitleSpan({
     required this.text,
@@ -556,6 +557,7 @@ class SubtitleSpan {
     this.strikeout = false,
     this.color = 0,
     this.scale = 0,
+    this.font = '',
   });
 
   factory SubtitleSpan.fromJson(Map<String, dynamic> j) => SubtitleSpan(
@@ -566,6 +568,7 @@ class SubtitleSpan {
         strikeout: j['strikeout'] == true,
         color: (j['color'] as num?)?.toInt() ?? 0,
         scale: (j['scale'] as num?)?.toDouble() ?? 0,
+        font: j['font'] as String? ?? '',
       );
 }
 
@@ -597,7 +600,8 @@ class SubtitleLine {
             r.underline ||
             r.strikeout ||
             r.color != 0 ||
-            r.scale != 0,
+            r.scale != 0 ||
+            r.font.isNotEmpty,
       );
 }
 

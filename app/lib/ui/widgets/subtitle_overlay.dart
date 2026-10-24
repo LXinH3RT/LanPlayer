@@ -27,10 +27,25 @@ class SubtitleOverlay extends StatelessWidget {
   final double scale;
   final double safeArea;
 
+  /// The font family a cue or a run asks for, or null when it asks for none.
+  ///
+  /// ASS names a concrete family in its `Style:` line (`新宋体`,
+  /// `Microsoft YaHei`, `Arial`) and an inline `\fn` can change it mid-line.
+  /// `sans-serif` is the core's placeholder for "no preference", so it means
+  /// the platform default rather than a family that has to exist.
+  static String? _family(String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty || trimmed.toLowerCase() == 'sans-serif') {
+      return null;
+    }
+    return trimmed;
+  }
+
   TextStyle _base(
     BuildContext context, {
     double scaleFactor = 1.0,
     bool outline = false,
+    String fontOverride = '',
   }) {
     final style = cue.style;
     final screenHeight = MediaQuery.sizeOf(context).height;
@@ -48,6 +63,7 @@ class SubtitleOverlay extends StatelessWidget {
             if (style.strikeout) TextDecoration.lineThrough,
           ])
         : TextDecoration.none;
+    final family = _family(fontOverride) ?? _family(style.font);
 
     if (outline) {
       final width = (style.outline.clamp(0, 4)) * 1.5 * scale;
@@ -57,6 +73,10 @@ class SubtitleOverlay extends StatelessWidget {
         fontStyle: style.italic ? FontStyle.italic : FontStyle.normal,
         decoration: decoration,
         height: 1.25,
+        fontFamily: family,
+        // A named family can be missing (the file was authored on another
+        // machine), so the CJK-capable family is always kept as a fallback.
+        fontFamilyFallback: family == null ? null : _fallback,
         foreground: Paint()
           ..style = PaintingStyle.stroke
           ..strokeWidth = width * 2
@@ -73,8 +93,22 @@ class SubtitleOverlay extends StatelessWidget {
       decoration: decoration,
       color: Color(style.color),
       height: 1.25,
+      fontFamily: family,
+      fontFamilyFallback: family == null ? null : _fallback,
     );
   }
+
+  /// Keeps scripts renderable when the requested family is not installed.
+  /// Which of these exist depends on the platform, and Flutter skips the ones
+  /// it cannot find, so the list is deliberately broad.
+  static const List<String> _fallback = <String>[
+    'Microsoft YaHei',
+    'PingFang SC',
+    'Noto Sans CJK SC',
+    'Source Han Sans SC',
+    'WenQuanYi Micro Hei',
+    'Arial',
+  ];
 
   /// Merges one run's inline overrides onto the cue style.
   TextStyle _runStyle(
@@ -89,6 +123,7 @@ class SubtitleOverlay extends StatelessWidget {
       context,
       scaleFactor: r.scale > 0 ? r.scale / cueFraction : 1.0,
       outline: outline,
+      fontOverride: r.font,
     );
     final decorations = <TextDecoration>[
       if (cue.style.underline || r.underline) TextDecoration.underline,
@@ -102,6 +137,8 @@ class SubtitleOverlay extends StatelessWidget {
       height: base.height,
       fontWeight: bold ? FontWeight.w700 : FontWeight.w400,
       fontStyle: italic ? FontStyle.italic : FontStyle.normal,
+      fontFamily: base.fontFamily,
+      fontFamilyFallback: base.fontFamilyFallback,
       decoration: decorations.isEmpty
           ? TextDecoration.none
           : TextDecoration.combine(decorations),

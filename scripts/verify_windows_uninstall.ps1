@@ -82,7 +82,41 @@ function Wait-Gone([string]$dir, [int]$timeoutSec = 20) {
     return -not (Test-Path $dir)
 }
 
+# The saved servers, settings and thumbnail cache live outside $INSTDIR, so an
+# uninstall that does not ask for them keeps them (a reinstall then reconnects
+# on its own). The path is the one path_provider builds:
+# %APPDATA%\<CompanyName>\<ProductName> plus the app's own trailing directory.
+# Whichever directory is in use, this script must not touch the developer's own
+# copy, so the real one is moved aside first and put back in finally.
+$stateDir = Join-Path $env:APPDATA 'dev.lanplayer\lanplayer\lanplayer'
+$stateBak = Join-Path $env:TEMP 'lp-state-backup'
+$marker   = Join-Path $stateDir 'lp-purge-marker.json'
+
+function Write-StateFixture {
+    Remove-Item $stateDir -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path (Join-Path $stateDir 'thumbs') -Force | Out-Null
+    Set-Content -Path $marker -Value '{"servers":[{"host":"192.0.2.1"}]}' -Encoding ASCII
+    Set-Content -Path (Join-Path $stateDir 'settings.json') -Value '{}' -Encoding ASCII
+    Set-Content -Path (Join-Path $stateDir 'thumbs\a.jpg') -Value 'x' -Encoding ASCII
+}
+
+function Restore-State {
+    Remove-Item $stateDir -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path $stateBak) {
+        $parent = Split-Path -Parent $stateDir
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        Move-Item $stateBak $stateDir -Force
+    }
+}
+
 $savedDir = (Get-ItemProperty $regApp -Name InstallDir -ErrorAction SilentlyContinue).InstallDir
+
+# Move the real state aside before any fixture is written; finally puts it back.
+if (Test-Path $stateDir) {
+    Remove-Item $stateBak -Recurse -Force -ErrorAction SilentlyContinue
+    Move-Item $stateDir $stateBak -Force
+}
+"state_backed_up=$([bool](Test-Path $stateBak))"
 
 try {
     Stop-App
@@ -114,10 +148,41 @@ try {
     "leftover_files=$($left.Count) leftovers=[$($left.Name -join ',')] app_still_alive=$($alive -gt 0)"
     "dir_left=$(Test-Path $Scratch)"
     if ($alive -gt 0 -or $left.Count -gt 0 -or $code -ne 0) { throw 'uninstall-over-running-app FAILED' }
+
+    # 4. A plain silent uninstall must keep the saved data: losing the server
+    #    list on every upgrade would be worse than the leak this fixes.
+    Write-StateFixture
+    & cmd /c "`"$tmpExe`" /S /D=$Scratch"
+    if (-not (Test-Path $unexe)) { throw 'second install did not produce uninstall.exe' }
+    & cmd /c "`"$unexe`" /S"
+    $keepGone = Wait-Gone $Scratch 20
+    Start-Sleep -Milliseconds 500
+    $markerKept = Test-Path $marker
+    $stateKept  = Test-Path $stateDir
+    "silent-keep: removed_app=$keepGone state_dir=$stateKept marker=$markerKept"
+    if (-not $stateKept -or -not $markerKept) {
+        throw 'silent uninstall deleted the saved data; it must need /PURGE'
+    }
+
+    # 5. ... and /PURGE must remove it, together with the two wrapper
+    #    directories when they are empty.
+    Write-StateFixture
+    & cmd /c "`"$tmpExe`" /S /D=$Scratch"
+    if (-not (Test-Path $unexe)) { throw 'third install did not produce uninstall.exe' }
+    & cmd /c "`"$unexe`" /S /PURGE"
+    $purgeGone = Wait-Gone $Scratch 20
+    Start-Sleep -Milliseconds 500
+    $stateAfter = Test-Path $stateDir
+    $company = Join-Path $env:APPDATA 'dev.lanplayer'
+    "silent-purge: removed_app=$purgeGone state_dir=$stateAfter vendor_dir=$(Test-Path $company)"
+    if ($stateAfter -or (Test-Path $marker)) {
+        throw 'uninstall /PURGE left the saved data behind'
+    }
 }
 finally {
     Stop-App
     Remove-Item $Scratch -Recurse -Force -ErrorAction SilentlyContinue
+    Restore-State
 
     # Restore through cmd /c with the streams discarded. Under
     # $ErrorActionPreference = 'Stop', `reg.exe ... 2>&1` turns reg's ordinary

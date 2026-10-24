@@ -498,7 +498,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_instal
 | 权限 | `RequestExecutionLevel user`，**不弹 UAC**，不写 `Program Files` |
 | 页面 | 欢迎 → 许可（`LICENSE`）→ 组件（核心必装 / 快捷方式 / 文件关联可选）→ 目录 → 安装 → 完成 |
 | 语言 | 简体中文 + English（NSIS 自带 `SimpChinese.nlf`） |
-| 卸载 | 删全部文件与快捷方式、清两类注册表键；**用户数据 `%APPDATA%\lanplayer` 只弹窗询问，默认保留** |
+| 卸载 | 删全部文件与快捷方式、清两类注册表键；用户数据由选项页的勾选框决定（默认保留，静默卸载要 `/PURGE`）。`PurgeUserData` 宏覆盖四处候选目录：`%APPDATA%\<Company>\<Product>\lanplayer`、`%LOCALAPPDATA%\lanplayer`、`<安装目录>\state`、`%TEMP%\lanplayer`；前两层的公司/产品目录用不带 `/r` 的 `RMDir` 收尾，不为空时不动 |
 | `.nsi` 编码 | 必须 **UTF-8 with BOM**，无 BOM 时 `makensis` 报 `Bad text encoding: scripts\windows\installer.nsi:1`（`check_installers()` 会检查） |
 | 临时目录 | `makensis` 往 `%TEMP%` 写临时文件，被拒时表现为 `Internal compiler error #12345: error creating mmap`（后面还跟着一个字节数）；脚本已把 `TMP`/`TEMP` 重定向到 `.tools\tmp` |
 | 脚本编码 | `build_windows_installer.ps1` **必须纯 ASCII 注释**：PS 5.1 按 ANSI 读无 BOM 的 `.ps1`，中文注释会变乱码并吃掉后面的引号，报 `ParserError: Unexpected token ')'`（仓库所有 `.ps1` 都遵守） |
@@ -519,7 +519,7 @@ powershell -File scripts\verify_windows_upgrade.ps1     # 旧版运行中 -> 装
 powershell -File scripts\verify_windows_uninstall.ps1   # 应用运行中 -> 卸载
 ```
 
-两个都装到 `D:\lp-upgrade-test` / `D:\lp-uninstall-test` 这类 scratch 目录，跑完恢复注册表与快捷方式，不动真实安装；它们做**正负对照**：把宏拆掉的安装器（`.tools\tmp` 里由 `mknokill.py` / `mknoun.py` 生成）必须让脚本报失败，否则说明断言没在测东西。跑时注意两点：**先把安装包 `Copy-Item` 到 `%TEMP%` 再执行**（仓库里的文件带 Low 完整性标签，复制出去跑是为了不弄脏 `dist\`）；**别用 `Start-Process -PassThru` + `$p.HasExited` 轮询**（在本机会死锁），用同步的 `cmd /c "<setup>" /S`。PowerShell 与 Git Bash 都可以跑——**但只要你从 Git Bash 跑，就要确认 `where find` 命中 `C:\Windows\System32\find.exe`**，PATH 里 MSYS 的 GNU find 会把覆盖升级验成 FAILED（宏已改用 `findstr` 规避，详见 3.33）。
+两个都装到 `D:\lp-upgrade-test` / `D:\lp-uninstall-test` 这类 scratch 目录，跑完恢复注册表与快捷方式，不动真实安装；它们做**正负对照**：把宏拆掉的安装器必须让脚本报失败，否则说明断言没在测东西。`verify_windows_uninstall.ps1` 另外验三件事：静默卸载保留用户数据、`/S /PURGE` 删掉用户数据、删完连 `%APPDATA%` 下的公司目录一并收尾；它会把真实状态目录先挪走再放回，不会动开发机上的配置。跑时注意两点：**先把安装包 `Copy-Item` 到 `%TEMP%` 再执行**（仓库里的文件带 Low 完整性标签，复制出去跑是为了不弄脏 `dist\`）；**别用 `Start-Process -PassThru` + `$p.HasExited` 轮询**（在本机会死锁），用同步的 `cmd /c "<setup>" /S`。PowerShell 与 Git Bash 都可以跑——**但只要你从 Git Bash 跑，就要确认 `where find` 命中 `C:\Windows\System32\find.exe`**，PATH 里 MSYS 的 GNU find 会把覆盖升级验成 FAILED（宏已改用 `findstr` 规避）。
 
 ### 7.2 macOS（dmg）
 ```bash

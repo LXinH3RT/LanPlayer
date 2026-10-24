@@ -32,7 +32,7 @@
 ||硬解：Android MediaCodec / Apple VideoToolbox / Windows D3D11VA|`platform/android/media_codec_decoder.c`、`platform/apple/videotoolbox_decoder.c`、`platform/win32/d3d11va_decoder.c`|
 ||主时钟音画同步|`core/audio_ring.c`（时钟映射）、`core/video.c`（排期与丢帧）|
 ||音频输出：AAudio / AudioQueue / waveOut|`platform/android/aaudio_sink.c`、`platform/apple/coreaudio_sink.c`、`platform/win32/`|
-||字幕：内嵌解码 + 外挂 SRT/ASS/VTT + ASS 富文本 + 图形字幕（PGS/VobSub/DVB）|`core/subtitle.c`、`ui/widgets/subtitle_overlay.dart`|
+||字幕：内嵌解码 + 外挂 SRT/ASS/VTT + ASS 富文本（颜色/描边/字号/字体）+ 图形字幕（PGS/VobSub/DVB）|`core/subtitle.c`、`ui/widgets/subtitle_overlay.dart`|
 |3 播放控制|播放/暂停/快进快退/音量/进度拖拽|`core/player.c`、`ui/player_screen.dart`|
 ||0.5x–2.0x 倍速且音调不变|`core/audio.c`（atempo 链）、`lp_player_set_speed`|
 ||当前目录自动连播|`app/lib/player/playlist.dart`、`ui/player_screen.dart`|
@@ -54,6 +54,10 @@
 iPad 上的同一套 UI（`lanplayer/video` 纹理 + 外挂字幕）：
 
 ![iPad 播放](docs/images/ipad-player.png)
+
+ASS 字幕里的 `Fontname` 与行内 `\fn` 都会真正生效（同一条字幕里两种字体）：
+
+![字幕字体](docs/images/desktop-subtitle-fonts.jpg)
 
 ## 快速开始
 
@@ -146,7 +150,9 @@ VERSION=0.1.2 ./scripts/build_macos_dmg.sh
 （`scripts\verify_windows_upgrade.ps1`、`scripts\verify_windows_uninstall.ps1`）。
 
 `avdevice-63.dll`（4.9 MB）**不打包**：没有任何模块依赖它，内核也从不调 `avdevice_*`。
-用户数据两个包都不碰：Windows 卸载时问一句是否删 `%APPDATA%\lanplayer`（默认保留）；
+用户数据默认保留：Windows 卸载器的选项页给一个「同时删除服务器列表、设置和缩略图缓存」的
+勾选框（默认不勾），静默卸载要显式 `uninstall.exe /S /PURGE`；数据落在
+`%APPDATA%\<Company>\<Product>\lanplayer`（`path_provider` 按版本资源里的公司名与产品名建目录）。
 macOS 删 app 就结束，状态在 `~/Library/Containers/dev.lanplayer.lanplayer/`。
 
 ### 已发布的安装包
@@ -163,7 +169,7 @@ macOS 删 app 就结束，状态在 `~/Library/Containers/dev.lanplayer.lanplaye
 |C 内核 / libsmb2 / FFmpeg 链接|✅ Windows 上 Zig 编 14 个源文件 + 48 个 libsmb2 文件，0 error|
 |视频 + 音频播放|✅ h264 软解、AAC→float 立体声、位置推进正确|
 |硬解|✅ Windows D3D11VA（与软件参考均值差 ≤0.2 级）、macOS/iPad VideoToolbox、Android MediaCodec|
-|字幕|✅ 内嵌 + 外挂 SRT/ASS/VTT + 非 UTF-8 按代码页回退 + ASS 富文本 + PGS/VobSub 图形字幕|
+|字幕|✅ 内嵌 + 外挂 SRT/ASS/VTT + 非 UTF-8 按代码页回退 + ASS 富文本（颜色/描边/字号/字体，含行内 `\fn`）+ PGS/VobSub 图形字幕|
 |SMB 浏览 / 凭据校验 / 局域网扫描|✅ 只读、共享名自填、不做枚举；扫描并发探 SMB 端口|
 |列表封面缩略图|✅ 只解第一帧、`LPT2` 头落盘缓存、只对视频行请求|
 |含 FLV 的文件夹不再卡死|✅ 修掉内核三处缺陷 + 一处并发过载|
@@ -171,7 +177,7 @@ macOS 删 app 就结束，状态在 `~/Library/Containers/dev.lanplayer.lanplaye
 |多音轨 / 多字幕默认轨|✅ 按首选/次选语言挑，音轨与字幕面板拆开，不再默认英语评论轨|
 |音量|✅ 0–200% 滑杆，内核 `lp_ring_set_gain` 直接作用在环形缓冲上|
 |安装包覆盖升级|✅ 旧版在跑也能直接装新版，正负对照均有脚本|
-|Dart 测试|✅ `flutter test` 95 个用例全过；`flutter analyze` 无 issue|
+|Dart 测试|✅ `flutter test` 99 个用例全过；`flutter analyze` 无 issue|
 |Apple 端|✅ macOS 与实体 iPad 均真机跑通（VideoToolbox + AudioQueue + 字幕 + 进度续播）|
 |Android 端|✅ arm64 真机跑通（MediaCodec 硬解 + AAudio + 多音轨选轨 + 自动连播 + 运行时媒体权限）|
 
@@ -203,7 +209,7 @@ LanPlayer/
 │  ├─ lib/data/             模型、存储、媒体源仓库、局域网扫描、封面缓存、选轨偏好
 │  ├─ lib/player/           播放列表与集数识别
 │  ├─ lib/ui/               五个界面 + 字幕气泡 + 封面格 + 音量/音轨面板
-│  └─ test/                 95 个用例（字幕像素、设置、扫描、封面、选轨、音量）
+│  └─ test/                 99 个用例（字幕像素与字体、设置、扫描、封面、选轨、音量）
 ├─ packages/lanplayer_video/ Windows 纹理插件（C++，把内核的 BGRA 帧交给 Flutter）
 ├─ packages/lanplayer_core/  iOS / macOS 的 FFI 插件（把静态库链进 Runner）
 ├─ native/                  C11 播放内核

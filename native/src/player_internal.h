@@ -340,6 +340,7 @@ typedef struct LpSubRun {
     unsigned flags;    /* LP_SUB_* */
     uint32_t color;    /* 0 = inherit from the cue style */
     double font_scale; /* 0 = inherit from the cue style */
+    char font_name[64]; /* empty = inherit from the cue style */
 } LpSubRun;
 
 /* One decoded bitmap subtitle rectangle (PGS / VobSub / DVB).  Pixels are
