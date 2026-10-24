@@ -104,13 +104,16 @@ function Invoke-Api {
         [string]$JsonFile = '',
         [string]$OutFile = ''
     )
-    $curlArgs = @($curl, '-sS', '--ssl-no-revoke', '-X', $Method, $Url,
+    # Arguments only; the command is splatted separately. `& $array` does not
+    # splat in Windows PowerShell 5.1 - it stringifies the whole array and then
+    # fails with "not recognized as the name of a cmdlet".
+    $curlArgs = @('-sS', '--ssl-no-revoke', '-X', $Method, $Url,
         '-H', "Authorization: Bearer $token",
         '-H', 'Accept: application/vnd.github+json',
         '-H', 'X-GitHub-Api-Version: 2022-11-28')
     if ($JsonFile) { $curlArgs += @('-H', 'Content-Type: application/json', '-d', "@$JsonFile") }
     if ($OutFile) { $curlArgs += @('-o', $OutFile) }
-    $response = & $curlArgs 2>&1
+    $response = & $curl @curlArgs 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host "error: $Method $Url failed: $response" -ForegroundColor Red
         exit 1
@@ -141,7 +144,11 @@ if ($release -and $release.tag_name) {
     $body = ''
     if ($BodyFile) {
         if (-not (Test-Path $BodyFile)) { Write-Host "error: missing body file $BodyFile" -ForegroundColor Red; exit 1 }
-        $body = Get-Content -Path $BodyFile -Raw -Encoding UTF8
+        # The [string] cast is load bearing: Windows PowerShell 5.1 hands back
+        # the -Raw result in a wrapper that ConvertTo-Json turns into
+        # {"value": "...", "ReadCount": 1, ...} instead of a plain string, and
+        # GitHub then rejects the request with "For 'properties/body'".
+        [string]$body = Get-Content -Path $BodyFile -Raw -Encoding UTF8
     } else {
         $body = "Windows / macOS / Android packages for $Version."
     }
@@ -157,6 +164,12 @@ if ($release -and $release.tag_name) {
     [System.IO.File]::WriteAllText($jsonPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
     $created = Invoke-Api -Method POST -Url "$api/releases" -JsonFile $jsonPath -OutFile $releaseJson
     $release = Get-Content -Path $releaseJson -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $release.id) {
+        # curl exits 0 on an API error too, so a missing id means GitHub said no.
+        $why = Get-Content -Path $releaseJson -Raw -Encoding UTF8
+        Write-Host "error: creating release $Tag failed: $why" -ForegroundColor Red
+        exit 1
+    }
     Write-Host "  created release id $($release.id) (tag $Tag)"
 }
 $releaseId = $release.id
