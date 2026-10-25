@@ -599,6 +599,19 @@ def check_installers() -> None:
         problems.append("build_macos_dmg.py must verify the signature before "
                         "packing")
 
+    # A file inherits the integrity label of the directory it is created in.
+    # When the checkout sits on a tree labelled Low -- which is what a copy made
+    # under an elevated shell can leave behind -- the installer inherits that
+    # label, and Windows then spawns it at Low integrity.  A Low process cannot
+    # write to an ordinary user's install directory: the user sees "cannot write
+    # to <install dir>\lanplayer.dll", and a silent install instead exits 0
+    # having installed nothing at all.  Both were reproduced on a real machine.
+    # The build has to drop the label so the artefact behaves like a download.
+    if "has_integrity_label" not in driver or "clear_integrity_label" not in driver:
+        problems.append("build_windows_installer.py no longer clears the "
+                        "integrity label of the installer; a package built on a "
+                        "labelled tree cannot write to the install directory")
+
     # The iOS device installer is the only path that runs on a real iPad.
     # Guard the two things that make it work: an explicit team id (Xcode
     # refuses to sign without one) and devicectl (flutter install needs the

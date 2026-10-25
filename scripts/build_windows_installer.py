@@ -140,6 +140,17 @@ def build(version: str, release: Path, out_dir: Path, keep_stage: bool) -> Path:
     if not out_file.exists():
         raise lp.ScriptError("makensis produced no output")
 
+    # A file inherits the integrity label of the directory it is created in.  If
+    # the checkout sits on a tree labelled Low, the installer inherits that
+    # label, and Windows then spawns it at Low integrity - where it cannot write
+    # to an ordinary user's install directory.  The user sees "cannot write:
+    # <install dir>\lanplayer.dll"; in silent mode the installer instead exits 0
+    # without installing anything at all.  The artefact has to leave the build
+    # tree without a label, like any file the user downloaded.
+    if lp.has_integrity_label(out_file):
+        lp.clear_integrity_label(out_file)
+        print("  cleared the integrity label inherited from the build tree")
+
     print()
     print(f"built: {out_file} ({lp.size_mb(out_file)} MB)")
     print(f"sha256: {lp.sha256(out_file)}")

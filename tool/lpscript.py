@@ -265,6 +265,50 @@ def pubspec_version(path: Path | None = None) -> str:
     return match.group(1)
 
 
+def clear_integrity_label(path: Path) -> bool:
+    """Drop the mandatory integrity label from a file on Windows.
+
+    A file inherits the label of the directory it was created in.  If that
+    directory carries a *Low* label, Windows spawns the file's process at Low
+    integrity too, and the program then cannot write anywhere a normal user
+    can - an installer produced that way reports "cannot write to
+    <install dir>" on a machine whose install directory has no label at all.
+
+    Build trees sometimes live on a volume whose root was labelled Low, so
+    every artefact built inside them silently inherits the restriction.
+    Clearing the label on the artefact itself makes it behave like a file the
+    user downloaded, which is what has to be shipped.
+
+    Returns True when a label was present and removed.  No-op off Windows.
+    """
+    if os.name != "nt":
+        return False
+    import ctypes
+    import ctypes.wintypes as wt
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi.SetNamedSecurityInfoW.restype = wt.DWORD
+    advapi.SetNamedSecurityInfoW.argtypes = [
+        ctypes.c_wchar_p, ctypes.c_int, wt.DWORD, ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+    ]
+    label_info = 0x00000010  # LABEL_SECURITY_INFORMATION
+    se_file_object = 1
+    code = advapi.SetNamedSecurityInfoW(str(Path(path).resolve()), se_file_object,
+                                        label_info, None, None, None, None, None)
+    if code != 0:
+        raise ScriptError(f"cannot clear the integrity label of {path} (error {code})")
+    return True
+
+
+def has_integrity_label(path: Path) -> bool:
+    """True when the file carries a mandatory integrity label (Windows only)."""
+    if os.name != "nt":
+        return False
+    text = output(["icacls", str(path)]) or ""
+    return "Mandatory Label" in text
+
+
 def copy_tree_files(src: Path, dst: Path, names: list[str]) -> list[Path]:
     """Copy the named files, failing loudly when one is missing."""
     copied: list[Path] = []
