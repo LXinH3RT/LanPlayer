@@ -467,12 +467,58 @@ def check_thumbnails() -> None:
                             "subtitles would not be linked to their video")
     else:
         problems.append("app/lib/data/models.dart missing")
+    # The row itself lives in a shared widget now, because the home screen
+    # spreads every source's root out with the very same rows. The guard follows
+    # the code: the widget must group subtitles under their video, and both
+    # screens must render through that widget instead of hand-rolling rows.
+    row = ROOT / "app" / "lib" / "ui" / "widgets" / "media_row.dart"
+    home = ROOT / "app" / "lib" / "ui" / "home_screen.dart"
     if browser.exists():
         bc = browser.read_text(encoding="utf-8")
         if "_listing.browsable" not in bc:
             problems.append("browser_screen must iterate browsable, not entries")
-        if "subtitlesFor" not in bc:
-            problems.append("browser_screen must group subtitles per video")
+        if "MediaRow(" not in bc:
+            problems.append("browser_screen must render rows through "
+                            "widgets/media_row.dart, not its own ListTile")
+    else:
+        problems.append("app/lib/ui/browser_screen.dart missing")
+    if row.exists():
+        rc = row.read_text(encoding="utf-8")
+        if "subtitlesFor" not in rc:
+            problems.append("media_row must group subtitles per video; "
+                            "sidecar files would show up as loose rows")
+        if "resumablePosition" not in rc:
+            problems.append("media_row must draw the resume bar; playback "
+                            "position would be invisible on both screens")
+    else:
+        problems.append("app/lib/ui/widgets/media_row.dart missing")
+    if home.exists() and "MediaRow(" not in home.read_text(encoding="utf-8"):
+        problems.append("home_screen must render rows through "
+                        "widgets/media_row.dart so both lists stay identical")
+
+    # 首页是「直接摊开根目录」，不是「卡片列表」：它必须自己去列每个来源的根，
+    # 源头是两类存储（服务器 + 本机文件夹）。
+    sources = ROOT / "app" / "lib" / "data" / "home_sources.dart"
+    folders = ROOT / "app" / "lib" / "data" / "folders.dart"
+    for path, label in ((sources, "home_sources.dart"), (folders, "folders.dart")):
+        if not path.exists():
+            problems.append(f"app/lib/data/{label} missing; the home screen "
+                            f"would only show server cards again")
+    if sources.exists():
+        sc = sources.read_text(encoding="utf-8")
+        if "buildHomeSources(" not in sc:
+            problems.append("home_sources must keep buildHomeSources(); the "
+                            "home screen would have to merge the two stores "
+                            "itself and the order would drift")
+    if home.exists():
+        hc = home.read_text(encoding="utf-8")
+        if "location.rootUrl" not in hc:
+            problems.append("home_screen must list each source's root itself; "
+                            "requiring a tap on a card first is what users "
+                            "asked to remove")
+        if "showSourceFilter(" not in hc:
+            problems.append("home_screen must offer the source filter when "
+                            "several sources are on the page")
 
     notes.append("thumbnails: LPT2 header round-trips, hex cache key, "
                  "covers only for video rows, decoding is throttled and "

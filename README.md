@@ -5,7 +5,7 @@
 
 ```
 ┌──────────────────────────── Flutter (Dart) ────────────────────────────┐
-│  服务器列表 / 文件浏览器 / 播放页 / 解码设置                          │
+│  首页（各来源根目录）/ 文件浏览器 / 播放页 / 解码设置                   │
 │  PlayerController ── dart:ffi ──► liblanplayer.so / .a / .dll          │
 │  字幕气泡（Flutter Text 渲染）        视频：Texture(textureId)          │
 │  图形字幕（直接混合进 BGRA 帧）                                          │
@@ -25,6 +25,8 @@
 |模块|需求|实现位置|
 |-|-|-|
 |1 连接与浏览|服务器增删改、保存 IP/端口/账号密码|`app/lib/data/stores.dart`、`ui/server_edit_screen.dart`|
+||首页直接摊开每个来源的根目录，不用先点一次卡片；多个来源并排列出，顶部可只看其中一个|`app/lib/data/home_sources.dart`、`ui/home_screen.dart`|
+||本机文件夹也能固定到首页（`folders.json`，与服务器记录互不影响）|`app/lib/data/folders.dart`、`ui/folder_picker.dart`|
 ||连接后以文件列表浏览共享目录|`native/src/source/smb.c`、`ui/browser_screen.dart`|
 ||列表每行带封面缩略图（只解第一帧、本地缓存、只对视频行请求）|`native/src/core/thumb.c`、`app/lib/data/thumbs.dart`、`ui/widgets/thumbnail_tile.dart`|
 ||只列视频/字幕/音频，`.txt`、`.docx` 等不显示；每个视频下面挂出它自己的字幕|`native/src/source/url.c`（`lp_is_listable_media`）、`app/lib/data/models.dart`、`ui/browser_screen.dart`|
@@ -45,7 +47,7 @@
 
 ## 界面
 
-![首页](docs/images/desktop-home-release.png)
+![首页](docs/images/desktop-home.png)
 ![浏览共享](docs/images/desktop-browse.png)
 
 ![音轨面板](docs/images/desktop-audio-sheet.jpg)
@@ -70,7 +72,10 @@ New-SmbShare -Name Movies -Path D:\Movies -ReadAccess lanplay
 
 应用只要 **地址 / 共享名 / 用户名 / 密码** 四个输入框，不依赖本仓库提供的任何服务端脚本。
 
-**2. 添加服务器**：`添加 → 填地址、共享名、用户名、密码 → 连接并浏览`。
+**2. 添加服务器或文件夹**：`添加 → 填地址、共享名、用户名、密码`，或者 `添加 → 添加本机文件夹`。
+添加完首页就直接列出它的根目录，不用再点一次进去；加了多个来源时它们一起列在首页上，
+顶上一排按钮可以只看其中一个，每块标题右边的「全部」进对应的完整浏览页。
+
 共享名就是 Windows「属性 → 共享」里填的那个名字；客户端不会去枚举服务器的共享列表。
 不知道 IP 时点「扫描局域网」——并发探测本机所在网段（默认 `/24`）的 SMB 端口，列出开放的主机，
 点一行就自动填进地址框（只填地址，共享名仍要自己填）。
@@ -177,7 +182,7 @@ macOS 删 app 就结束，状态在 `~/Library/Containers/dev.lanplayer.lanplaye
 |多音轨 / 多字幕默认轨|✅ 按首选/次选语言挑，音轨与字幕面板拆开，不再默认英语评论轨|
 |音量|✅ 0–200% 滑杆，内核 `lp_ring_set_gain` 直接作用在环形缓冲上|
 |安装包覆盖升级|✅ 旧版在跑也能直接装新版，正负对照均有脚本|
-|Dart 测试|✅ `flutter test` 109 个用例全过；`flutter analyze` 无 issue|
+|Dart 测试|✅ `flutter test` 121 个用例全过；`flutter analyze` 无 issue|
 |Apple 端|✅ macOS 与实体 iPad 均真机跑通（VideoToolbox + AudioQueue + 字幕 + 进度续播）|
 |Android 端|✅ arm64 真机跑通（MediaCodec 硬解 + AAudio + 多音轨选轨 + 自动连播 + 运行时媒体权限）|
 
@@ -209,7 +214,7 @@ LanPlayer/
 │  ├─ lib/data/             模型、存储、媒体源仓库、局域网扫描、封面缓存、选轨偏好
 │  ├─ lib/player/           播放列表与集数识别
 │  ├─ lib/ui/               五个界面 + 字幕气泡 + 封面格 + 音量/音轨面板
-│  └─ test/                 109 个用例（字幕像素与字体、设置、扫描、封面、选轨、音量）
+│  └─ test/                 121 个用例（字幕像素与字体、设置、扫描、封面、选轨、音量、首页来源）
 ├─ packages/lanplayer_video/ Windows 纹理插件（C++，把内核的 BGRA 帧交给 Flutter）
 ├─ packages/lanplayer_core/  iOS / macOS 的 FFI 插件（把静态库链进 Runner）
 ├─ native/                  C11 播放内核

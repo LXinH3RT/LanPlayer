@@ -2,20 +2,21 @@ import 'package:flutter/material.dart';
 
 import '../data/location.dart';
 import '../data/models.dart';
-import '../data/progress.dart';
 import '../data/repository.dart';
 import '../data/stores.dart';
 import '../player/playlist.dart';
-import '../util/format.dart';
 import 'feedback.dart';
 import 'player_screen.dart';
-import 'widgets/thumbnail_tile.dart';
+import 'widgets/media_row.dart';
 
 /// 媒体文件夹浏览屏幕，用于浏览 SMB 或本地文件夹中的内容。
 ///
 /// 该屏幕负责展示当前目录列表、允许用户在嵌套文件夹之间导航，并在
 /// 用户选择视频或音频文件时启动播放。它会在内存中保存当前浏览状态，
 /// 同时保留返回栈，以支持类似面包屑式的导航体验。
+///
+/// 单行的样子交给 [MediaRow]：首页把各来源的根目录直接摊开，用的是同一个
+/// 部件，两处才不会慢慢长成两种列表。
 class BrowserScreen extends StatefulWidget {
   const BrowserScreen(
       {super.key, required this.location, required this.initial});
@@ -84,30 +85,6 @@ class _BrowserScreenState extends State<BrowserScreen> {
     if (_listing.parent.isNotEmpty) {
       _navigate(_listing.parent, push: false);
     }
-  }
-
-  /// 把字幕文件名显示成「相对视频主干多出来的那段」，没有就退回扩展名。
-  ///
-  /// `电影.mkv` + `电影.zh-CN.srt` → `zh-CN`
-  /// `电影.mkv` + `电影.srt`      → `SRT`
-  String _subtitleLabel(MediaEntry sub) {
-    final dot = sub.name.lastIndexOf('.');
-    final subStem = (dot > 0 ? sub.name.substring(0, dot) : sub.name);
-    // 找到它归属的视频，减掉主干前缀。
-    final owner = _listing.videos.firstWhere(
-      (v) => _listing.subtitlesFor(v).any((s) => s.path == sub.path),
-      orElse: () => sub,
-    );
-    final ownerDot = owner.name.lastIndexOf('.');
-    final ownerStem = ownerDot > 0 ? owner.name.substring(0, ownerDot) : owner.name;
-    var rest = subStem;
-    if (subStem.length >= ownerStem.length &&
-        subStem.substring(0, ownerStem.length).toLowerCase() ==
-            ownerStem.toLowerCase()) {
-      rest = subStem.substring(ownerStem.length);
-    }
-    rest = rest.replaceAll(RegExp(r'^[.\-_\s(]+'), '');
-    return rest.isEmpty ? sub.ext.toUpperCase() : rest;
   }
 
   /// 创建播放列表并跳转到播放器界面。
@@ -192,143 +169,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
               itemCount: entries.length,
               itemBuilder: (ctx, i) {
                 final e = entries[i];
-
-                // 文件夹通过进入其路径来打开，右侧箭头也明确提示这是“深入浏览”的交互。
-                if (e.isDir) {
-                  return ListTile(
-                    leading: const Icon(Icons.folder, color: Color(0xFFFFC107)),
-                    title: Text(e.name,
-                        maxLines: 1, overflow: TextOverflow.ellipsis),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () => _navigate(e.path),
-                  );
-                }
-
-                // 没有视频认领的字幕：单独给一行，标「未关联」。
-                // 直接隐藏会让用户以为播放器漏列了文件。
-                if (e.isSubtitle) {
-                  return ListTile(
-                    leading: Icon(Icons.subtitles_outlined,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant),
-                    title: Text(e.name,
-                        maxLines: 1, overflow: TextOverflow.ellipsis),
-                    subtitle: Text(
-                      '${formatBytes(e.size)} · ${e.ext.toUpperCase()} · 未关联到视频',
-                      style: const TextStyle(fontSize: 12),
-                    ),
-                    // 点一下可以直接播当前目录的第一条视频并挂上这条字幕。
-                    onTap: _listing.videos.isEmpty
-                        ? null
-                        : () => _play(_listing.videos.first, subtitles: [e]),
-                  );
-                }
-
-                // 当文件是视频或音频时，才视为可播放内容；
-                // 其他类型文件虽然可见，但会被禁用，避免误入不支持播放的项目。
-                final playable = e.isVideo || e.kind == 'audio';
-
-                // 这个视频自带的外挂字幕（已按主干匹配好，见 subtitlesFor）。
-                // 字幕不再单独占一行，而是挂在这里展示。
-                final subs = e.isVideo ? _listing.subtitlesFor(e) : const <MediaEntry>[];
-
-                // 播放进度从持久化的进度存储中读取，
-                // 这样界面就能显示某个文件已观看到什么程度。
-                final progress =
-                    playable ? ProgressStore.instance.entry(e.path) : null;
-                final watched = ProgressStore.instance
-                    .resumablePosition(e.path, progress?.durationUs ?? 0);
-                final watchedPct = (progress == null ||
-                        progress.durationUs <= 0 ||
-                        watched == null)
-                    ? null
-                    : (watched * 100 / progress.durationUs).clamp(0, 100);
-
-                return ListTile(
-                  enabled: playable,
-                  // 视频显示真实封面（解一帧并缓存），音频只显示图标：
-                  // 音频文件取一帧封面图没有意义，还会白花一次网络往返。
-                  leading: e.isVideo
-                      ? ThumbnailTile(
-                          url: e.path,
-                          options: widget.location.options,
-                          fallback: Icons.movie_outlined,
-                        )
-                      : Icon(
-                          e.kind == 'audio'
-                              ? Icons.audiotrack_outlined
-                              : Icons.insert_drive_file_outlined,
-                          color: playable
-                              ? Theme.of(context).colorScheme.primary
-                              : Theme.of(context).disabledColor,
-                        ),
-                  title: Text(e.name,
-                      maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // 这行元数据汇总了文件大小、扩展名、字幕提示以及已观看百分比，
-                      // 让每个条目能快速展示其基本状态。
-                      Text(
-                        [
-                          if (e.size > 0) formatBytes(e.size),
-                          e.ext.toUpperCase(),
-                          if (subs.isNotEmpty) '字幕 ${subs.length}',
-                          if (watchedPct != null)
-                            '已看 ${watchedPct.toStringAsFixed(0)}%',
-                        ].join(' · '),
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                      // 把归属到这个视频的字幕名直接列出来：用户不用再猜
-                      // 「这个目录里那一堆 .srt 到底哪条配这个片子」。
-                      // 只显示主干之外的语言后缀，太长就省略。
-                      if (subs.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 2),
-                          child: Row(
-                            children: [
-                              Icon(Icons.subtitles_outlined,
-                                  size: 13,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant),
-                              const SizedBox(width: 4),
-                              Expanded(
-                                child: Text(
-                                  subs.map(_subtitleLabel).join('、'),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      if (watchedPct != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 3),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(2),
-                            child: LinearProgressIndicator(
-                              value: watchedPct / 100,
-                              minHeight: 3,
-                              backgroundColor:
-                                  Theme.of(context).disabledColor.withValues(
-                                        alpha: 0.25,
-                                      ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                  trailing: watchedPct != null
-                      ? const Icon(Icons.play_circle_outline, size: 20)
-                      : null,
-                  onTap: playable ? () => _play(e, subtitles: subs) : null,
+                return MediaRow(
+                  entry: e,
+                  listing: _listing,
+                  location: widget.location,
+                  onEnter: (dir) => _navigate(dir.path),
+                  onPlay: (entry, subs) => _play(entry, subtitles: subs),
                 );
               },
             ),

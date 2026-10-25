@@ -21,6 +21,9 @@
 #   -ExpectColor  "R,G,B" the capture must contain (e.g. "253,0,0" for the red
 #                  probe).  When given, the shot is rejected and retried until
 #                  -MinMatch of sampled pixels match within -ColorTolerance.
+#   -Width/-Height resize the window before the grab.  The window opens at
+#                  whatever size the runner remembers; a fixed size keeps the
+#                  screenshots in the docs comparable with each other.
 param(
   [Parameter(Mandatory = $true)][string]$Exe,
   [string]$Open = '',
@@ -35,6 +38,8 @@ param(
   [string]$ExpectColor = '',
   [double]$MinMatch = 0.20,
   [int]$ColorTolerance = 20,
+  [int]$Width = 0,
+  [int]$Height = 0,
   [switch]$WholeScreen
 )
 
@@ -143,6 +148,11 @@ if ($hwnd -eq [IntPtr]::Zero) {
   Write-Output 'window: not found'
 } else {
   Raise-Window $hwnd
+  if ($Width -gt 200 -and $Height -gt 200) {
+    # 0x0004 = SWP_NOZORDER, so the resize does not undo the raise above.
+    [ScreenCap]::SetWindowPos($hwnd, [IntPtr]::Zero, 10, 10, $Width, $Height, 0x0004) | Out-Null
+    Start-Sleep -Milliseconds 900
+  }
   $r = New-Object ScreenCap+RECT
   [ScreenCap]::GetWindowRect($hwnd, [ref]$r) | Out-Null
   $w = $r.Right - $r.Left

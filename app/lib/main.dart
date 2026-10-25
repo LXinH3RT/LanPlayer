@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'data/folders.dart';
 import 'data/location.dart';
 import 'data/models.dart';
 import 'data/progress.dart';
@@ -73,10 +74,12 @@ Future<void> main() async {
     }
   }
   await ServerStore.instance.load();
+  await LocalFolderStore.instance.load();
   await SettingsStore.instance.load();
   await ProgressStore.instance.load();
   // ignore: avoid_print
-  print("LanPlayer loaded: servers=${ServerStore.instance.servers.length}");
+  print("LanPlayer loaded: servers=${ServerStore.instance.servers.length} "
+      "folders=${LocalFolderStore.instance.folders.length}");
   runApp(const LanPlayerApp());
 
   // Convenience hook for desktop testing (and for the CI screenshot check):
