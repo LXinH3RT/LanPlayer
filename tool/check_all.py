@@ -170,6 +170,7 @@ REQUIRED = [
     "scripts/verify_windows_upgrade.py",
     "scripts/verify_windows_uninstall.py",
     "scripts/verify_windows_locked_upgrade.py",
+    "scripts/verify_windows_locked_uninstall.py",
     "LICENSE",
     "scripts/fix_plugin_links.py",
     "scripts/msvc_chain.py",
@@ -721,6 +722,17 @@ def check_installers() -> None:
                             "copies it moved aside")
         if '"$INSTDIR\\${APP_DLL}.old"' not in nsi_code:
             problems.append("the uninstaller no longer deletes lanplayer.dll.old")
+        # A .old whose image is still mapped cannot be deleted now, and Delete
+        # without /REBOOTOK drops it silently -- the directory would then survive
+        # the uninstall with exactly one stale file in it. NSIS can register the
+        # file (and the directory) for deletion on the next reboot.
+        for call in ('Delete /REBOOTOK "$INSTDIR\\${APP_DLL}.old"',
+                     'Delete /REBOOTOK "$INSTDIR\\${APP_EXE}.old"',
+                     'RMDir /REBOOTOK "$INSTDIR"'):
+            if call not in nsi_code:
+                problems.append(f"installer.nsi stopped using {call}; without it a "
+                                "leftover .old survives the uninstall with nothing "
+                                "to remove it")
 
     notes.append("installers: NSIS per-user with BOM + matching file list, "
                  "dmg uses ditto + UDZO")

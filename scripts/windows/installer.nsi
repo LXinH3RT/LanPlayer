@@ -162,8 +162,9 @@ LangString DESC_Assoc     ${LANG_ENGLISH}     "Associate common video files (mp4
 ; 那时候新文件已经写好、旧进程也已经退出（或仍映射着但已不挡路），
 ; 删得掉就删，删不掉也不影响使用——下次安装或卸载的 Delete 会再试一次。
 !macro DeleteMovedAside
-  Delete "$INSTDIR\${APP_DLL}.old"
-  Delete "$INSTDIR\${APP_EXE}.old"
+  ; 上一次安装让开留下的 .old。此时占用方一般已退出；还占着就登记到重启后删。
+  Delete /REBOOTOK "$INSTDIR\${APP_DLL}.old"
+  Delete /REBOOTOK "$INSTDIR\${APP_EXE}.old"
 !macroend
 
 !macro StopRunningApp
@@ -472,11 +473,16 @@ Section "Uninstall"
   Delete "$INSTDIR\vcruntime140_1.dll"
   Delete "$INSTDIR\concrt140.dll"
   RMDir /r "$INSTDIR\data"
-  ; 安装时让开留下的 .old（此时占用方多半已退出，能删就删掉）
-  Delete "$INSTDIR\${APP_DLL}.old"
-  Delete "$INSTDIR\${APP_EXE}.old"
+  ; 安装时让开留下的 .old：占用方还没退出的话当场删不掉，登记到重启后删。
+  Delete /REBOOTOK "$INSTDIR\${APP_DLL}.old"
+  Delete /REBOOTOK "$INSTDIR\${APP_EXE}.old"
   Delete "$INSTDIR\uninstall.exe"
-  RMDir "$INSTDIR"
+  RMDir /REBOOTOK "$INSTDIR"
+
+  ; 被映射的旧文件当场删不掉，只能等重启。留一行日志，排查时能看出这不是没删而是延后删。
+  ${If} ${FileExists} "$INSTDIR\${APP_DLL}.old"
+    DetailPrint "占用中的旧文件已登记为重启后删除。"
+  ${EndIf}
 
   Delete "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk"
   Delete "$SMPROGRAMS\${APP_NAME}\卸载 ${APP_NAME}.lnk"
