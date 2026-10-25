@@ -39,6 +39,9 @@ typedef struct LpSourceOptions {
     char domain[64];
     int32_t timeout_ms;
     int32_t readahead_kb;
+    /* 浏览本地目录时用：非 0 表示连视频/字幕/音频以外的文件也列出来，
+     * 供"选取单个文件"这种场景使用。SMB 侧忽略该开关，保持只给媒体。 */
+    int32_t list_all;
 } LpSourceOptions;
 
 LP_EXPORT void lp_source_options_default(LpSourceOptions *opts);

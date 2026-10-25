@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -105,8 +106,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadOne(HomeSource s, int gen) async {
     try {
-      final listing =
-          await _repo.browseUrl(s.location.rootUrl, s.location.options);
+      final folder = s.folder;
+      final listing = (folder != null && folder.isFile)
+          ? await _repo.browseFile(folder.path)
+          : await _repo.browseUrl(s.location.rootUrl, s.location.options);
       if (!mounted || _loadGen[s.id] != gen) return;
       setState(() => _loads[s.id] = _SourceLoad(listing: listing));
     } catch (e) {
@@ -133,7 +136,15 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 打开某一块来源的完整浏览页（从它的根目录开始）。
+  ///
+  /// 单文件来源没有「完整浏览页」可言：那块的根就是文件所在的目录，
+  /// 直接播这个文件更贴近用户点「全部」时想干的事。
   Future<void> _openRoot(HomeSource s) async {
+    if (s.isFile) {
+      final entry = _loads[s.id]?.listing?.entries.firstOrNull;
+      if (entry != null) await _play(s, entry, const []);
+      return;
+    }
     final loaded = _loads[s.id]?.listing;
     try {
       final listing = loaded ??
@@ -160,7 +171,9 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _play(
       HomeSource s, MediaEntry entry, List<MediaEntry> subtitles) async {
     final listing = _loads[s.id]?.listing;
-    final playlist = listing == null
+    // 单文件来源只有这一条，播完就停；拿父目录里的其它片子接着连播会
+    // 让用户莫名其妙地跳到别的片子上。
+    final playlist = (listing == null || s.isFile)
         ? PlaylistController(items: [entry], index: 0)
         : PlaylistController.fromListing(listing, entry.path);
     await Navigator.of(context).push(MaterialPageRoute<void>(
@@ -200,9 +213,9 @@ class _HomeScreenState extends State<HomeScreen> {
               onTap: () => Navigator.pop(ctx, 'manual'),
             ),
             ListTile(
-              leading: const Icon(Icons.folder_outlined),
-              title: const Text('添加本地文件夹'),
-              subtitle: const Text('把本机的一块目录固定到首页'),
+              leading: const Icon(Icons.folder_open_outlined),
+              title: const Text('添加本地文件/文件夹'),
+              subtitle: const Text('浏览本机目录，挑一个文件或一块目录'),
               onTap: () => Navigator.pop(ctx, 'local'),
             ),
             ListTile(
@@ -267,11 +280,12 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     if (!mounted) return;
 
-    final choice = await pickLocalFolder(context, _repo.localRoots());
+    final choice = await pickLocalPath(context, _repo.localRoots());
     if (choice == null || !mounted) return;
     await LocalFolderStore.instance.add(
       label: choice.label,
       path: choice.path,
+      isFile: choice.isFile,
     );
     if (mounted) setState(() {});
   }
@@ -279,12 +293,14 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _addFolderByPathInner() async {
     final home = _repo.localRoots();
     final path =
-        await askFolderPath(context, home.isEmpty ? '' : home.first.path);
+        await askLocalPath(context, home.isEmpty ? '' : home.first.path);
     if (path == null || !mounted) return;
     final segments = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty);
+    final isFile = File(path).existsSync() && !Directory(path).existsSync();
     await LocalFolderStore.instance.add(
       label: segments.isEmpty ? path : segments.last,
       path: path,
+      isFile: isFile,
     );
     if (mounted) {
       setState(() {});
@@ -292,9 +308,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // 删除前确认；服务器只移除本机记录，文件夹只是从首页摘掉。
+  // 删除前确认；服务器只移除本机记录，本地来源只是从首页摘掉。
   Future<void> _confirmRemove(HomeSource s) async {
-    final what = s.isServer ? '服务器' : '文件夹';
+    final what = s.isServer ? '服务器' : (s.isFile ? '文件' : '文件夹');
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -559,8 +575,14 @@ class _SourceSection extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(16, 10, 4, 2),
           child: Row(
             children: [
-              Icon(source.isServer ? Icons.dns_outlined : Icons.folder_outlined,
-                  size: 20, color: scheme.primary),
+              Icon(
+                  source.isServer
+                      ? Icons.dns_outlined
+                      : source.isFile
+                          ? Icons.movie_outlined
+                          : Icons.folder_outlined,
+                  size: 20,
+                  color: scheme.primary),
               const SizedBox(width: 8),
               Expanded(
                 child: Column(
@@ -581,7 +603,7 @@ class _SourceSection extends StatelessWidget {
               ),
               TextButton(
                 onPressed: onOpenRoot,
-                child: const Text('全部'),
+                child: Text(source.isFile ? '播放' : '全部'),
               ),
               PopupMenuButton<String>(
                 onSelected: (v) {
@@ -682,8 +704,8 @@ class _EmptyState extends StatelessWidget {
             const SizedBox(height: 12),
             OutlinedButton.icon(
               onPressed: onLocal,
-              icon: const Icon(Icons.folder_outlined),
-              label: const Text('添加本地文件夹'),
+              icon: const Icon(Icons.folder_open_outlined),
+              label: const Text('添加本地文件/文件夹'),
             ),
           ],
         ),

@@ -37,6 +37,9 @@ class HomeSource {
   final LocalFolder? folder;
 
   bool get isServer => kind == HomeSourceKind.server;
+
+  /// 单文件来源：这块就是那个文件本身，点开直接播。
+  bool get isFile => folder?.isFile ?? false;
 }
 
 /// 把两类存储拼成首页要展示的来源顺序：先服务器，再本机文件夹，各组内

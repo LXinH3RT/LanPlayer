@@ -1,14 +1,15 @@
 import 'stores.dart';
 
-/// 一个被收进首页的本机文件夹。
+/// 一个被收进首页的本机路径：一块目录，或者单个文件。
 ///
-/// SMB 服务器存在 `servers.json`，本机文件夹单独存 `folders.json`：两边的
+/// SMB 服务器存在 `servers.json`，本机路径单独存 `folders.json`：两边的
 /// 生命周期互不牵连，删掉一台服务器不会连带清掉别处的本地入口。
 class LocalFolder {
   LocalFolder({
     required this.id,
     required this.label,
     required this.path,
+    this.isFile = false,
     DateTime? createdAt,
     this.lastUsedAt,
   }) : createdAt = createdAt ?? DateTime.now();
@@ -16,6 +17,10 @@ class LocalFolder {
   final String id;
   String label;
   String path;
+
+  /// 单文件来源。老记录没有这个字段，按目录处理。
+  bool isFile;
+
   DateTime createdAt;
   DateTime? lastUsedAt;
 
@@ -25,6 +30,7 @@ class LocalFolder {
         'id': id,
         'label': label,
         'path': path,
+        'isFile': isFile,
         'createdAt': createdAt.millisecondsSinceEpoch,
         'lastUsedAt': lastUsedAt?.millisecondsSinceEpoch,
       };
@@ -33,6 +39,7 @@ class LocalFolder {
         id: j['id'] as String? ?? '',
         label: j['label'] as String? ?? '',
         path: j['path'] as String? ?? '',
+        isFile: j['isFile'] == true,
         createdAt:
             DateTime.fromMillisecondsSinceEpoch(_intValue(j['createdAt']) ?? 0),
         lastUsedAt: j['lastUsedAt'] == null
@@ -100,10 +107,15 @@ class LocalFolderStore {
 
   /// 加入首页。同一个路径重复添加时只更新名字，不产生第二条记录 ——
   /// 否则首页会出现两块内容完全一样的目录。
-  Future<LocalFolder> add({required String label, required String path}) async {
+  Future<LocalFolder> add({
+    required String label,
+    required String path,
+    bool isFile = false,
+  }) async {
     final existing = byPath(path);
     if (existing != null) {
       existing.label = label;
+      existing.isFile = isFile;
       await _save();
       return existing;
     }
@@ -111,6 +123,7 @@ class LocalFolderStore {
       id: 'dir-${DateTime.now().millisecondsSinceEpoch}',
       label: label,
       path: path,
+      isFile: isFile,
     );
     folders.add(f);
     await _save();

@@ -1976,6 +1976,93 @@ def check_apple_wiring() -> None:
                      f"iOS {min_ios or '?'} / macOS {min_macos or '?'}")
 
 
+def check_local_picker() -> None:
+    """Guard the local file/folder picker and the wide-character file layer.
+
+    Two separate things broke here at once when the picker was rewritten:
+      * the C file transport used narrow `opendir`/`fopen`/`stat`, so every path
+        with a Chinese character failed with "No such file or directory" on
+        Windows (the UTF-8 path was handed to the ANSI API verbatim);
+      * the picker itself could only list a fixed set of roots and dropped every
+        file, so "pick a file" was not expressible at all.
+    Both are invisible in the Dart tests, so they are pinned statically.
+    """
+    fsrc = ROOT / "native" / "src" / "source" / "file.c"
+    if fsrc.exists():
+        fc = fsrc.read_text(encoding="utf-8")
+        if "wchar_t *wide_from_utf8(" not in fc or "_wopendir(" not in fc:
+            problems.append("native/src/source/file.c no longer opens paths "
+                            "through the wide-character API; directories whose "
+                            "name is not representable in the ANSI code page "
+                            "cannot be opened on Windows")
+        if "_wfopen" not in fc:
+            problems.append("native/src/source/file.c must open files with "
+                            "_wfopen; fopen mangles non-ASCII paths")
+    else:
+        problems.append("native/src/source/file.c missing")
+
+    header = ROOT / "native" / "include" / "lanplayer" / "lp_source.h"
+    if header.exists():
+        if "list_all" not in header.read_text(encoding="utf-8"):
+            problems.append("LpSourceOptions lost list_all; the file picker "
+                            "could not show anything but media files")
+    else:
+        problems.append("native/include/lanplayer/lp_source.h missing")
+
+    picker = ROOT / "app" / "lib" / "ui" / "folder_picker.dart"
+    if picker.exists():
+        pc = picker.read_text(encoding="utf-8")
+        for needle, why in (
+            ("pickLocalPath", "the picker lost its public entry point"),
+            ("askLocalPath", "the manual path dialog was renamed away"),
+            ("'list_all': 1", "the picker no longer asks for the unfiltered "
+                              "listing, so only playable files would be visible"),
+            ("this.isFile = false", "the picker can no longer return a folder "
+                                    "choice that is not a file"),
+            # The kernel hands entries back with a `file://` prefix already,
+            # while the roots (drives, home, downloads) are bare paths.  Adding
+            # the prefix unconditionally produced `file://file://D:/x` and every
+            # directory below a drive failed with "not found".
+            ("path.startsWith('file://')", "the picker no longer tolerates both "
+                                           "bare paths and file:// URLs, so "
+                                           "descending past a drive breaks"),
+            # The app theme sets every FilledButton to minimumSize
+            # Size.fromHeight(48) -- an *infinite* minimum width.  In a Row that
+            # squeezes the flexible text to zero and paints the button outside
+            # the row, so the footer looked like it only had 取消.
+            ("minimumSize: const Size(0, 48)", "the picker footer no longer "
+                                               "overrides the theme's infinite "
+                                               "minimum button width; 加进首页 "
+                                               "would be clipped away again"),
+        ):
+            if needle not in pc:
+                problems.append(f"app/lib/ui/folder_picker.dart: {why}")
+    else:
+        problems.append("app/lib/ui/folder_picker.dart missing")
+
+    folders = ROOT / "app" / "lib" / "data" / "folders.dart"
+    if folders.exists():
+        fd = folders.read_text(encoding="utf-8")
+        if "'isFile': isFile" not in fd:
+            problems.append("LocalFolder must persist isFile; a single-file "
+                            "source would come back as a directory after a "
+                            "restart")
+    else:
+        problems.append("app/lib/data/folders.dart missing")
+
+    repo = ROOT / "app" / "lib" / "data" / "repository.dart"
+    if repo.exists():
+        if "browseFile(" not in repo.read_text(encoding="utf-8"):
+            problems.append("MediaRepository lost browseFile(); a single-file "
+                            "source would render an empty section")
+    else:
+        problems.append("app/lib/data/repository.dart missing")
+
+    notes.append("local picker: browses every drive with narrow-to-wide path "
+                 "conversion, can return a file or a folder, and a file source "
+                 "still shows its sidecar subtitles")
+
+
 def main() -> int:
     check_c_syntax()
     check_dart_imports()
@@ -2001,6 +2088,7 @@ def main() -> int:
     check_playback_profiles()
     check_apple_wiring()
     check_hw_decode()
+    check_local_picker()
 
     for n in notes:
         print(f"· {n}")

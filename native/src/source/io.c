@@ -33,6 +33,9 @@ int32_t lp_source_options_parse(const char *options_json, LpSourceOptions *opts)
     if (lp_json_get_int(options_json, "readahead_kb", &v) == 0 && v >= 64 && v <= 16384) {
         opts->readahead_kb = (int32_t)v;
     }
+    if (lp_json_get_int(options_json, "list_all", &v) == 0) {
+        opts->list_all = v != 0;
+    }
     return LP_OK;
 }
 

@@ -141,4 +141,36 @@ void main() {
       expect(back.path, '');
     });
   });
+
+  group('单文件来源', () {
+    test('老记录没写 isFile 时按目录处理', () {
+      final back = LocalFolder.fromJson({'id': 'dir-3', 'path': r'D:\movies'});
+      expect(back.isFile, isFalse);
+    });
+
+    test('isFile 能存进去也能读回来', () {
+      final f = LocalFolder.fromJson({
+        'id': 'dir-4',
+        'label': '电影.mkv',
+        'path': r'D:\movies\电影.mkv',
+        'isFile': true,
+      });
+      expect(f.isFile, isTrue);
+      expect(LocalFolder.fromJson(f.toJson()).isFile, isTrue);
+    });
+
+    test('文件来源在首页只有一行，且标出一个「播放」入口', () {
+      final srcs = buildHomeSources(
+        [],
+        [
+          LocalFolder(
+              id: 'dir-5', label: '电影.mkv', path: r'D:\movies\电影.mkv',
+              isFile: true),
+        ],
+      );
+      expect(srcs.single.isFile, isTrue);
+      expect(srcs.single.label, '电影.mkv');
+      expect(srcs.single.location.rootUrl, r'file://D:\movies\电影.mkv');
+    });
+  });
 }
