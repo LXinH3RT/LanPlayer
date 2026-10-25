@@ -74,6 +74,7 @@ def check_dart_duplicates() -> None:
 
 REQUIRED = [
     "README.md",
+    "README.en.md",
     "docs/architecture.md",
     "docs/build.md",
     "docs/media-source.md",
@@ -913,6 +914,22 @@ def check_release_policy() -> None:
                 problems.append(f"{rel} mentions {needle!r}; published prose "
                                 f"must not carry publishing endpoints or point "
                                 f"at notes that are not in the repository")
+
+    # The two READMEs are translations of each other, so each has to point at
+    # the other one; a language switcher that only works one way strands half
+    # the readers.  Both also have to name the same screenshot, otherwise a
+    # translated page keeps showing a picture that no longer exists.
+    for name, other in (("README.md", "README.en.md"),
+                        ("README.en.md", "README.md")):
+        path = ROOT / name
+        if not path.is_file():
+            problems.append(f"{name} is missing; the repository is published "
+                            f"in two languages")
+            continue
+        body = path.read_text(encoding="utf-8", errors="replace")
+        if other not in body:
+            problems.append(f"{name} no longer links {other}; the language "
+                            f"switch would only work in one direction")
 
     notes.append("release: one release uploads Windows + macOS + Android, "
                  "checkout-only notes stay out of the repository")

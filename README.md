@@ -1,211 +1,208 @@
 # LanPlayer · 局域网播放器
 
-用 Flutter 一套 UI（Windows / macOS / Android / iOS / iPadOS）包一个 C11 + FFmpeg 的播放内核，
-通过 `dart:ffi` 直连。目标只有一个：**把家里 SMB 共享里的视频，用硬解、带字幕、不卡顿地放出来**。
+[English](README.en.md) | 简体中文
 
-```
-┌──────────────────────────── Flutter (Dart) ────────────────────────────┐
-│  首页（各来源根目录）/ 文件浏览器 / 播放页 / 解码设置                   │
-│  PlayerController ── dart:ffi ──► liblanplayer.so / .a / .dll          │
-│  字幕气泡（Flutter Text 渲染）        视频：Texture(textureId)          │
-│  图形字幕（直接混合进 BGRA 帧）                                          │
-└───────────────┬────────────────────────────────────────────────────────┘
-                │ JNI / C ABI
-┌───────────────▼──────────────── native core (C11) ─────────────────────┐
-│  demux 线程 → 视频包队列 → 解码线程（MediaCodec / VideoToolbox / sw）    │
-│              → 音频包队列 → 解码 → swr → atempo → 环形缓冲 → 平台音频   │
-│              → 字幕包   → libavcodec 文本字幕 / SRT·ASS 解析            │
-│  主时钟：音频环形缓冲播放头 → 视频按 pts 排期 → A/V 同步                │
-│  传输层：LpSource（libsmb2 / file / 预留 tcp）→ 自定义 AVIOContext      │
-└────────────────────────────────────────────────────────────────────────┘
-```
+一个把 SMB 共享里的视频直接放出来的播放器：Flutter 写一套界面（Windows / macOS /
+Android / iOS / iPadOS），底下是一个用 C11 和 FFmpeg 写的播放内核，通过 `dart:ffi`
+直连，没有中间层。
 
-## 做了什么
+![首页](docs/images/desktop-home.png)
 
-|模块|需求|实现位置|
-|-|-|-|
-|1 连接与浏览|服务器增删改、保存 IP/端口/账号密码|`app/lib/data/stores.dart`、`ui/server_edit_screen.dart`|
-||首页直接摊开每个来源的根目录，不用先点一次卡片；多个来源并排列出，顶部可只看其中一个|`app/lib/data/home_sources.dart`、`ui/home_screen.dart`|
-||本机文件夹也能固定到首页（`folders.json`，与服务器记录互不影响）|`app/lib/data/folders.dart`、`ui/folder_picker.dart`|
-||连接后以文件列表浏览共享目录|`native/src/source/smb.c`、`ui/browser_screen.dart`|
-||列表每行带封面缩略图（只解第一帧、本地缓存、只对视频行请求）|`native/src/core/thumb.c`、`app/lib/data/thumbs.dart`、`ui/widgets/thumbnail_tile.dart`|
-||只列视频/字幕/音频，`.txt`、`.docx` 等不显示；每个视频下面挂出它自己的字幕|`native/src/source/url.c`（`lp_is_listable_media`）、`app/lib/data/models.dart`、`ui/browser_screen.dart`|
-|2 播放内核|libavformat 打开网络流、解析音视频字幕轨道|`native/src/core/demux.c`|
-||硬解：Android MediaCodec / Apple VideoToolbox / Windows D3D11VA|`platform/android/media_codec_decoder.c`、`platform/apple/videotoolbox_decoder.c`、`platform/win32/d3d11va_decoder.c`|
-||主时钟音画同步|`core/audio_ring.c`（时钟映射）、`core/video.c`（排期与丢帧）|
-||音频输出：AAudio / AudioQueue / waveOut|`platform/android/aaudio_sink.c`、`platform/apple/coreaudio_sink.c`、`platform/win32/`|
-||字幕：内嵌解码 + 外挂 SRT/ASS/VTT + ASS 富文本（颜色/描边/字号/字体）+ 图形字幕（PGS/VobSub/DVB）|`core/subtitle.c`、`ui/widgets/subtitle_overlay.dart`|
-|3 播放控制|播放/暂停/快进快退/音量/进度拖拽|`core/player.c`、`ui/player_screen.dart`|
-||0.5x–2.0x 倍速且音调不变|`core/audio.c`（atempo 链）、`lp_player_set_speed`|
-||当前目录自动连播|`app/lib/player/playlist.dart`、`ui/player_screen.dart`|
-||音轨/字幕切换、加载外挂字幕|`lp_player_select_track`、`lp_player_add_subtitle`|
-||记忆播放进度：重开续播，列表显示进度条与百分比；设置里可关（默认开）|`app/lib/data/progress.dart`、`ui/player_screen.dart`、`ui/browser_screen.dart`|
-||手势（双击 ±10s / 上下滑音量亮度 / 长按 2x）与桌面键盘快捷键、真全屏|`ui/player_screen.dart`、`ui/video_texture.dart`、`packages/lanplayer_video`|
-||音量可调（不是只能静音）：滑杆 0–200% + 静音开关 + 六个档位|`ui/widgets/volume_sheet.dart`、`core/player.c`（`lp_player_set_volume` → `lp_ring_set_gain`）|
-|4 解码设置|硬解开关、软件解码兜底、去隔行（yadif）|`settings_screen.dart`、`core/video.c`|
-|5 本地播放|打开本地文件走同一内核|`source/file.c`、`ui/browser_screen.dart`|
+## 它解决什么
+
+家用网络里最常见的形态是「一台机器存片，其它设备看」。现成的播放器要么只能放本地文件，
+要么在电视盒子上依赖 DLNA 转码，要么把 SMB 当成网盘挂载、拖动进度条要等几十秒。
+LanPlayer 只做一件事：**把共享里的文件当成本地文件播**——硬解、带字幕、进度条能拖、
+放完自动接下一集。
+
+它不做的：不做服务端、不做转码、不做下载缓存、不枚举服务器上的共享名。共享由系统自带的
+文件共享提供，App 只负责填地址、共享名、账号、密码。
+
+## 功能
+
+| | |
+|-|-|
+| **来源** | SMB 共享（只读）、本机任意盘符下的文件或文件夹 |
+| **容器 / 编码** | 由 FFmpeg 决定：MKV / MP4 / AVI / MOV / TS / FLV / WebM 等，H.264 / HEVC / VP9 / AV1 等 |
+| **硬解** | Windows D3D11VA、macOS / iOS VideoToolbox、Android MediaCodec，失败自动回退软件解码 |
+| **音频** | Windows waveOut、Apple AudioQueue、Android AAudio；AAC / MP3 / FLAC / Vorbis / Opus 等 |
+| **字幕** | 内嵌轨 + 外挂 SRT / ASS / SSA / VTT；ASS 富文本（颜色、描边、字号、字体、定位）；PGS / VobSub / DVB 图形字幕 |
+| **选轨** | 音轨与字幕各自成面板，可列出文件内全部轨道并切换；按首选 / 次选语言自动挑默认轨 |
+| **播放控制** | 播放暂停、±10 秒、进度拖拽、0.5x–2.0x 变速不变调、音量 0–200%、静音、全屏 |
+| **连播** | 当前目录按 `SxxEzz` / 第 N 集 识别顺序自动接下一集 |
+| **记忆进度** | 重开同一文件从上次位置续播，列表上显示进度条与百分比 |
+| **浏览** | 缩略图取首帧、本地缓存、按需生成；只列视频与字幕，`.txt` / `.docx` 之类不显示，字幕归到对应视频下面 |
+| **其它** | 局域网扫描（并发探测本机网段）、桌面键盘快捷键与触屏手势、深浅色跟随系统 |
 
 ## 界面
 
-![首页](docs/images/desktop-home.png)
-![浏览共享](docs/images/desktop-browse.png)
+| 首页 | 浏览共享 |
+|-|-|
+| ![首页](docs/images/desktop-home.png) | ![浏览](docs/images/desktop-browse.png) |
 
-![音轨面板](docs/images/desktop-audio-sheet.jpg)
-![字幕面板](docs/images/desktop-subtitle-sheet.jpg)
+| 音轨面板 | 字幕面板 |
+|-|-|
+| ![音轨](docs/images/desktop-audio-sheet.jpg) | ![字幕](docs/images/desktop-subtitle-sheet.jpg) |
 
-iPad 上的同一套 UI（`lanplayer/video` 纹理 + 外挂字幕）：
-
-![iPad 播放](docs/images/ipad-player.png)
-
-ASS 字幕里的 `Fontname` 与行内 `\fn` 都会真正生效（同一条字幕里两种字体）：
+ASS 字幕里的 `Fontname` 与行内 `\fn` 都会真正生效，同一条字幕里可以混排两种字体：
 
 ![字幕字体](docs/images/desktop-subtitle-fonts.jpg)
 
+移动端是同一套界面（纹理 + 字幕气泡）：
+
+<img src="docs/images/ipad-player.png" width="420" alt="移动端播放">
+
 ## 快速开始
 
-**1. 准备一个只读共享**（用系统自带的文件共享即可，与本项目无关）：
+### 用安装包
+
+从 [Releases](https://github.com/LXinH3RT/LanPlayer/releases) 下载对应平台的文件：
+
+| 平台 | 文件 | 安装方式 |
+|-|-|-|
+| Windows 10+ | `LanPlayer-<版本>-windows-x64-setup.exe` | 双击，装到当前用户目录，不弹 UAC |
+| macOS (Apple Silicon) | `LanPlayer-<版本>-macos-arm64.dmg` | 拖进「应用程序」 |
+| Android 8+ (arm64) | `LanPlayer-<版本>-android-arm64.apk` | 允许安装未知来源后安装 |
+
+Windows 包没有代码签名，SmartScreen 会提示「仍要运行」；macOS 包是 ad-hoc 签名，
+首次打开需在「系统设置 → 隐私与安全性」里放行。
+
+### 准备一个共享
+
+用系统自带的文件共享即可，App 不依赖任何服务端组件：
 
 ```powershell
 # 举例：把 D:\Movies 共享成 Movies，给账号 lanplay 只读权限
 New-SmbShare -Name Movies -Path D:\Movies -ReadAccess lanplay
 ```
 
-应用只要 **地址 / 共享名 / 用户名 / 密码** 四个输入框，不依赖本仓库提供的任何服务端脚本。
+### 添加来源
 
-**2. 添加服务器或文件夹**：`添加 → 填地址、共享名、用户名、密码`，或者 `添加 → 添加本地文件/文件夹`（可以逐层浏览本机目录，挑一个文件或一块目录）。
-添加完首页就直接列出它的根目录，不用再点一次进去；加了多个来源时它们一起列在首页上，
-顶上一排按钮可以只看其中一个，每块标题右边的「全部」进对应的完整浏览页。
+`添加 → SMB 服务器`，填 **地址 / 共享名 / 用户名 / 密码** 四项。
+共享名是 Windows「属性 → 共享」里填的那个名字；App 不会去枚举服务器的共享列表，
+因为那项服务在部分系统上默认关闭。不知道 IP 时可以点「扫描局域网」，它会并发探测本机
+所在网段的 SMB 端口，把有响应的主机列出来，点一行自动填进地址框。
 
-共享名就是 Windows「属性 → 共享」里填的那个名字；客户端不会去枚举服务器的共享列表。
-不知道 IP 时点「扫描局域网」——并发探测本机所在网段（默认 `/24`）的 SMB 端口，列出开放的主机，
-点一行就自动填进地址框（只填地址，共享名仍要自己填）。
+`添加 → 添加本地文件/文件夹` 可以逐层浏览本机任意盘符，选中一块目录或一个视频文件。
+选文件时，这个文件会作为单独一条来源出现在首页，点开即播。
 
-**3. 播放**：点视频即播。字幕默认自动加载同目录同名文件（`S01E01.zh-CN.srt` 之类），
+添加完首页就直接摊开每个来源的根目录，不用再点一次；有多个来源时它们并排列出，
+顶部一排按钮可以只看其中一个，每块标题右边的「全部」进完整浏览页。
+
+### 播放
+
+点视频即播。默认自动加载同目录同名的字幕文件（`S01E01.zh-CN.srt` 之类），
 播放页可切音轨、切字幕、调字幕延迟、切倍速。
+
+桌面端快捷键：`空格` / `K` 播放暂停，`←` / `→` 前后 10 秒（长按 5 秒），
+`↑` / `↓` 音量，`M` 静音，`F` 全屏，`[` / `]` 字幕延迟，`S` 解码统计，`Esc` 退出。
 
 ## 构建
 
-工具链走 `tool/fetch_deps.py` 下载（zig / ffmpeg / libsmb2 / dart / flutter / nsis），落在 `.tools/`，不进 git。
+仓库只含源码，依赖（FFmpeg、libsmb2、工具链）由 `tool/fetch_deps.py` 下载到 `.tools/`，
+产物落在 `.gitignore` 覆盖的目录里。
+
+### Windows
 
 ```powershell
-# Windows 内核（不需要 Visual Studio，用 Zig）
 python tool\fetch_deps.py
+
+# 内核（用 Zig，不需要 Visual Studio）
 python scripts\build_windows.py
 build\win-x64\lp_smoke_test.exe
 
-# Windows 桌面端（需要 VS 的 C++ 工作负载）
+# 桌面端（需要 VS 的「使用 C++ 的桌面开发」工作负载）
 python scripts\build_windows_desktop.py --core
 # -> app\windows\out\build\x64-VisualStudio182026\runner\Release\lanplayer.exe
+
+# 安装包
+python tool\fetch_deps.py nsis
+python scripts\build_windows_installer.py
+# -> dist\LanPlayer-<版本>-windows-x64-setup.exe
 ```
 
+### macOS / iOS
+
 ```bash
-# Apple 侧（在 Mac 上）：先编依赖与内核，再出包
+# 依赖与内核
 SLICES=macosx python3 scripts/build_apple_deps.py
+
+# app
 cd app && flutter pub get && flutter build macos --release
 flutter build ios --release --no-codesign
-TEAM_ID=<你的 10 位 Team ID> python3 scripts/ios_device_install.py   # 真机
+
+# 真机
+TEAM_ID=<你的 10 位 Team ID> python3 scripts/ios_device_install.py
+
+# dmg
+python3 scripts/build_macos_dmg.py
 ```
+
+### Android
 
 ```bash
-# Android：iOS / Android 的 FFmpeg + libsmb2 交叉编译
 ANDROID_NDK_HOME=~/android-ndk-r26 python3 scripts/build_android_deps.py
+python3 scripts/build_android_apk.py
 ```
 
-自检（Windows，必须在仓库根、且把 `TMP`/`TEMP` 指进 `.tools/tmp`）：
+### 自检
 
 ```powershell
-$env:TMP="$PWD\.tools\tmp"; $env:TEMP=$env:TMP
+# 静态检查 + dart 编译 + dart 用例 + 安装器与发布断言
 .\.tools\python\python.exe tool\check_all.py
 ```
 
-`flutter analyze` / `flutter test` 在 Windows 上会因 `%APPDATA%\.flutter_tool_state` 不可写而失败，
-用包装脚本（它把 `TMP`/`TEMP`/`APPDATA`/`LOCALAPPDATA`/`PUB_CACHE` 重定向进仓库内 `.tools/`）：
+`flutter analyze` / `flutter test` 在 Windows 上会因 `%APPDATA%\.flutter_tool_state`
+不可写而失败，用包装脚本（把 `TMP` / `TEMP` / `APPDATA` / `LOCALAPPDATA` / `PUB_CACHE`
+重定向进仓库内 `.tools/`）：
 
 ```bash
 python scripts/run_flutter_tests.py            # = flutter test
 python scripts/run_flutter_tests.py analyze    # = flutter analyze
 ```
 
-构建细节、Apple 侧踩过的坑与报错对照表见 [docs/build.md](docs/build.md)。
+各平台的坑与报错对照表见 [docs/build.md](docs/build.md)。
 
-## 安装包
+## 平台状态
 
-两个包都能一条命令出，产物落在 `dist/`（不入库）。
+| | Windows | macOS | Android | iOS / iPadOS |
+|-|-|-|-|-|
+| 界面 | ✅ | ✅ | ✅ | ✅ |
+| SMB 浏览 | ✅ | ✅ | ✅ | ✅ |
+| 硬解 | ✅ D3D11VA | ✅ VideoToolbox | ✅ MediaCodec | ✅ VideoToolbox |
+| 音频输出 | ✅ waveOut | ✅ AudioQueue | ✅ AAudio | ✅ AudioQueue |
+| 安装包 | ✅ exe | ✅ dmg | ✅ apk | 需自行签名 |
 
-```powershell
-python tool\fetch_deps.py nsis
-python scripts\build_windows_installer.py --version 0.1.2
-# -> dist\LanPlayer-0.1.2-windows-x64-setup.exe
-```
-
-```bash
-VERSION=0.1.2 python3 scripts/build_macos_dmg.py
-# -> dist/LanPlayer-0.1.2-macos-arm64.dmg
-```
-
-| | Windows | macOS |
-|-|-|-|
-| 安装位置 | `%LOCALAPPDATA%\Programs\LanPlayer` | 拖拽到 `/Applications` |
-| 权限 | `RequestExecutionLevel user`，**不弹 UAC** | 无需 sudo |
-| 签名 | 无（SmartScreen 会提示「仍要运行」） | ad-hoc（`codesign -s -`）；分发需开发者 ID + 公证 |
-| 运行库 | FFmpeg `av*.dll` + `Microsoft.VC145.CRT` 全部 app-local | 系统框架，无额外依赖 |
-
-**覆盖升级**：旧版本还在跑也可以直接双击新版安装包，安装器会先关掉旧进程（先发关闭请求，
-5 秒不退才强制结束；若 `lanplayer.dll` 仍被映射，再逐个结束安装目录里的可执行程序，改过名的
-副本也逃不掉）再写文件，不需要先手动卸载；卸载同理。两条路径都有正负对照脚本
-（`scripts\verify_windows_upgrade.py`、`scripts\verify_windows_uninstall.py`）。
-
-`avdevice-63.dll`（4.9 MB）**不打包**：没有任何模块依赖它，内核也从不调 `avdevice_*`。
-用户数据默认保留：Windows 卸载器的选项页给一个「同时删除服务器列表、设置和缩略图缓存」的
-勾选框（默认不勾），静默卸载要显式 `uninstall.exe /S /PURGE`；数据落在
-`%APPDATA%\<Company>\<Product>\lanplayer`（`path_provider` 按版本资源里的公司名与产品名建目录）。
-macOS 删 app 就结束，状态在 `~/Library/Containers/dev.lanplayer.lanplayer/`。
-
-### 已发布的安装包
-
-最新版 **v0.1.3**：<https://github.com/LXinH3RT/LanPlayer/releases>
-更早的 v0.1.1 修掉了「打开含视频的文件夹卡死」，v0.1.0 有卡死缺陷、**不要再装**。
+Windows 桌面端已接 D3D11VA 硬解，但仍是「解码在 GPU、出画回 CPU」，GPU 直出纹理
+与 WASAPI 尚未实现。
 
 ## 已验证
 
-结论如下：
-
-|项|结论|
+| 项 | 结论 |
 |-|-|
-|C 内核 / libsmb2 / FFmpeg 链接|✅ Windows 上 Zig 编 14 个源文件 + 48 个 libsmb2 文件，0 error|
-|视频 + 音频播放|✅ h264 软解、AAC→float 立体声、位置推进正确|
-|硬解|✅ Windows D3D11VA（与软件参考均值差 ≤0.2 级）、macOS/iPad VideoToolbox、Android MediaCodec|
-|字幕|✅ 内嵌 + 外挂 SRT/ASS/VTT + 非 UTF-8 按代码页回退 + ASS 富文本（颜色/描边/字号/字体，含行内 `\fn`）+ PGS/VobSub 图形字幕|
-|SMB 浏览 / 凭据校验 / 局域网扫描|✅ 只读、共享名自填、不做枚举；扫描并发探 SMB 端口|
-|列表封面缩略图|✅ 只解第一帧、`LPT2` 头落盘缓存、只对视频行请求|
-|含 FLV 的文件夹不再卡死|✅ 修掉内核三处缺陷 + 一处并发过载|
-|浏览列表只留媒体|✅ `.txt`/`.docx`/`.DS_Store` 等不显示，字幕归到对应视频|
-|多音轨 / 多字幕默认轨|✅ 按首选/次选语言挑，音轨与字幕面板拆开，不再默认英语评论轨|
-|音量|✅ 0–200% 滑杆，内核 `lp_ring_set_gain` 直接作用在环形缓冲上|
-|安装包覆盖升级|✅ 旧版在跑也能直接装新版，正负对照均有脚本|
-|Dart 测试|✅ `flutter test` 121 个用例全过；`flutter analyze` 无 issue|
-|Apple 端|✅ macOS 与实体 iPad 均真机跑通（VideoToolbox + AudioQueue + 字幕 + 进度续播）|
-|Android 端|✅ arm64 真机跑通（MediaCodec 硬解 + AAudio + 多音轨选轨 + 自动连播 + 运行时媒体权限）|
+| C 内核 / libsmb2 / FFmpeg 链接 | ✅ Windows 上 Zig 编 14 个源文件 + 48 个 libsmb2 文件，0 error |
+| 视频 + 音频播放 | ✅ H.264 软解、AAC → float 立体声、位置推进正确 |
+| 硬解 | ✅ D3D11VA（与软件参考均值差 ≤0.2 级）、VideoToolbox、MediaCodec 均真机跑通 |
+| 10-bit 片源 | ✅ 宽色深 H.264 / HEVC 在硬解不稳的平台自动改走软件解码，不再出现「有进度没画面」 |
+| 字幕 | ✅ 内嵌 + 外挂 SRT/ASS/VTT + 非 UTF-8 按代码页回退 + ASS 富文本（含行内 `\fn`）+ 图形字幕 |
+| SMB 浏览 / 凭据校验 / 局域网扫描 | ✅ 只读、共享名自填、不做枚举 |
+| 列表缩略图 | ✅ 只解第一帧、`LPT2` 头落盘缓存、只对视频行请求 |
+| 含 FLV 的文件夹不再卡死 | ✅ 修掉内核三处缺陷 + 一处并发过载 |
+| 浏览列表只留媒体 | ✅ `.txt` / `.docx` / `.DS_Store` 等不显示，字幕归到对应视频 |
+| 多音轨 / 多字幕默认轨 | ✅ 按首选 / 次选语言挑，音轨与字幕面板拆开 |
+| 音量 | ✅ 0–200% 滑杆，内核 `lp_ring_set_gain` 直接作用在环形缓冲上 |
+| 覆盖升级 | ✅ 旧版在跑也能直接装新版，安装器会先请退旧进程 |
+| Dart 用例 | ✅ 124 个用例全过，`flutter analyze` 无 issue |
+| 三端安装包 | ✅ Windows / macOS / Android 装到真机后均能播 |
 
-**已知限制**（见 [docs/roadmap.md](docs/roadmap.md)）：ASS 的 `\t` 动画、`\clip`、矢量绘图 `\p`、
-卡拉 OK `\k` 不渲染（其余行内标签都支持）；不枚举服务器共享名，共享名需手填；
-Windows 桌面端硬解已接 D3D11VA，仍缺 GPU 直出纹理与 WASAPI。
+## 已知限制
 
-## 开发约定
+* ASS 的 `\t` 动画、`\clip`、矢量绘图 `\p`、卡拉 OK `\k` 不渲染（其余行内标签都支持）。
+* 不枚举服务器共享名，共享名需手填。
+* 不支持 AC3 / DTS 直通到功放；HDR 只解码直出，不做 tone mapping。
+* 同时只播一个视频（播放页单例）。
 
-- 脚本一律 Python（`python scripts/xxx.py`），UTF-8 编码；构建、截图与验证脚本共用
-  `tool/lpscript.py`（进程、路径、环境重定向）与 `tool/lpwin.py` / `tool/lpimage.py`
-  （窗口、位图），换解释器时只需改那一处。`tool/check_all.py` 有编码护栏。
-- C 源码 UTF-8 无 BOM、以换行结尾。
-- 生成物一律不入库：`build/`、`dist/`、`.tools/`、`app/build/`、`app/windows/out/`、`native/third_party/`。
-- 文档、脚本、注释、commit message、截图中**不写真实环境**：IP 用 `192.168.1.10` 这类示例
-  地址，账号用 `share`，设备只写平台（`Mac` / `iPad` / `Android 手机`），不写具体型号、系统
-  版本、UDID、开发者团队 ID 或本机用户名路径；素材与截图用 `scripts/make_doc_media.py`
-  生成的合成文件重拍，不要贴真实影音画面 —— 网络拓扑、设备清单、片单本身就能定位到具体的
-  人和机器。详见 [docs/security.md](docs/security.md)。
-
-自检一次性跑完：`.tools\python\python.exe tool\check_all.py`（静态检查、dart 语法与编译、
-dart 用例、安装器与发布断言都在里面）。
+完整列表与版本计划见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## 目录
 
@@ -215,20 +212,33 @@ LanPlayer/
 │  ├─ lib/core/             FFI 绑定、播放器控制器
 │  ├─ lib/data/             模型、存储、媒体源仓库、局域网扫描、封面缓存、选轨偏好
 │  ├─ lib/player/           播放列表与集数识别
-│  ├─ lib/ui/               五个界面 + 字幕气泡 + 封面格 + 音量/音轨面板
-│  └─ test/                 121 个用例（字幕像素与字体、设置、扫描、封面、选轨、音量、首页来源）
-├─ packages/lanplayer_video/ Windows 纹理插件（C++，把内核的 BGRA 帧交给 Flutter）
-├─ packages/lanplayer_core/  iOS / macOS 的 FFI 插件（把静态库链进 Runner）
+│  ├─ lib/ui/               界面、字幕气泡、封面格、音量/音轨面板
+│  └─ test/                 124 个用例
+├─ packages/
+│  ├─ lanplayer_video/      Windows 纹理插件（C++，把内核的 BGRA 帧交给 Flutter）
+│  └─ lanplayer_core/       iOS / macOS 的 FFI 插件（把静态库链进 Runner）
 ├─ native/                  C11 播放内核
 │  ├─ include/lanplayer/    公共 ABI（dart:ffi 的唯一契约）
 │  ├─ src/core/             解封装、解码、同步、字幕、封面、控制
 │  ├─ src/source/           LpSource：SMB / 本地 / 自定义 AVIO
-│  ├─ src/platform/         android / apple / win32 / stub（无窗口）
-│  └─ tests/                无依赖测试可执行文件
+│  ├─ src/platform/         android / apple / win32 / stub
+│  └─ tests/                无依赖的测试可执行文件
 ├─ scripts/                 各平台构建、截图、安装包与升级/卸载对照脚本
 ├─ tool/                    静态检查、依赖下载、测试素材生成
 └─ docs/                    架构、构建、协议、安全、路线图
 ```
+
+## 开发约定
+
+* 脚本一律 Python（`python scripts/xxx.py`），UTF-8 编码；构建、截图与验证脚本共用
+  `tool/lpscript.py`（进程、路径、环境重定向）、`tool/lpwin.py` / `tool/lpimage.py`
+  （窗口、位图）。`tool/check_all.py` 有编码与静态断言护栏。
+* C 源码 UTF-8 无 BOM、以换行结尾。
+* 生成物一律不入库：`build/`、`dist/`、`.tools/`、`app/build/`、`app/windows/out/`、
+  `native/third_party/`。
+* 文档、脚本、注释与截图中不写真实环境：地址用 `192.168.1.10` 这类示例，账号用
+  `share`，设备只写平台名；素材与截图用 `scripts/make_doc_media.py` 生成的合成文件，
+  不贴真实影音画面。详见 [docs/security.md](docs/security.md)。
 
 ## 文档
 
