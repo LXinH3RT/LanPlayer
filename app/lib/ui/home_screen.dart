@@ -371,6 +371,17 @@ class _HomeScreenState extends State<HomeScreen> {
               icon: const Icon(Icons.refresh),
               onPressed: () => unawaited(_loadAll()),
             ),
+          if (sources.isNotEmpty)
+            IconButton(
+              tooltip: '添加',
+              icon: _busy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.add),
+              onPressed: _busy ? null : _addMenu,
+            ),
           IconButton(
             tooltip: '设置',
             icon: const Icon(Icons.tune),
@@ -380,20 +391,8 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      // 空状态页面中央已经有完整入口，右下角不再重复一个「添加」。
-      floatingActionButton: sources.isEmpty
-          ? null
-          : FloatingActionButton.extended(
-              // 连接中禁用添加按钮，并用进度指示器反馈当前状态。
-              onPressed: _busy ? null : _addMenu,
-              icon: _busy
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.add),
-              label: Text(_busy ? '连接中…' : '添加'),
-            ),
+      // 添加入口只在顶栏出现，且只在已经有来源时出现：空状态页面中央
+      // 本来就摆着两颗按钮，再顶一个「+」就是重复。
       body: sources.isEmpty
           ? _EmptyState(
               onAdd: _addMenu,
@@ -409,7 +408,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 Expanded(
                   child: ListView(
-                    padding: const EdgeInsets.only(top: 4, bottom: 96),
+                    padding: const EdgeInsets.only(top: 4, bottom: 24),
                     children: [
                       for (final s in visible)
                         _SourceSection(

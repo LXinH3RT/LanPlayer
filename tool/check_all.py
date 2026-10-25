@@ -523,6 +523,14 @@ def check_thumbnails() -> None:
         if "showSourceFilter(" not in hc:
             problems.append("home_screen must offer the source filter when "
                             "several sources are on the page")
+        # 首页有来源时不再挂一个右下的浮动按钮，添加入口收进顶栏，紧挨设置。
+        # 反过来的写法（FloatingActionButton 又冒出来）会让列表底部永远空出
+        # 一条挡板的空白，也和「空状态页已经有两颗按钮」重复。
+        if "FloatingActionButton" in hc:
+            problems.append("home_screen must not float an add button over the "
+                            "list; the add entry belongs in the app bar")
+        if "tooltip: '添加'" not in hc:
+            problems.append("home_screen lost the add entry in the app bar")
 
     notes.append("thumbnails: LPT2 header round-trips, hex cache key, "
                  "covers only for video rows, decoding is throttled and "
