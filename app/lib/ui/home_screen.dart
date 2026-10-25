@@ -30,6 +30,9 @@ class HomeScreen extends StatefulWidget {
 }
 
 /// 单块来源的加载状态。
+///
+/// [listing] 与 [loading] 可以同时存在：刷新时保留旧内容，只在顶部显示一条
+/// 细进度条，避免整块内容闪一下空白。
 class _SourceLoad {
   const _SourceLoad({this.listing, this.error, this.loading = false});
 
@@ -46,6 +49,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// 按 [HomeSource.id] 记录每一块根目录的加载结果。
   final Map<String, _SourceLoad> _loads = {};
+
+  /// 每个来源的加载代际。异步返回时若代际不匹配就丢弃，避免旧请求覆盖新结果。
+  final Map<String, int> _loadGen = {};
 
   /// 只在多块来源时出现：点一下只看这一块。
   String? _only;
@@ -64,23 +70,49 @@ class _HomeScreenState extends State<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadAll());
   }
 
+  /// 统一的错误文案：网络/IO 异常也要给用户一个可读的提示，
+  /// 不能让来源永远卡在「加载中」。
+  String _errorText(Object e) =>
+      e is MediaSourceException ? e.message : '加载失败：$e';
+
+  /// 重新加载所有来源。调用时会给每个来源递增代际，之前在飞的请求自动作废。
   Future<void> _loadAll() async {
-    for (final s in _sources) {
-      unawaited(_load(s));
+    final sources = _sources;
+    if (sources.isEmpty) return;
+    final gens = <String, int>{};
+    for (final s in sources) {
+      gens[s.id] = (_loadGen[s.id] ?? 0) + 1;
     }
+    setState(() {
+      for (final s in sources) {
+        _loadGen[s.id] = gens[s.id]!;
+        _loads[s.id] =
+            _SourceLoad(listing: _loads[s.id]?.listing, loading: true);
+      }
+    });
+    await Future.wait(sources.map((s) => _loadOne(s, gens[s.id]!)));
   }
 
+  /// 重新加载一块来源（用于单块重试）。
   Future<void> _load(HomeSource s) async {
     if (_loads[s.id]?.loading == true) return;
-    setState(() => _loads[s.id] = const _SourceLoad(loading: true));
+    final gen = (_loadGen[s.id] ?? 0) + 1;
+    _loadGen[s.id] = gen;
+    setState(() => _loads[s.id] =
+        _SourceLoad(listing: _loads[s.id]?.listing, loading: true));
+    await _loadOne(s, gen);
+  }
+
+  Future<void> _loadOne(HomeSource s, int gen) async {
     try {
       final listing =
           await _repo.browseUrl(s.location.rootUrl, s.location.options);
-      if (!mounted) return;
+      if (!mounted || _loadGen[s.id] != gen) return;
       setState(() => _loads[s.id] = _SourceLoad(listing: listing));
-    } on MediaSourceException catch (e) {
-      if (!mounted) return;
-      setState(() => _loads[s.id] = _SourceLoad(error: e.message));
+    } catch (e) {
+      if (!mounted || _loadGen[s.id] != gen) return;
+      setState(() => _loads[s.id] =
+          _SourceLoad(listing: _loads[s.id]?.listing, error: _errorText(e)));
     }
   }
 
@@ -89,15 +121,14 @@ class _HomeScreenState extends State<HomeScreen> {
   /// 浏览页需要初始列表，这样它首帧就有内容，不会先闪一下空白再填。
   Future<void> _enterSubdir(HomeSource s, MediaEntry dir) async {
     try {
-      final listing =
-          await _repo.browseUrl(dir.path, s.location.options);
+      final listing = await _repo.browseUrl(dir.path, s.location.options);
       if (!mounted) return;
       await Navigator.of(context).push(MaterialPageRoute<void>(
         builder: (_) => BrowserScreen(location: s.location, initial: listing),
       ));
       if (mounted) unawaited(_load(s));
-    } on MediaSourceException catch (e) {
-      if (mounted) await showError(context, e.message);
+    } catch (e) {
+      if (mounted) await showError(context, _errorText(e));
     }
   }
 
@@ -108,23 +139,26 @@ class _HomeScreenState extends State<HomeScreen> {
       final listing = loaded ??
           await _repo.browseUrl(s.location.rootUrl, s.location.options);
       if (!mounted) return;
-      if (s.folder != null) {
-        await LocalFolderStore.instance.touch(s.folder!.id);
-      } else if (s.profile != null) {
-        await ServerStore.instance.touch(s.profile!.id);
-      }
+      // 「最近访问」只是锦上添花，写失败不影响浏览，直接忽略。
+      try {
+        if (s.folder != null) {
+          await LocalFolderStore.instance.touch(s.folder!.id);
+        } else if (s.profile != null) {
+          await ServerStore.instance.touch(s.profile!.id);
+        }
+      } catch (_) {}
       if (!mounted) return;
       await Navigator.of(context).push(MaterialPageRoute<void>(
         builder: (_) => BrowserScreen(location: s.location, initial: listing),
       ));
       if (mounted) unawaited(_load(s));
-    } on MediaSourceException catch (e) {
-      if (mounted) await showError(context, e.message);
+    } catch (e) {
+      if (mounted) await showError(context, _errorText(e));
     }
   }
 
-  Future<void> _play(HomeSource s, MediaEntry entry,
-      List<MediaEntry> subtitles) async {
+  Future<void> _play(
+      HomeSource s, MediaEntry entry, List<MediaEntry> subtitles) async {
     final listing = _loads[s.id]?.listing;
     final playlist = listing == null
         ? PlaylistController(items: [entry], index: 0)
@@ -183,7 +217,8 @@ class _HomeScreenState extends State<HomeScreen> {
         );
         break;
       case 'local':
-        await _addLocalFolder();
+        // 已经在 _busy 保护中，走内部实现，避免重复置 busy。
+        await _addLocalFolderInner();
         break;
     }
     if (mounted) {
@@ -194,13 +229,23 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// 挑一个本机文件夹并加进首页。
   Future<void> _addLocalFolder() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await _addLocalFolderInner();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _addLocalFolderInner() async {
     // Android 13+ 把存储权限拆成了按类型的媒体权限，必须运行时申请；
     // 没申请时列出来是空目录，看起来像本地浏览坏了。
     final perm = await MediaPermission.request();
     if (!perm.granted) {
       if (mounted) {
-        await showError(context,
-            '没有读取视频的权限，无法浏览本地文件。可以在系统设置里给 LanPlayer 打开「视频」权限。');
+        await showError(
+            context, '没有读取视频的权限，无法浏览本地文件。可以在系统设置里给 LanPlayer 打开「视频」权限。');
       }
       return;
     }
@@ -223,18 +268,24 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _addFolderByPath() async {
-    final home = _repo.localRoots();
-    final path = await askFolderPath(
-        context, home.isEmpty ? '' : home.first.path);
-    if (path == null || !mounted) return;
-    final segments = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty);
-    await LocalFolderStore.instance.add(
-      label: segments.isEmpty ? path : segments.last,
-      path: path,
-    );
-    if (mounted) {
-      setState(() {});
-      unawaited(_loadAll());
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final home = _repo.localRoots();
+      final path =
+          await askFolderPath(context, home.isEmpty ? '' : home.first.path);
+      if (path == null || !mounted) return;
+      final segments = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty);
+      await LocalFolderStore.instance.add(
+        label: segments.isEmpty ? path : segments.last,
+        path: path,
+      );
+      if (mounted) {
+        setState(() {});
+        unawaited(_loadAll());
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -265,6 +316,9 @@ class _HomeScreenState extends State<HomeScreen> {
       await LocalFolderStore.instance.remove(s.folder!.id);
     }
     _loads.remove(s.id);
+    _loadGen.remove(s.id);
+    // 正被过滤的那一块被移除后要回到「全部」，否则页面会空白。
+    if (_only == s.id) _only = null;
     if (mounted) setState(() {});
   }
 
@@ -285,30 +339,11 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<String?> _askLabel(String initial) async {
-    final ctrl = TextEditingController(text: initial);
-    final v = await showDialog<String>(
+  Future<String?> _askLabel(String initial) {
+    return showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('重命名'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: '显示名称'),
-          onSubmitted: (s) => Navigator.pop(ctx, s.trim()),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
+      builder: (_) => _RenameDialog(initial: initial),
     );
-    ctrl.dispose();
-    return v;
   }
 
   @override
@@ -331,10 +366,7 @@ class _HomeScreenState extends State<HomeScreen> {
             IconButton(
               tooltip: '刷新',
               icon: const Icon(Icons.refresh),
-              onPressed: () {
-                setState(_loads.clear);
-                unawaited(_loadAll());
-              },
+              onPressed: () => unawaited(_loadAll()),
             ),
           IconButton(
             tooltip: '设置',
@@ -345,17 +377,20 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        // 连接中禁用添加按钮，并用进度指示器反馈当前状态。
-        onPressed: _busy ? null : _addMenu,
-        icon: _busy
-            ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2))
-            : const Icon(Icons.add),
-        label: Text(_busy ? '连接中…' : '添加'),
-      ),
+      // 空状态页面中央已经有完整入口，右下角不再重复一个「添加」。
+      floatingActionButton: sources.isEmpty
+          ? null
+          : FloatingActionButton.extended(
+              // 连接中禁用添加按钮，并用进度指示器反馈当前状态。
+              onPressed: _busy ? null : _addMenu,
+              icon: _busy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.add),
+              label: Text(_busy ? '连接中…' : '添加'),
+            ),
       body: sources.isEmpty
           ? _EmptyState(
               onAdd: _addMenu,
@@ -376,6 +411,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     children: [
                       for (final s in visible)
                         _SourceSection(
+                          key: ValueKey(s.id),
                           source: s,
                           load: _loads[s.id],
                           maxRows: _maxRows,
@@ -391,6 +427,48 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ],
             ),
+    );
+  }
+}
+
+/// 重命名对话框。抽成 StatefulWidget，让 TextEditingController 的释放
+/// 跟着对话框自身生命周期走，避免在退场动画期间被提前 dispose。
+class _RenameDialog extends StatefulWidget {
+  const _RenameDialog({required this.initial});
+
+  final String initial;
+
+  @override
+  State<_RenameDialog> createState() => _RenameDialogState();
+}
+
+class _RenameDialogState extends State<_RenameDialog> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: widget.initial);
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() => Navigator.pop(context, _ctrl.text.trim());
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('重命名'),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        decoration: const InputDecoration(labelText: '显示名称'),
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context), child: const Text('取消')),
+        FilledButton(onPressed: _submit, child: const Text('保存')),
+      ],
     );
   }
 }
@@ -442,6 +520,7 @@ class _SourceFilter extends StatelessWidget {
 /// 一块来源：标题栏 + 根目录里的若干行。
 class _SourceSection extends StatelessWidget {
   const _SourceSection({
+    super.key,
     required this.source,
     required this.load,
     required this.maxRows,
@@ -469,6 +548,8 @@ class _SourceSection extends StatelessWidget {
     final rows = listing == null ? const <MediaEntry>[] : homeRows(listing);
     final shown = rows.length > maxRows ? rows.take(maxRows).toList() : rows;
     final hidden = rows.length - shown.length;
+    final loading = load?.loading ?? true;
+    final error = load?.error;
     final scheme = Theme.of(context).colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -520,20 +601,16 @@ class _SourceSection extends StatelessWidget {
             ],
           ),
         ),
-        if (load == null || load!.loading)
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-            child: LinearProgressIndicator(minHeight: 2),
-          )
-        else if (load!.error != null)
+        if (loading) const LinearProgressIndicator(minHeight: 2),
+        if (error != null)
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+            padding: const EdgeInsets.fromLTRB(20, 4, 12, 4),
             child: Row(
               children: [
-                Icon(Icons.error_outline, size: 18, color: scheme.error),
+                Icon(Icons.error_outline, size: 16, color: scheme.error),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(load!.error!,
+                  child: Text(error,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(fontSize: 12, color: scheme.error)),
@@ -541,17 +618,17 @@ class _SourceSection extends StatelessWidget {
                 TextButton(onPressed: onRetry, child: const Text('重试')),
               ],
             ),
-          )
-        else if (rows.isEmpty)
+          ),
+        if (listing != null && rows.isEmpty)
           const Padding(
             padding: EdgeInsets.fromLTRB(20, 4, 20, 14),
             child: Text('这个目录里没有视频', style: TextStyle(fontSize: 12)),
           )
-        else ...[
+        else if (listing != null) ...[
           for (final e in shown)
             MediaRow(
               entry: e,
-              listing: listing!,
+              listing: listing,
               location: source.location,
               onEnter: onEnter,
               onPlay: onPlay,
