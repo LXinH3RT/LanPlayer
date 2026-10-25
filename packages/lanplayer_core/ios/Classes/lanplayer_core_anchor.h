@@ -8,7 +8,7 @@
  * validate" 并中止 pod install。
  *
  * 不要往这里放任何被编译的代码：C 源码的编译入口是
- * scripts/build_apple_deps.sh。
+ * scripts/build_apple_deps.py。
  */
 #ifndef LANPLAYER_CORE_POD_ANCHOR_H
 #define LANPLAYER_CORE_POD_ANCHOR_H

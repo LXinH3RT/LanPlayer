@@ -24,7 +24,7 @@
 | ~~图形字幕（PGS / VobSub / DVB）跳过~~ | 已实现：`SUBTITLE_BITMAP` 矩形解码成 RGBA，按解码参考网格缩放到画面后由渲染器直通混合进视频帧（Windows GDI/waveOut、macOS BGRA 纹理两条路都接）。`anime-07.mkv` 的 6 条 `dvd_subtitle` 轨有画面，媒体信息里带 `"bitmap":true` | 完成（v0.1 追加）。仍不支持的：`\p` 矢量绘图里的动态特效、BD-J 交互 |
 | ~~ASS 富文本不渲染~~ | 已实现：`{\b1} {\i1} {\u1} {\s1} {\c&H..&} {\fs..} {\an..} {\pos(..)} {\r}` 解析成有序 run，Dart 侧逐个 `TextSpan` 渲染，一行里可以混排颜色/粗斜体/字号 | 完成（v0.1 追加）。仍不支持的：卡拉 OK `\k`、`\t` 动画、`\clip`、矢量绘图 `\p`（按 ASS 规范丢弃） |
 | ~~共享名要手填~~ | 已放弃：只填服务器地址就列出共享名的功能已移除（SRVSVC 在 Windows 家庭版常被关掉，而列出共享反而不如让用户直接填「属性 → 共享」里那个名字可靠）。现在只填主机 + 账号密码时，客户端连 `IPC$` 校验登录、只报「账号密码对不对」，共享名仍需自己填 | 有意不做 |
-| Windows 桌面端 | **已构建并运行**：CMake + MSVC 编出 Release 版 `lanplayer.exe`，Flutter UI 渲染、SMB 浏览、视频纹理与外挂字幕都正常（见 `docs/images/desktop-*.png`）；一条命令 `scripts\build_windows_desktop.ps1`。官方 `flutter build windows` 也已跑通（`scripts\patch_flutter_tools.ps1` 注入 VS 2026 的 generator） | 下一步：GPU 直出纹理（D3D11 纹理零拷贝）+ WASAPI |
+| Windows 桌面端 | **已构建并运行**：CMake + MSVC 编出 Release 版 `lanplayer.exe`，Flutter UI 渲染、SMB 浏览、视频纹理与外挂字幕都正常（见 `docs/images/desktop-*.png`）；一条命令 `scripts\build_windows_desktop.py`。官方 `flutter build windows` 也已跑通（`scripts\patch_flutter_tools.py` 注入 VS 2026 的 generator） | 下一步：GPU 直出纹理（D3D11 纹理零拷贝）+ WASAPI |
 | macOS 视频输出未接桌面纹理 | **已接并已在真机跑通**：`app/macos/Runner/MainFlutterWindow.swift` 注册 `lanplayer/video` 通道，`PlayerTexture` 从内核拉 `CVPixelBuffer` 交给 Flutter 引擎（BGRA，图形字幕已叠加）；VideoToolbox 硬解、AudioQueue 输出、外挂/内嵌字幕、SMB 浏览与进度保存全部通过。iPad 模拟器与实体设备同样跑通 | 完成 |
 | 倍速上限 2.0x | 符合需求（0.5–2.0） | 若要更高需串联两级 atempo |
 | 单实例单窗口 | 同时只播一个视频 | 按设计，播放页单例 |
@@ -94,12 +94,12 @@
 * CI：~~三个 job~~（已扩到五个目标：Android NDK + `flutter build apk`、
   Apple iOS 静态库 + `flutter build ios`、Linux CMake + `lp_smoke_test`、Windows Zig
   内核、Windows MSVC 桌面 bundle）
-* 桌面构建脚本化：~~`scripts/build_windows_desktop.ps1` 串成一条命令~~（已完成并接进
+* 桌面构建脚本化：~~`scripts/build_windows_desktop.py` 串成一条命令~~（已完成并接进
   CI，带 `-FlutterRoot` / `-NoEnvRedirect` 与 bundle 断言）
 * 内核单元测试：`subtitle.c` 的 SRT/ASS 解析器可以用纯 C 测试驱动，
   目前只做了冒烟测试（`native/tests/lp_smoke_test.c`）
 * 内存检查：ASan 跑一遍长片（2 小时）确认无泄漏，重点看 seek 与切集路径
 * 性能基线：4K HEVC 10bit 硬解掉帧率、SMB 顺序读吞吐（`tool/bench_*` 待补）
-* `build_apple_deps.sh` 的跨族缓存：现在切族只跳过 FFmpeg/libsmb2 的编译（按 slice 缓存），
+* `build_apple_deps.py` 的跨族缓存：现在切族只跳过 FFmpeg/libsmb2 的编译（按 slice 缓存），
   但三族的 `native/third_party/*/apple/<family>` 目录是分开的，换族时脚本仍会重跑
   `lipo`/`cp` 那几步（几秒钟，可接受）。若以后族变多，可加一个「本族已完成」的早退

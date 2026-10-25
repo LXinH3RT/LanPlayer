@@ -6,10 +6,10 @@
 #   3. 给 Runner 加库搜索路径和链接参数（liblanplayer.a + FFmpeg + libsmb2）。
 #
 # 为什么不在 pod 里直接编 C：见 ios/lanplayer_core.podspec 顶部的说明——
-# C 内核由 scripts/build_apple_deps.sh 一起编成 liblanplayer.a，链路更短。
+# C 内核由 scripts/build_apple_deps.py 一起编成 liblanplayer.a，链路更短。
 #
 # 在 Mac 上的正确顺序：
-#   scripts/build_apple_deps.sh        # 产出 native/third_party/**，含 liblanplayer.a
+#   scripts/build_apple_deps.py        # 产出 native/third_party/**，含 liblanplayer.a
 #   flutter pub get
 #   flutter build macos --release
 # 缺 liblanplayer.a 时链接报 "library not found for -llanplayer"。
@@ -53,7 +53,7 @@ LP_ROOT = begin
 end
 LP_NATIVE = File.join(LP_ROOT, 'native')
 LP_THIRD = File.join(LP_NATIVE, 'third_party')
-# scripts/build_apple_deps.sh 每个平台族写各自的目录：
+# scripts/build_apple_deps.py 每个平台族写各自的目录：
 #   native/third_party/<lib>/apple/<family>/{include,lib}
 # family 是 macosx / iphoneos / iphonesimulator。这里用 Xcode 的
 # $(PLATFORM_NAME) 让同一个 podspec 在三种构建里都指向正确的目录，
@@ -136,7 +136,7 @@ Pod::Spec.new do |s|
   # CocoaPods 校验用，写仓库地址即可（不写会连校验都过不去）。
   s.source = { :git => 'https://github.com/LXinH3RT/LanPlayer.git', :tag => s.version.to_s }
 
-  # 内核用 arm64 与 x86_64 都在编，最低系统跟着 scripts/build_apple_deps.sh
+  # 内核用 arm64 与 x86_64 都在编，最低系统跟着 scripts/build_apple_deps.py
   # 的 MIN_MACOS 走（脚本里是 12.0）。Xcode 26 不再接受 12.0 以下的目标。
   s.osx.deployment_target = '12.0'
   s.osx.dependency 'FlutterMacOS'

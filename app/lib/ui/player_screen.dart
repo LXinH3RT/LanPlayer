@@ -301,7 +301,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _hideTimer = Timer(_autoHideDelay, () {
       if (!mounted || !_controls) return;
       setState(() => _controls = false);
-      // 验证用日志：scripts\send_keys.ps1 靠这一行断言「鼠标静止 2 秒后控件收起」。
+      // 验证用日志：scripts\send_keys.py 靠这一行断言「鼠标静止 2 秒后控件收起」。
       // 只在真正发生变化时打印，鼠标移动过程中不会刷屏。
       // ignore: avoid_print
       print('LanPlayer controls: hidden (idle ${_autoHideDelay.inSeconds}s)');

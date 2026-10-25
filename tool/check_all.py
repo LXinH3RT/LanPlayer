@@ -11,7 +11,7 @@ only surface after `flutter analyze` / a native build:
   4. the repository has every file the docs promise
   5. the Apple wiring stays consistent (podspec links liblanplayer.a, the two
      Podfiles exist and declare the same deployment targets as
-     scripts/build_apple_deps.sh)
+     scripts/build_apple_deps.py)
 
 Usage:  python tool/check_all.py
 """
@@ -142,9 +142,9 @@ REQUIRED = [
     "app/macos/Runner/MainFlutterWindow.swift",
     "app/macos/Runner/Runner-Bridging-Header.h",
     "app/macos/Runner/Configs/AppInfo.xcconfig",
-    "scripts/build_apple_deps.sh",
-    "scripts/gen_windows_runner.ps1",
-    "scripts/patch_flutter_tools.ps1",
+    "scripts/build_apple_deps.py",
+    "scripts/gen_windows_runner.py",
+    "scripts/patch_flutter_tools.py",
     "native/tests/lp_win32_texture_test.c",
     "native/tests/lp_hw_decode_test.c",
     "native/tests/lp_hw_probe.c",
@@ -159,28 +159,28 @@ REQUIRED = [
     "app/test/settings_track_lang_test.dart",
     "app/test/subtitle_overlay_test.dart",
     "app/test/settings_test.dart",
-    "scripts/build_windows_app.ps1",
-    "scripts/build_windows_desktop.ps1",
-    "scripts/build_windows_installer.ps1",
-    "scripts/build_macos_dmg.sh",
-    "scripts/build_android_apk.sh",
-    "scripts/release_all.ps1",
-    "scripts/ios_device_install.sh",
+    "scripts/build_windows_app.py",
+    "scripts/build_windows_desktop.py",
+    "scripts/build_windows_installer.py",
+    "scripts/build_macos_dmg.py",
+    "scripts/build_android_apk.py",
+    "scripts/release_all.py",
+    "scripts/ios_device_install.py",
     "scripts/windows/installer.nsi",
-    "scripts/verify_windows_upgrade.ps1",
-    "scripts/verify_windows_uninstall.ps1",
+    "scripts/verify_windows_upgrade.py",
+    "scripts/verify_windows_uninstall.py",
     "LICENSE",
-    "scripts/fix_plugin_links.ps1",
-    "scripts/msvc_chain.bat",
-    "scripts/capture_window.ps1",
-    "scripts/capture_app.ps1",
-    "scripts/capture_screen.ps1",
-    "scripts/send_keys.ps1",
-    "scripts/capture_playback_ui.ps1",
-    "scripts/hover_probe.ps1",
-    "scripts/click_window.ps1",
-    "scripts/capture_lanscan.ps1",
-    "tool/image_stats.ps1",
+    "scripts/fix_plugin_links.py",
+    "scripts/msvc_chain.py",
+    "scripts/capture_window.py",
+    "scripts/capture_app.py",
+    "scripts/capture_screen.py",
+    "scripts/send_keys.py",
+    "scripts/capture_playback_ui.py",
+    "scripts/hover_probe.py",
+    "scripts/click_window.py",
+    "scripts/capture_lanscan.py",
+    "tool/image_stats.py",
     "tool/make_pgs_fixture.py",
     "tool/pgs_probe.c",
     "app/lib/data/progress.dart",
@@ -234,23 +234,25 @@ def check_texture_colors() -> None:
     if test.exists() and "--expect-red" not in test.read_text(encoding="utf-8"):
         problems.append("texture test lost its --expect-red assertion")
 
-    cap = ROOT / "scripts" / "capture_screen.ps1"
+    cap = ROOT / "scripts" / "capture_screen.py"
     if cap.exists():
         ctext = cap.read_text(encoding="utf-8")
         # A capture that silently grabs the desktop instead of the app produced
         # an all-white "proof" twice; the colour assertion is what catches it.
         for needle, why in (
-            ("-ExpectColor", "capture script lost its expected-colour option"),
-            ("Get-ColorMatch", "capture script no longer measures the expected colour"),
-            ("exit 3", "capture script no longer fails on invalid evidence"),
+            ('"--expect-color"', "capture script lost its expected-colour option"),
+            ("colour_match(", "capture script no longer measures the expected colour"),
+            ("return 3", "capture script no longer fails on invalid evidence"),
         ):
             if needle not in ctext:
                 problems.append(why)
-        if "$ecR = [int]$parts[0]" not in ctext:
-            problems.append("capture script assigns the colour array back to the [string] "
-                            "parameter (PowerShell coerces it, comparisons silently fail)")
+        # The colour has to be parsed into three separate ints, not carried
+        # around as the raw "R,G,B" string.
+        if "want = tuple(int(p) for p in parts)" not in ctext:
+            problems.append("capture script no longer turns the colour string into "
+                            "an integer triple, so comparing it silently fails")
 
-    media = ROOT / "scripts" / "make_test_media.ps1"
+    media = ROOT / "scripts" / "make_test_media.py"
     if media.exists() and "duration=60" not in media.read_text(encoding="utf-8"):
         problems.append("colour probe clip is short again; capturing it becomes a race "
                         "against playback ending")
@@ -543,8 +545,8 @@ def check_installers() -> None:
         case-insensitive, so the cleanup would delete the app it just copied).
     """
     nsi = ROOT / "scripts" / "windows" / "installer.nsi"
-    ps1 = ROOT / "scripts" / "build_windows_installer.ps1"
-    sh = ROOT / "scripts" / "build_macos_dmg.sh"
+    ps1 = ROOT / "scripts" / "build_windows_installer.py"
+    sh = ROOT / "scripts" / "build_macos_dmg.py"
     for path, what in ((nsi, "NSIS script"), (ps1, "Windows installer driver"),
                        (sh, "macOS dmg script")):
         if not path.exists():
@@ -568,13 +570,13 @@ def check_installers() -> None:
         problems.append("installer.nsi lost its APP_ICON default")
     for macro in ("APP_VERSION", "STAGE", "OUTFILE", "APP_ICON"):
         if "/D" + macro + "=" not in ps1.read_text(encoding="utf-8"):
-            problems.append(f"build_windows_installer.ps1 does not pass /D{macro} "
+            problems.append(f"build_windows_installer.py does not pass /D{macro} "
                             "to makensis")
 
     # Every staged runtime file must also be packaged; a drift here ships a
     # package that throws on startup when it cannot find a DLL.
     driver = ps1.read_text(encoding="utf-8")
-    staged = re.findall(r"^\s*'([\w.-]+\.dll|[\w.-]+\.exe)',?\s*$", driver, re.M)
+    staged = re.findall(r'^\s*"([\w.-]+\.dll|[\w.-]+\.exe)",?\s*$', driver, re.M)
     for name in staged:
         if f'"{name}"' not in nsi_code and f"\\{name}" not in nsi_code:
             problems.append(f"installer.nsi does not package {name} "
@@ -583,35 +585,36 @@ def check_installers() -> None:
     dmg = sh.read_text(encoding="utf-8")
     body = "\n".join(l for l in dmg.splitlines()
                      if not l.strip().startswith("#"))
-    if "ditto" not in body:
-        problems.append("build_macos_dmg.sh must copy the app with ditto "
+    if "DITTO" not in body:
+        problems.append("build_macos_dmg.py must copy the app with ditto "
                         "(cp -R drops extended attributes and the signature)")
-    if "cp -R" in body:
-        problems.append("build_macos_dmg.sh must not use cp -R for the .app")
-    if "hdiutil create" not in body or "UDZO" not in body:
-        problems.append("build_macos_dmg.sh must create a compressed (UDZO) dmg")
-    if "codesign --verify" not in body:
-        problems.append("build_macos_dmg.sh must verify the signature before "
+    if "shutil.copytree" in body:
+        problems.append("build_macos_dmg.py must not copy the .app with shutil "
+                        "(that drops the code signature)")
+    if "HDIUTIL" not in body or "UDZO" not in body:
+        problems.append("build_macos_dmg.py must create a compressed (UDZO) dmg")
+    if "CODESIGN" not in body or "--verify" not in body:
+        problems.append("build_macos_dmg.py must verify the signature before "
                         "packing")
 
     # The iOS device installer is the only path that runs on a real iPad.
     # Guard the two things that make it work: an explicit team id (Xcode
     # refuses to sign without one) and devicectl (flutter install needs the
     # legacy MobileDevice stack, which Xcode 27 dropped for devices).
-    dev = ROOT / "scripts" / "ios_device_install.sh"
+    dev = ROOT / "scripts" / "ios_device_install.py"
     if not dev.exists():
-        problems.append("missing scripts/ios_device_install.sh")
+        problems.append("missing scripts/ios_device_install.py")
     else:
         dev_body = "\n".join(l for l in dev.read_text(encoding="utf-8").splitlines()
                              if not l.strip().startswith("#"))
         if "DEVELOPMENT_TEAM" not in dev_body:
-            problems.append("ios_device_install.sh must write DEVELOPMENT_TEAM "
+            problems.append("ios_device_install.py must write DEVELOPMENT_TEAM "
                             "into the Xcode project")
-        if "devicectl device install app" not in dev_body:
-            problems.append("ios_device_install.sh must install with "
+        if '"devicectl", "device", "install", "app"' not in dev_body:
+            problems.append("ios_device_install.py must install with "
                             "'devicectl device install app'")
-        if "flutter build ios" not in dev_body:
-            problems.append("ios_device_install.sh must build with "
+        if "build ios" not in dev_body:
+            problems.append("ios_device_install.py must build with "
                             "'flutter build ios'")
 
     # Covering upgrade: without asking the running copy to quit, File/Delete hit
@@ -710,55 +713,43 @@ def check_release_policy() -> None:
         tracked file may point at them by name either — a dangling link in a
         README is how such a note ends up shipped.
     """
-    release = ROOT / "scripts" / "release_all.ps1"
+    release = ROOT / "scripts" / "release_all.py"
     if not release.is_file():
-        problems.append("scripts/release_all.ps1 is missing; one release must "
+        problems.append("scripts/release_all.py is missing; one release must "
                         "upload the Windows, macOS and Android packages together")
         return
 
     text = release.read_text(encoding="utf-8", errors="replace")
-    # Match the interpolated names in the asset array, not the plain names in
-    # the header comment: a comment can keep saying "android" while the list
-    # that is actually uploaded has lost it.
+    # Match the suffixes in the asset table, not the plain names in the header
+    # comment: a comment can keep saying "android" while the list that is
+    # actually uploaded has lost it.
     for pattern, what in (
-        ('"LanPlayer-$Version-windows-x64-setup.exe"', "Windows installer"),
-        ('"LanPlayer-$Version-macos-arm64.dmg"', "macOS dmg"),
-        ('"LanPlayer-$Version-android-arm64.apk"', "Android apk"),
+        ('"windows-x64-setup.exe"', "Windows installer"),
+        ('"macos-arm64.dmg"', "macOS dmg"),
+        ('"android-arm64.apk"', "Android apk"),
     ):
         if pattern not in text:
-            problems.append(f"scripts/release_all.ps1 no longer uploads the "
+            problems.append(f"scripts/release_all.py no longer uploads the "
                             f"{what} ({pattern}); a release must ship all "
                             f"three platforms")
-    if "if ($missing.Count -gt 0)" not in text or "exit 1" not in text:
-        problems.append("scripts/release_all.ps1 no longer refuses to upload "
+    if "if missing:" not in text or "return 1" not in text:
+        problems.append("scripts/release_all.py no longer refuses to upload "
                         "when a platform package is missing")
-    for builder in ("build_windows_installer.ps1", "build_macos_dmg.sh",
-                    "build_android_apk.sh"):
+    for builder in ("build_windows_installer.py", "build_macos_dmg.py",
+                    "build_android_apk.py"):
         if not (ROOT / "scripts" / builder).is_file():
             problems.append(f"scripts/{builder} is missing; the release needs a "
                             f"way to produce every platform package")
 
-    # The APK builder must take the version from pubspec so the three packages
-    # of one release cannot disagree.
-    apk_sh = ROOT / "scripts" / "build_android_apk.sh"
-    if apk_sh.is_file():
-        apk_text = apk_sh.read_text(encoding="utf-8", errors="replace")
-        if "pubspec.yaml" not in apk_text:
-            problems.append("scripts/build_android_apk.sh no longer reads the "
-                            "version from app/pubspec.yaml")
-
-    # The other two builders used to carry a hard-coded default version, which
-    # meant a release could publish 0.1.2 file names built from 0.1.3 sources
-    # after somebody forgot the flag. They must read pubspec too.
-    for builder, needle in (
-        ("build_macos_dmg.sh", "pubspec.yaml"),
-        ("build_windows_installer.ps1", "pubspec.yaml"),
-    ):
+    # All three builders must take the version from pubspec so the three
+    # packages of one release cannot disagree.
+    for builder in ("build_android_apk.py", "build_macos_dmg.py",
+                    "build_windows_installer.py"):
         path = ROOT / "scripts" / builder
         if not path.is_file():
             continue
         body = path.read_text(encoding="utf-8", errors="replace")
-        if needle not in body:
+        if "pubspec_version(" not in body:
             problems.append(f"scripts/{builder} no longer reads the version "
                             f"from app/pubspec.yaml; its packages would be "
                             f"named with a stale version")
@@ -842,11 +833,11 @@ def dart_env() -> dict[str, str]:
     return env
 
 def check_native_runtime() -> None:
-    """Runs the compiled smoke test when scripts/build_windows.ps1 has run."""
+    """Runs the compiled smoke test when scripts/build_windows.py has run."""
     out_dir = ROOT / "build" / "win-x64"
     exe = out_dir / "lp_smoke_test.exe"
     if not exe.exists():
-        notes.append("native runtime: not built (scripts/build_windows.ps1)")
+        notes.append("native runtime: not built (scripts/build_windows.py)")
         return
     env = dict(os.environ)
     env["PATH"] = str(out_dir) + os.pathsep + env.get("PATH", "")
@@ -867,10 +858,10 @@ def check_hw_decode() -> None:
     exe = out_dir / "lp_hw_decode_test.exe"
     red = ROOT / "build" / "media" / "colortest" / "red.mp4"
     if not exe.exists():
-        notes.append("hw decode: not built (scripts/build_windows.ps1)")
+        notes.append("hw decode: not built (scripts/build_windows.py)")
         return
     if not red.exists():
-        notes.append("hw decode: skipped (no colour probe clip; make_test_media.ps1)")
+        notes.append("hw decode: skipped (no colour probe clip; make_test_media.py)")
         return
     env = dict(os.environ)
     env["PATH"] = str(out_dir) + os.pathsep + env.get("PATH", "")
@@ -1067,62 +1058,46 @@ def check_player_layout() -> None:
                  "bottom row")
 
 
-def check_powershell_scripts() -> None:
-    """Every .ps1 under scripts/ must be readable by Windows PowerShell 5.1.
+def check_script_encoding() -> None:
+    """Every script under scripts/ and tool/ must be valid UTF-8.
 
-    PowerShell 5.1 decodes a script with no UTF-8 BOM using the ANSI code page
-    (cp936 on this machine, OEMCP=936). A Chinese comment then turns into a
-    garbled *string literal* that swallows the next line -- no parse error, just
-    a silently lost assignment. That cost two rounds of debugging
-    (scripts/capture_track_sheet.ps1: $btnY became an empty string and the click
-    landed at y=0), so it is worth a static guard rather than a comment.
-
-    Two shapes are allowed:
-      * pure ASCII body, with or without a BOM
-      * UTF-8 BOM + any UTF-8 body
-    Anything else fails.
-
-    pwsh 7 would default to UTF-8, but this machine does not have it installed
-    (checked 2026-10-22: no pwsh on PATH, no C:\\Program Files\\PowerShell,
-    winget reports MS.PowerShell not installed), and the BOM is the portable
-    answer either way.
+    The build and capture scripts all run under one interpreter now, so the
+    pure-ASCII rule that PowerShell forced on us is gone -- but a file saved in
+    GBK still blows up at parse time on any machine whose locale differs, and
+    that failure mode is a syntax error pointing at a line that looks fine.
+    Decoding every script here turns it into a message that names the file.
     """
-    script_dir = ROOT / "scripts"
-    if not script_dir.is_dir():
-        return
-
-    bom = b"\xef\xbb\xbf"
     bad: list[str] = []
-    for path in sorted(script_dir.glob("*.ps1")):
-        raw = path.read_bytes()
-        has_bom = raw.startswith(bom)
-        body = raw[len(bom):] if has_bom else raw
-        try:
-            text = body.decode("utf-8")
-        except UnicodeDecodeError:
-            bad.append(f"scripts/{path.name}: not valid UTF-8")
+    for folder in (ROOT / "scripts", ROOT / "tool"):
+        if not folder.is_dir():
             continue
-        non_ascii = [ch for ch in text if ord(ch) > 0x7F]
-        if not non_ascii:
+        for path in sorted(folder.rglob("*.py")):
+            try:
+                path.read_bytes().decode("utf-8")
+            except UnicodeDecodeError as exc:
+                bad.append(f"{path.relative_to(ROOT).as_posix()}: not valid UTF-8 "
+                           f"({exc.reason} at byte {exc.start}); Python would fail "
+                           f"to import it")
+
+    # One interpreter for every build and capture step.  The old .ps1 / .sh
+    # versions are gone; letting a new one back in reintroduces the two failure
+    # modes the migration removed: PowerShell 5.1 decoding UTF-8 as the ANSI
+    # code page (a Chinese comment can swallow the following line), and shell
+    # pipelines resolving `find` to the MSYS build under ops_bash.  Keep the
+    # guarded directories to the two the repository owns -- app/android's
+    # gradlew.bat ships with Flutter and is not ours to rewrite.
+    for folder in (ROOT / "scripts", ROOT / "tool"):
+        if not folder.is_dir():
             continue
-        if not has_bom:
-            line = next(
-                (i + 1 for i, ln in enumerate(text.splitlines())
-                 if any(ord(c) > 0x7F for c in ln)),
-                0,
-            )
-            bad.append(
-                f"scripts/{path.name}: contains non-ASCII text (line {line}) but has "
-                f"no UTF-8 BOM; Windows PowerShell 5.1 will decode it as cp936 and "
-                f"swallow the following line silently -- either keep it pure ASCII "
-                f"or prepend EF BB BF"
-            )
+        for path in sorted(folder.rglob("*")):
+            if path.suffix.lower() in (".ps1", ".sh", ".bat", ".cmd"):
+                bad.append(f"{path.relative_to(ROOT).as_posix()}: shell script under a "
+                           f"Python-only directory; rewrite it in Python")
 
     if bad:
         problems.extend(bad)
     else:
-        notes.append("powershell: every scripts/*.ps1 is ASCII or UTF-8 + BOM "
-                     "(PS 5.1 would mis-decode an unmarked one)")
+        notes.append("scripts: Python only under scripts/ and tool/, all UTF-8")
 
 
 def check_track_selection() -> None:
@@ -1581,8 +1556,8 @@ def check_playback_profiles() -> None:
             problems.append(f"{name} in {rel} no longer calls lp_nal_is_annexb(); "
                             "length-prefixed packets that begin 00 00 01 would be "
                             "converted as if they were Annex-B and decode to nothing")
-    for rel in ("native/CMakeLists.txt", "scripts/build_windows.ps1",
-                "scripts/build_apple_deps.sh"):
+    for rel in ("native/CMakeLists.txt", "scripts/build_windows.py",
+                "scripts/build_apple_deps.py"):
         path = ROOT / rel
         if path.exists() and "nal.c" not in path.read_text(encoding="utf-8"):
             problems.append(f"{rel} no longer compiles native/src/core/nal.c; "
@@ -1654,7 +1629,7 @@ def check_apple_wiring() -> None:
     Apple builds cannot be run on this machine at all (no Xcode, no macOS), so
     the only protection against a silently-broken desktop chain is static: the
     podspecs must still link liblanplayer.a, the Podfiles must exist, and the
-    deployment targets must match what scripts/build_apple_deps.sh produces.
+    deployment targets must match what scripts/build_apple_deps.py produces.
     A mismatch there does not fail pod install — it fails the link minutes
     later with "building for iOS 13.0, but linking in object file built for
     iOS 14.0", which is exactly the sort of thing nobody can debug on Windows.
@@ -1778,15 +1753,15 @@ def check_apple_wiring() -> None:
                             f"(CocoaPods rejects absolute patterns); rely on "
                             f"LIBRARY_SEARCH_PATHS / HEADER_SEARCH_PATHS instead")
 
-    # Deployment targets must agree with build_apple_deps.sh, otherwise the
+    # Deployment targets must agree with build_apple_deps.py, otherwise the
     # static archives are newer than the app and the link fails.
-    # The script uses shell default-expansion: MIN_IOS="${MIN_IOS:-13.0}", so
-    # pull the fallback out of that form rather than the raw right-hand side.
-    script = ROOT / "scripts" / "build_apple_deps.sh"
+    # The script reads them with os.environ.get("MIN_IOS", "13.0"), so pull the
+    # fallback out of that call rather than the raw right-hand side.
+    script = ROOT / "scripts" / "build_apple_deps.py"
     min_ios = min_macos = None
     if script.exists():
         for line in script.read_text(encoding="utf-8").splitlines():
-            m = re.match(r'\s*(MIN_IOS|MIN_MACOS)="?\$\{\w+:-([0-9.]+)\}"?', line)
+            m = re.search(r'os\.environ\.get\(\s*"(MIN_IOS|MIN_MACOS)"\s*,\s*"([0-9.]+)"', line)
             if not m:
                 m = re.match(r'\s*(MIN_IOS|MIN_MACOS)="?([0-9.]+)"?', line)
             if not m:
@@ -1802,12 +1777,12 @@ def check_apple_wiring() -> None:
         problems.append("app/ios/Podfile missing; flutter build ios refuses to run")
     elif min_ios and f"platform :ios, '{min_ios}'" not in ios_podfile.read_text(encoding="utf-8"):
         problems.append(f"app/ios/Podfile does not declare platform :ios, '{min_ios}' "
-                        f"(build_apple_deps.sh builds for {min_ios})")
+                        f"(build_apple_deps.py builds for {min_ios})")
     if not macos_podfile.exists():
         problems.append("app/macos/Podfile missing; flutter build macos refuses to run")
     elif min_macos and f"platform :osx, '{min_macos}'" not in macos_podfile.read_text(encoding="utf-8"):
         problems.append(f"app/macos/Podfile does not declare platform :osx, '{min_macos}' "
-                        f"(build_apple_deps.sh builds for {min_macos})")
+                        f"(build_apple_deps.py builds for {min_macos})")
 
     # Swift cannot see lp_* without the bridging header in the build settings.
     macos_pbx = APP / "macos" / "Runner.xcodeproj" / "project.pbxproj"
@@ -1852,7 +1827,7 @@ def check_apple_wiring() -> None:
     #   Target Integrity (Xcode): The iOS Simulator deployment target
     #   'IPHONEOS_DEPLOYMENT_TARGET' is set to 13.0, but the range of supported
     #   deployment target versions is 15.0 to 27.1.x.
-    # Every place that can carry the value has to agree with build_apple_deps.sh.
+    # Every place that can carry the value has to agree with build_apple_deps.py.
     ios_podfile_text = ios_podfile.read_text(encoding="utf-8") if ios_podfile.exists() else ""
     if min_ios and ios_podfile_text:
         if "config.build_settings['IPHONEOS_DEPLOYMENT_TARGET']" not in ios_podfile_text:
@@ -1911,7 +1886,7 @@ def main() -> int:
     check_installers()
     check_release_policy()
     check_player_layout()
-    check_powershell_scripts()
+    check_script_encoding()
     check_track_selection()
     check_subtitle_fonts()
     check_subtitle_sheet_selection()

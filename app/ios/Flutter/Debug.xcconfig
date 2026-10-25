@@ -13,7 +13,7 @@
 // 不能写成 $(SRCDIR)：Xcode 没有这个变量，展开后路径会被规约成
 // /native/third_party/...，ld 只报 "search path not found"，随后把所有静态库
 // 当成"没提供符号"，最终一堆 Undefined symbols —— macOS 上就踩过这个坑。
-// 静态库由 scripts/build_apple_deps.sh 产出，是多切片 lipo 起来的 universal 归档。
+// 静态库由 scripts/build_apple_deps.py 产出，是多切片 lipo 起来的 universal 归档。
 //
 // 这三行和 packages/lanplayer_core/ios/lanplayer_core.podspec 里的
 // user_target_xcconfig 是重复的。保留它们的原因：pod 走的是 CocoaPods，
@@ -27,7 +27,7 @@ LIBRARY_SEARCH_PATHS = $(inherited) \
     $(LP_NATIVE)/third_party/libsmb2/apple/lib
 
 // Flutter 在 iOS 上默认给模拟器编 "arm64 x86_64" 双架构
-// （ARCHS 继承自 ARCHS_STANDARD），而 scripts/build_apple_deps.sh 默认
+// （ARCHS 继承自 ARCHS_STANDARD），而 scripts/build_apple_deps.py 默认
 // ARCHS=arm64，产出的 liblanplayer.a / FFmpeg / libsmb2 只有 arm64。
 // 结果是链接 x86_64 那半边时 ld 报一屏
 //   ld: warning: ignoring file '.../liblanplayer.a(...)': found architecture

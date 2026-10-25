@@ -8,12 +8,12 @@
 # 为什么不用 source_files 让 CocoaPods 去编 C：
 #   native/src 在 pod 目录之外，Flutter 还会把插件以符号链接挂到
 #   app/ios/Flutter/ephemeral/.symlinks/plugins/ 下，让 CocoaPods 跨符号链接
-#   去 glob 并编译外部源码很容易出各种边角问题；而 scripts/build_apple_deps.sh
+#   去 glob 并编译外部源码很容易出各种边角问题；而 scripts/build_apple_deps.py
 #   本来就要在 Mac 上跑（FFmpeg / libsmb2 只能现场编），顺手把 C 内核也编成
 #   liblanplayer.a 只是多十几行 shell，链路更短、更好排查。
 #
 # 所以在 Mac 上的正确顺序是：
-#   scripts/build_apple_deps.sh        # 产出 native/third_party/**，含 liblanplayer.a
+#   scripts/build_apple_deps.py        # 产出 native/third_party/**，含 liblanplayer.a
 #   flutter pub get
 #   flutter build ios --release
 # 缺 liblanplayer.a 时链接会报 "library not found for -llanplayer"，看到这句

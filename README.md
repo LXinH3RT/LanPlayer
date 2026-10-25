@@ -90,25 +90,25 @@ New-SmbShare -Name Movies -Path D:\Movies -ReadAccess lanplay
 ```powershell
 # Windows 内核（不需要 Visual Studio，用 Zig）
 python tool\fetch_deps.py
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1
+python scripts\build_windows.py
 build\win-x64\lp_smoke_test.exe
 
 # Windows 桌面端（需要 VS 的 C++ 工作负载）
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_desktop.ps1 -Core
+python scripts\build_windows_desktop.py --core
 # -> app\windows\out\build\x64-VisualStudio182026\runner\Release\lanplayer.exe
 ```
 
 ```bash
 # Apple 侧（在 Mac 上）：先编依赖与内核，再出包
-SLICES=macosx ./scripts/build_apple_deps.sh
+SLICES=macosx python3 scripts/build_apple_deps.py
 cd app && flutter pub get && flutter build macos --release
 flutter build ios --release --no-codesign
-TEAM_ID=<你的 10 位 Team ID> ./scripts/ios_device_install.sh   # 真机
+TEAM_ID=<你的 10 位 Team ID> python3 scripts/ios_device_install.py   # 真机
 ```
 
 ```bash
 # Android：iOS / Android 的 FFmpeg + libsmb2 交叉编译
-ANDROID_NDK_HOME=~/android-ndk-r26 ./scripts/build_android_deps.sh
+ANDROID_NDK_HOME=~/android-ndk-r26 python3 scripts/build_android_deps.py
 ```
 
 自检（Windows，必须在仓库根、且把 `TMP`/`TEMP` 指进 `.tools/tmp`）：
@@ -122,8 +122,8 @@ $env:TMP="$PWD\.tools\tmp"; $env:TEMP=$env:TMP
 用包装脚本（它把 `TMP`/`TEMP`/`APPDATA`/`LOCALAPPDATA`/`PUB_CACHE` 重定向进仓库内 `.tools/`）：
 
 ```bash
-./scripts/run_flutter_tests.sh            # = flutter test
-./scripts/run_flutter_tests.sh analyze    # = flutter analyze
+python scripts/run_flutter_tests.py            # = flutter test
+python scripts/run_flutter_tests.py analyze    # = flutter analyze
 ```
 
 构建细节、Apple 侧踩过的坑与报错对照表见 [docs/build.md](docs/build.md)。
@@ -134,12 +134,12 @@ $env:TMP="$PWD\.tools\tmp"; $env:TEMP=$env:TMP
 
 ```powershell
 python tool\fetch_deps.py nsis
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows_installer.ps1 -Version 0.1.2
+python scripts\build_windows_installer.py --version 0.1.2
 # -> dist\LanPlayer-0.1.2-windows-x64-setup.exe
 ```
 
 ```bash
-VERSION=0.1.2 ./scripts/build_macos_dmg.sh
+VERSION=0.1.2 python3 scripts/build_macos_dmg.py
 # -> dist/LanPlayer-0.1.2-macos-arm64.dmg
 ```
 
@@ -152,7 +152,7 @@ VERSION=0.1.2 ./scripts/build_macos_dmg.sh
 
 **覆盖升级**：旧版本还在跑也可以直接双击新版安装包，安装器会先关掉旧进程（先发关闭请求，
 5 秒不退才强制结束）再写文件，不需要先手动卸载；卸载同理。两条路径都有正负对照脚本
-（`scripts\verify_windows_upgrade.ps1`、`scripts\verify_windows_uninstall.ps1`）。
+（`scripts\verify_windows_upgrade.py`、`scripts\verify_windows_uninstall.py`）。
 
 `avdevice-63.dll`（4.9 MB）**不打包**：没有任何模块依赖它，内核也从不调 `avdevice_*`。
 用户数据默认保留：Windows 卸载器的选项页给一个「同时删除服务器列表、设置和缩略图缓存」的
@@ -192,13 +192,14 @@ Windows 桌面端硬解已接 D3D11VA，仍缺 GPU 直出纹理与 WASAPI。
 
 ## 开发约定
 
-- `.ps1` 要么纯 ASCII，要么带 UTF-8 BOM（PowerShell 5.1 会按 cp936 解码无 BOM 脚本，
-  偶数字节的中文注释会把下一行吞进注释里，静默不报错）。`tool/check_all.py` 有护栏。
+- 脚本一律 Python（`python scripts/xxx.py`），UTF-8 编码；构建、截图与验证脚本共用
+  `tool/lpscript.py`（进程、路径、环境重定向）与 `tool/lpwin.py` / `tool/lpimage.py`
+  （窗口、位图），换解释器时只需改那一处。`tool/check_all.py` 有编码护栏。
 - C 源码 UTF-8 无 BOM、以换行结尾。
 - 生成物一律不入库：`build/`、`dist/`、`.tools/`、`app/build/`、`app/windows/out/`、`native/third_party/`。
 - 文档、脚本、注释、commit message、截图中**不写真实环境**：IP 用 `192.168.1.10` 这类示例
   地址，账号用 `share`，设备只写平台（`Mac` / `iPad` / `Android 手机`），不写具体型号、系统
-  版本、UDID、开发者团队 ID 或本机用户名路径；素材与截图用 `scripts/make_doc_media.ps1`
+  版本、UDID、开发者团队 ID 或本机用户名路径；素材与截图用 `scripts/make_doc_media.py`
   生成的合成文件重拍，不要贴真实影音画面 —— 网络拓扑、设备清单、片单本身就能定位到具体的
   人和机器。详见 [docs/security.md](docs/security.md)。
 

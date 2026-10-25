@@ -2,7 +2,7 @@
 #
 # 与 `flutter create` 生成的模板有两处改动：
 #   1. platform 写成 12.0 —— 有两个下限共同决定这个数字：
-#      a) native/third_party 里的 FFmpeg / libsmb2 是 scripts/build_apple_deps.sh
+#      a) native/third_party 里的 FFmpeg / libsmb2 是 scripts/build_apple_deps.py
 #         用 MIN_MACOS=12.0 编的，工程目标低于它会在链接时报
 #         "building for macOS 11.0, but linking in object file built for macOS 12.0"；
 #      b) Xcode 26（macOS SDK 27）不再接受 12.0 以下的部署目标：

@@ -98,7 +98,7 @@ jobs:
           flutter-version: "3.27.x"
           channel: stable
       - name: locate the Android NDK
-        # build_android_deps.sh refuses to run without ANDROID_NDK_HOME; the
+        # build_android_deps.py refuses to run without ANDROID_NDK_HOME; the
         # runner image ships several NDKs under $ANDROID_HOME/ndk but does not
         # export the variable.  Prefer the one pinned in build.gradle.kts and
         # install it if the image does not carry that exact version.
@@ -130,7 +130,7 @@ jobs:
         # android-arm64, and every extra ABI doubles the FFmpeg cross-build
         # (which dominates this job's runtime).  Pass "armeabi-v7a" as well to
         # ship 32-bit ARM; app/build.gradle.kts lists the same set.
-        run: bash scripts/build_android_deps.sh arm64-v8a
+        run: python scripts/build_android_deps.py arm64-v8a
       - name: analyze + test
         working-directory: app
         run: |
@@ -158,7 +158,7 @@ jobs:
         # macosx are all arm64, and lipo refuses to pack two slices with the same
         # architecture into one fat archive.  This job only builds the iOS app,
         # so the device slice is all it needs.
-        run: SLICES=iphoneos bash scripts/build_apple_deps.sh
+        run: SLICES=iphoneos python scripts/build_apple_deps.py
       - name: analyze + test
         working-directory: app
         run: |
@@ -183,10 +183,10 @@ jobs:
         # exits with "unknown artifact <name>" for them.
         run: python tool/fetch_deps.py zig ffmpeg libsmb2 dart
       - name: build (dll + smoke test, SMB included)
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 -Clean
+        run: python scripts/build_windows.py --clean
       - name: test media + runtime check
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make_test_media.ps1
+          python scripts/make_test_media.py
           build\win-x64\lp_smoke_test.exe
           build\win-x64\lp_smoke_test.exe --list .
           build\win-x64\lp_smoke_test.exe build\media\clip.mp4 6
@@ -209,7 +209,7 @@ jobs:
       - name: native core (DLL with the win32 adapter)
         run: |
           python tool/fetch_deps.py zig ffmpeg libsmb2
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1 -Clean
+          python scripts/build_windows.py --clean
       - name: fetch the rest of the analysis/desktop deps
         run: python tool/fetch_deps.py dart ffi path_provider
       - name: analyze + unit tests
@@ -232,9 +232,7 @@ jobs:
         # snapshot rebuild is needed.  It also creates the plugin junctions that
         # `flutter pub get` wants to symlink, and copies lanplayer.dll + the
         # FFmpeg DLLs next to the exe.
-        run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows_desktop.ps1 `
-            -Config Release -NoEnvRedirect
+        run: python scripts/build_windows_desktop.py --config Release --no-env-redirect
       - name: bundle check (exe + core + engine + assets)
         run: |
           $exe = Get-ChildItem -Path app\windows\out\build -Recurse -Filter lanplayer.exe -File |
@@ -264,7 +262,7 @@ jobs:
             ForEach-Object { Write-Host ("  {0,-32} {1,9:N0} KiB" -f $_.Name, ($_.Length / 1KB)) }
       - name: texture path preflight (loads lanplayer.dll)
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make_test_media.ps1
+          python scripts/make_test_media.py
           build\win-x64\lp_win32_texture_test.exe build\media\clip.mp4 build\win-x64
       - name: hardware decode preflight (d3d11va when the runner has a GPU)
         run: |

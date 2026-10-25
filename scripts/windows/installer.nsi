@@ -1,6 +1,6 @@
 ﻿; LanPlayer Windows 安装包脚本（NSIS 3.x）
 ;
-; 用法（由 scripts\build_windows_installer.ps1 调用）：
+; 用法（由 scripts\build_windows_installer.py 调用）：
 ;   makensis.exe /DAPP_VERSION=0.1.0 /DSTAGE=<暂存目录> /DOUTFILE=<输出 exe> \
 ;                /DAPP_ICON=<图标 ico> installer.nsi
 ;

@@ -17,7 +17,7 @@ set(LP_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(NOT LP_FFMPEG_ROOT)
     if(DEFINED ANDROID_ABI)
-        # scripts/build_android_deps.sh writes <out>/ffmpeg/android/<abi>/{include,lib/<abi>}
+        # scripts/build_android_deps.py writes <out>/ffmpeg/android/<abi>/{include,lib/<abi>}
         set(LP_FFMPEG_ROOT ${LP_ROOT}/third_party/ffmpeg/android/${ANDROID_ABI})
     elseif(APPLE)
         set(LP_FFMPEG_ROOT ${LP_ROOT}/third_party/ffmpeg/apple)
@@ -25,7 +25,7 @@ if(NOT LP_FFMPEG_ROOT)
 endif()
 
 if(NOT LP_SMB2_ROOT AND DEFINED ANDROID_ABI)
-    # scripts/build_android_deps.sh writes <out>/libsmb2/android/{include,lib/<abi>}
+    # scripts/build_android_deps.py writes <out>/libsmb2/android/{include,lib/<abi>}
     set(LP_SMB2_ROOT ${LP_ROOT}/third_party/libsmb2/android)
 endif()
 
@@ -215,7 +215,7 @@ if(LP_SMB2_ROOT AND EXISTS ${LP_SMB2_ROOT}/include/smb2/libsmb2.h)
         if(NOT _smb_loc)
             message(FATAL_ERROR
                 "lanplayer: no libsmb2 import library under "
-                "${LP_SMB2_ROOT}/lib - run scripts/build_*_deps.sh first")
+                "${LP_SMB2_ROOT}/lib - run scripts/build_*_deps.py first")
         endif()
         add_library(smb2 ${_smb_kind} IMPORTED)
         if(_smb_implib)

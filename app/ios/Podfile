@@ -2,7 +2,7 @@
 #
 # 与 `flutter create` 生成的模板基本一致，只有两处改动：
 #   1. 打开 platform 行并写成 15.0 —— native/third_party 里的 FFmpeg / libsmb2
-#      是 scripts/build_apple_deps.sh 用 MIN_IOS=15.0 编的，工程目标低于它
+#      是 scripts/build_apple_deps.py 用 MIN_IOS=15.0 编的，工程目标低于它
 #      链接时会报 "building for iOS 14.0, but linking in object file built for iOS 15.0"。
 #      另外 Xcode 27（iOS SDK 27）的受支持下限就是 15.0，写 13.0 会被
 #      "Target Integrity" 直接拒掉。
