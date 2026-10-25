@@ -40,6 +40,9 @@ SetCompressorDictSize 64
 !define APP_NAME    "LanPlayer"
 !define APP_PUBLISHER "LanPlayer"
 !define APP_EXE     "lanplayer.exe"
+; 主程序的那个 DLL。它是判断「谁还在占用安装目录」的唯一可靠依据：
+; 映像名可以被复制/改名绕过，但 DLL 被映射这件事绕不过去。
+!define APP_DLL     "lanplayer.dll"
 !define APP_ID      "LanPlayer"
 !define UNINST_KEY  "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}"
 
@@ -103,32 +106,42 @@ LangString DESC_Assoc     ${LANG_SIMPCHINESE} "把常见视频格式（mp4/mkv/a
 LangString DESC_Assoc     ${LANG_ENGLISH}     "Associate common video files (mp4/mkv/avi/mov/ts/m4v) with LanPlayer."
 
 ; ---------------- 覆盖升级：先把旧版请退 ----------------
-; 旧版还在跑的时候 lanplayer.exe 与那几个 DLL 都是已映射的映像，File 写不进去，
-; NSIS 只会弹「无法打开要写入的文件」，用户就得先手动卸载 —— 这就是要修的问题。
+; 旧版还在跑的时候 lanplayer.exe 与那几个 DLL 都是已映射的映像，File 写不进去。
+; 交互安装会弹「无法打开要写入的文件: ...」，用户再点「中止」，安装器就写
+; 「无法写入: <路径>」并退出。静默安装更糟：它按「忽略」处理，exit code 仍是 0，
+; 装完之后新旧 DLL 混搭，运行起来行为诡异。卸载也一样 —— Delete 对被映射的文件
+; 是静默失败，注册表却删干净了，用户以为卸载成功，下次安装继续撞同一堵墙。
 ;
-; 做法：先用 taskkill 不带 /F 给它发 WM_CLOSE（等于点窗口右上角的叉，会走正常退出
-; 流程、把设置写盘），最多等 5 秒；还不退才 /F 强杀。装完由完成页的「立即启动」
-; 把它再拉起来（那是 MUI_FINISHPAGE_RUN 的老行为，静默安装不重启）。
-; 按映像名找进程，所以同机另一份 lanplayer.exe 也会一起被关掉 —— 这个程序的
-; 用户数据在 %APPDATA%\lanplayer，卸载/升级从不删，多份并存本来就没意义。
+; 做法分三步，前一步不够才走下一步：
+;   1. 按映像名请退（能被优雅关闭就优雅关闭，让它把设置写盘）；
+;   2. 目标 DLL 仍不可写时，把安装目录里的每个 exe 名按映像名强杀；
+;   3. 再怎么等也写不进去，就提示用户（静默安装只写一行日志）。
+;
+; 第二步为什么不是「按谁映射着 lanplayer.dll 找」——那是更直的判据，但行不通：
+; tasklist /M 与 taskkill /FI "MODULES eq ..." 要在 64 位进程的模块表里查，安装器
+; 本身是 32 位（RequestExecutionLevel user + 32 位 NSIS 引擎），实测这两条命令在
+; nsExec 里会一直不返回（同样的命令在 cmd.exe 里 0.3 秒就结束）。所以改成枚举
+; $INSTDIR\*.exe 逐个 taskkill /IM：安装目录里本来就只有 lanplayer.exe、
+; uninstall.exe 与用户手动放进来的副本，按名字强杀足够准，也不会挂。
+;
+; 判据上有两处不能想当然：
+;   * 不能用 tasklist 的退出码判断有没有在跑 —— 无匹配时它同样返回 0，只在
+;     stdout 打「信息: 没有运行的任务匹配指定标准。」。判断只能靠 findstr 的输出。
+;   * findstr 而不是 find：find 是 Git Bash / MSYS2 / Cygwin 都带的 GNU 工具，
+;     PATH 里只要有一个 usr/bin 排在 System32 前面，cmd 就会解析到那个 find.exe。
+;     GNU find 不认 /FI 与 /I，直接报错返回 1，于是「还在跑」被误判成「没在跑」。
+;     findstr 只有 Windows 自带，不会被同名工具遮蔽。
+;
+; 「可写」用 FileOpen 追加模式探：被映射的映像文件既不能改也不能删（实测
+; os.remove 报拒绝访问、目录也改不了名），打开就失败，正好当判据。
 !macro StopRunningApp
-  ; 先确认它到底在不在。tasklist 用 /FI 过滤映像名，交给 findstr 找；找不到时
-  ; findstr 返回 1，正好当「不存在」用 —— 比拿 taskkill 的退出码可靠：不带 /F 的
-  ; taskkill 对「有窗口但收不到 WM_CLOSE」的进程会返回错误码，而进程其实还活着。
-  ;
-  ; 这里必须是 findstr，不能是 find：find 是 Git Bash / MSYS2 / Cygwin 都带的
-  ; GNU 工具，PATH 里只要有一个 usr/bin 排在 System32 前面，cmd 就会解析到那个
-  ; find.exe。GNU find 不认 /FI 与 /I，直接报错，进程明明在跑也返回 1，于是
-  ; 本宏把「还在跑」误判成「没在跑」，升级又变成「文件被占用」。实测对照
-  ; （app 正在运行）：find /I → FIND_EXIT=1（错），findstr /I /C: → 0（对）。
-  ; 同一个安装包在宿主 PowerShell 里跑 PASS，在 Git Bash 里跑就 FAILED。
-  ; findstr 只有 Windows 自带，不会被同名工具遮蔽。
+  ; ---- 第一步：按映像名请退 ----
   nsExec::ExecToStack 'cmd /C tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH | findstr /I /C:"${APP_EXE}"'
   Pop $R8
   Pop $R7   ; 输出（丢掉）
 
   ${If} $R8 != 0
-    DetailPrint "${APP_NAME} 没在运行，直接安装。"
+    DetailPrint "没发现 ${APP_NAME} 在运行。"
   ${Else}
     ; 先礼后兵：不带 /F 的 taskkill 等于给它发 WM_CLOSE，会走正常退出流程，
     ; 把设置安稳写盘，也不会有「文件被占用」的残留句柄。
@@ -155,6 +168,54 @@ LangString DESC_Assoc     ${LANG_ENGLISH}     "Associate common video files (mp4
       Pop $R8
       Pop $R7
       Sleep 600
+    ${EndIf}
+  ${EndIf}
+
+  ; ---- 第二步：目标 DLL 还写不进去，就按安装目录里的 exe 名强杀 ----
+  ; 只有真的写不进去才动手，避免无谓地关掉用户正在播的窗口。
+  ${If} ${FileExists} "$INSTDIR\${APP_DLL}"
+    ClearErrors
+    FileOpen $R4 "$INSTDIR\${APP_DLL}" a
+    ${If} ${Errors}
+      DetailPrint "${APP_DLL} 仍被占用，结束安装目录里的可执行程序。"
+
+      FindFirst $0 $1 "$INSTDIR\*.exe"
+      ${DoWhile} $1 != ""
+        nsExec::ExecToStack 'taskkill /F /IM "$1"'
+        Pop $R8
+        Pop $R7
+        FindNext $0 $1
+      ${Loop}
+      FindClose $0
+      Sleep 1000
+    ${Else}
+      FileClose $R4
+    ${EndIf}
+  ${EndIf}
+
+  ; ---- 第三步：确认目标 DLL 真的可写 ----
+  ; 杀进程只能解决「有人映射着」。杀毒软件的实时扫描也可能短暂持有句柄，
+  ; 那种情况只能等一会儿再试，等不到就退化成提示。
+  ${If} ${FileExists} "$INSTDIR\${APP_DLL}"
+    StrCpy $R2 0
+    ${Do}
+      ClearErrors
+      FileOpen $R4 "$INSTDIR\${APP_DLL}" a
+      ${IfNot} ${Errors}
+        FileClose $R4
+        ${ExitDo}
+      ${EndIf}
+      Sleep 1000
+      IntOp $R2 $R2 + 1
+    ${LoopUntil} $R2 >= 3
+    ${If} $R2 >= 3
+      ; 静默安装（/S）下弹模态框会永远等不到人点，安装器就挂在后台不动 ——
+      ; 所以只在交互安装时提示，静默安装退化成写一行日志。
+      ${IfNot} ${Silent}
+        MessageBox MB_ICONEXCLAMATION|MB_OK "${APP_NAME} 的文件仍被其它程序占用，安装可能失败。$\r$\n请关闭占用 ${APP_DLL} 的程序后重试。"
+      ${Else}
+        DetailPrint "警告：${APP_DLL} 仍不可写，继续安装可能导致文件没有更新。"
+      ${EndIf}
     ${EndIf}
   ${EndIf}
 !macroend

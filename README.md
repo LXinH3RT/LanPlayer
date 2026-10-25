@@ -151,7 +151,8 @@ VERSION=0.1.2 python3 scripts/build_macos_dmg.py
 | 运行库 | FFmpeg `av*.dll` + `Microsoft.VC145.CRT` 全部 app-local | 系统框架，无额外依赖 |
 
 **覆盖升级**：旧版本还在跑也可以直接双击新版安装包，安装器会先关掉旧进程（先发关闭请求，
-5 秒不退才强制结束）再写文件，不需要先手动卸载；卸载同理。两条路径都有正负对照脚本
+5 秒不退才强制结束；若 `lanplayer.dll` 仍被映射，再逐个结束安装目录里的可执行程序，改过名的
+副本也逃不掉）再写文件，不需要先手动卸载；卸载同理。两条路径都有正负对照脚本
 （`scripts\verify_windows_upgrade.py`、`scripts\verify_windows_uninstall.py`）。
 
 `avdevice-63.dll`（4.9 MB）**不打包**：没有任何模块依赖它，内核也从不调 `avdevice_*`。

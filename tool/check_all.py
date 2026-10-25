@@ -649,10 +649,44 @@ def check_installers() -> None:
             problems.append("installer.nsi pipes tasklist into `find /I`; that "
                             "is GNU find under Git Bash and always fails")
 
+        # Matching on the image name alone is not enough: copy the exe under a
+        # different name, run that copy, and tasklist /FI "IMAGENAME eq
+        # lanplayer.exe" finds nothing -- the process keeps the DLL mapped, the
+        # installer's File silently skips it and the package ends up with a new
+        # exe next to an old lanplayer.dll. Reproduced end to end: exit code 0,
+        # same DLL hash before and after.
+        #
+        # The obvious fix -- ask who maps lanplayer.dll -- does not work here.
+        # `tasklist /M` and `taskkill /FI "MODULES eq ..."` both have to walk a
+        # 64-bit module list, and the installer engine is 32-bit: inside
+        # nsExec they never return, so the upgrade hangs instead of failing.
+        # Measured: the same command finishes in 0.3 s from cmd.exe and never
+        # returns from the installer. Do not reintroduce them.
+        if "tasklist /M" in nsi_code or "MODULES eq" in nsi_code.split(
+                "; tasklist /M 与 taskkill")[0]:
+            problems.append("installer.nsi queries module holders again "
+                            "(tasklist /M or MODULES eq); those hang forever "
+                            "inside the 32-bit installer engine")
+        # What it does instead: if the DLL cannot be opened for append, the
+        # image is still mapped, so force-kill every exe living in $INSTDIR.
+        # That covers renamed copies, which the image-name check misses.
+        if 'FileOpen $R4 "$INSTDIR\${APP_DLL}" a' not in nsi_code:
+            problems.append("installer.nsi lost the writability probe on "
+                            "lanplayer.dll; it can no longer tell whether the "
+                            "DLL is still mapped")
+        if 'FindFirst $0 $1 "$INSTDIR\*.exe"' not in nsi_code:
+            problems.append("installer.nsi no longer force-kills the exes in "
+                            "$INSTDIR when lanplayer.dll is locked; a renamed "
+                            "copy would keep the DLL mapped and the upgrade "
+                            "would silently skip it")
+        if 'taskkill /F /IM' not in nsi_code:
+            problems.append("installer.nsi no longer force-kills by image name")
+
     notes.append("installers: NSIS per-user with BOM + matching file list, "
                  "dmg uses ditto + UDZO")
     notes.append("upgrade: installer and uninstaller both stop a running copy "
-                 "first (verified against a stripped negative control)")
+                 "first, by image name and then by the exes in $INSTDIR when "
+                 "lanplayer.dll is still mapped")
     notes.append("iOS device: team id injected, devicectl install")
 
     # Uninstalling used to leave the saved servers and settings behind (user
