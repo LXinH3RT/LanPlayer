@@ -112,10 +112,17 @@ LangString DESC_Assoc     ${LANG_ENGLISH}     "Associate common video files (mp4
 ; 装完之后新旧 DLL 混搭，运行起来行为诡异。卸载也一样 —— Delete 对被映射的文件
 ; 是静默失败，注册表却删干净了，用户以为卸载成功，下次安装继续撞同一堵墙。
 ;
-; 做法分三步，前一步不够才走下一步：
+; 做法分四步，前一步不够才走下一步：
 ;   1. 按映像名请退（能被优雅关闭就优雅关闭，让它把设置写盘）；
 ;   2. 目标 DLL 仍不可写时，把安装目录里的每个 exe 名按映像名强杀；
-;   3. 再怎么等也写不进去，就提示用户（静默安装只写一行日志）。
+;   3. 再等三秒，看它自己会不会解锁（杀毒软件的实时扫描会短暂持有句柄）；
+;   4. 还被占着，就把占了它的文件改名成 <名>.old，让 File 在原文件名上写新文件。
+;
+; 第四步是这个安装包最关键的一处：Windows 不允许删除或覆盖被映射的映像文件
+; （实测 os.remove 报拒绝访问、连所在目录都改不了名），但**允许重命名它**。
+; 所以完全不必等占用方退出——把旧文件让开、写新的，装完再尽力清理 .old 即可。
+; 在此之前的所有版本都栽在这一步上：交互安装弹「无法打开要写入的文件」，
+; 静默安装更糟，exit code 0 却把写不进去的文件静默跳过，装完新旧混搭。
 ;
 ; 第二步为什么不是「按谁映射着 lanplayer.dll 找」——那是更直的判据，但行不通：
 ; tasklist /M 与 taskkill /FI "MODULES eq ..." 要在 64 位进程的模块表里查，安装器
@@ -134,6 +141,31 @@ LangString DESC_Assoc     ${LANG_ENGLISH}     "Associate common video files (mp4
 ;
 ; 「可写」用 FileOpen 追加模式探：被映射的映像文件既不能改也不能删（实测
 ; os.remove 报拒绝访问、目录也改不了名），打开就失败，正好当判据。
+
+; 把被占用的文件改名让开（参数：完整路径）。
+; 改名成功后原路径就空出来了，File 会在原文件名上写出新文件；旧的 <名>.old
+; 仍被占用方映射着，删除会失败，所以这里只尽力删一次，删不掉留给下次安装或
+; 卸载时再清（DeleteMovedAside）。
+!macro MoveAsideLocked _p
+  ; 先清掉上一轮可能留下的同名 .old（那时占用方早已退出，一般能删掉）
+  Delete "${_p}.old"
+  ClearErrors
+  Rename "${_p}" "${_p}.old"
+  ${If} ${Errors}
+    DetailPrint "无法重命名 ${_p}，安装可能无法覆盖它。"
+  ${Else}
+    DetailPrint "已把占用中的 ${_p} 改名为 .old，稍后写入新版本。"
+  ${EndIf}
+!macroend
+
+; 清理让开时留下的 .old（安装结束时调用）。
+; 那时候新文件已经写好、旧进程也已经退出（或仍映射着但已不挡路），
+; 删得掉就删，删不掉也不影响使用——下次安装或卸载的 Delete 会再试一次。
+!macro DeleteMovedAside
+  Delete "$INSTDIR\${APP_DLL}.old"
+  Delete "$INSTDIR\${APP_EXE}.old"
+!macroend
+
 !macro StopRunningApp
   ; ---- 第一步：按映像名请退 ----
   nsExec::ExecToStack 'cmd /C tasklist /FI "IMAGENAME eq ${APP_EXE}" /NH | findstr /I /C:"${APP_EXE}"'
@@ -193,9 +225,9 @@ LangString DESC_Assoc     ${LANG_ENGLISH}     "Associate common video files (mp4
     ${EndIf}
   ${EndIf}
 
-  ; ---- 第三步：确认目标 DLL 真的可写 ----
-  ; 杀进程只能解决「有人映射着」。杀毒软件的实时扫描也可能短暂持有句柄，
-  ; 那种情况只能等一会儿再试，等不到就退化成提示。
+  ; ---- 第三步：等一会儿，看占用方会不会自己松手 ----
+  ; 杀进程只能解决「有人映射着」。杀毒软件的实时扫描、缩略图提取器、被别的
+  ; 安装程序拉起来的副本，都可能再短暂持有句柄，所以这里给三秒余量。
   ${If} ${FileExists} "$INSTDIR\${APP_DLL}"
     StrCpy $R2 0
     ${Do}
@@ -208,14 +240,12 @@ LangString DESC_Assoc     ${LANG_ENGLISH}     "Associate common video files (mp4
       Sleep 1000
       IntOp $R2 $R2 + 1
     ${LoopUntil} $R2 >= 3
+
+    ; ---- 第四步：还被占着，就把旧文件改名让开 ----
+    ; 不必再和占用方纠缠：改名之后 File 会在原文件名上写出新文件。
     ${If} $R2 >= 3
-      ; 静默安装（/S）下弹模态框会永远等不到人点，安装器就挂在后台不动 ——
-      ; 所以只在交互安装时提示，静默安装退化成写一行日志。
-      ${IfNot} ${Silent}
-        MessageBox MB_ICONEXCLAMATION|MB_OK "${APP_NAME} 的文件仍被其它程序占用，安装可能失败。$\r$\n请关闭占用 ${APP_DLL} 的程序后重试。"
-      ${Else}
-        DetailPrint "警告：${APP_DLL} 仍不可写，继续安装可能导致文件没有更新。"
-      ${EndIf}
+      !insertmacro MoveAsideLocked "$INSTDIR\${APP_DLL}"
+      !insertmacro MoveAsideLocked "$INSTDIR\${APP_EXE}"
     ${EndIf}
   ${EndIf}
 !macroend
@@ -287,6 +317,9 @@ Section "LanPlayer 主程序" SecCore
   WriteRegStr HKCU "Software\${APP_ID}" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\${APP_ID}" "Version" "${APP_VERSION}"
   WriteUninstaller "$INSTDIR\uninstall.exe"
+
+  ; 让开时留下的 <名>.old 到这里再尽力删一次（旧进程多半已退出）
+  !insertmacro DeleteMovedAside
 
   ; ${GetSize} 的 $0 就是以 KB 为单位的大小（/S=0K），正好是 EstimatedSize 要的单位
   ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
@@ -408,6 +441,20 @@ Section "Uninstall"
   ; 这里也要先把它请退，否则卸载会留一堆删不掉的 DLL。
   !insertmacro StopRunningApp
 
+  ; 还请不退（副本改名、别的进程映射着等），就把它们改名让开再删。
+  ; 否则 Delete 对占用文件是静默失败、注册表却已删干净，用户以为卸载成功，
+  ; 下次安装又撞上同一批文件。
+  ${If} ${FileExists} "$INSTDIR\${APP_DLL}"
+    ClearErrors
+    FileOpen $R4 "$INSTDIR\${APP_DLL}" a
+    ${If} ${Errors}
+      !insertmacro MoveAsideLocked "$INSTDIR\${APP_DLL}"
+      !insertmacro MoveAsideLocked "$INSTDIR\${APP_EXE}"
+    ${Else}
+      FileClose $R4
+    ${EndIf}
+  ${EndIf}
+
   Delete "$INSTDIR\${APP_EXE}"
   Delete "$INSTDIR\lanplayer.dll"
   Delete "$INSTDIR\lanplayer_video_plugin.dll"
@@ -425,6 +472,9 @@ Section "Uninstall"
   Delete "$INSTDIR\vcruntime140_1.dll"
   Delete "$INSTDIR\concrt140.dll"
   RMDir /r "$INSTDIR\data"
+  ; 安装时让开留下的 .old（此时占用方多半已退出，能删就删掉）
+  Delete "$INSTDIR\${APP_DLL}.old"
+  Delete "$INSTDIR\${APP_EXE}.old"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
 

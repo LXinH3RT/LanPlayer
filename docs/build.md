@@ -505,16 +505,19 @@ dist\LanPlayer-0.1.0-windows-x64-setup.exe /S /D=D:\some\dir
 D:\some\dir\uninstall.exe /S
 ```
 
-**覆盖升级不要求先手动卸载**：`lanplayer.exe` 与 13 个 DLL 运行时是已映射映像，Windows 不允许覆盖正在运行的映像（文件系统规则，不是安装器 bug），所以 `installer.nsi` 有 `!macro StopRunningApp`，在 `Section "LanPlayer 主程序"` 与 `Section "Uninstall"` 各插一次，分三步：**先礼**——`taskkill /IM lanplayer.exe`（**不带 `/F`**，等于发 `WM_CLOSE`，走正常退出、设置能安稳写盘），再用 `tasklist /FI "IMAGENAME eq lanplayer.exe" /NH | findstr` 每 500 ms 探一次、最多 10 次，5 秒还没退才 `taskkill /F`；**后兵**——用 `FileOpen` 追加模式探 `$INSTDIR\lanplayer.dll` 是否可写（被映射的映像既不能改也不能删，打开就失败），写不进去说明还有进程映射着它，于是枚举 `$INSTDIR\*.exe` 逐个 `taskkill /F /IM`；**兜底**——再等 3 秒仍不可写，交互安装弹提示、静默安装只写一行日志。第二步不能省：把 exe 复制成别的名字再运行，`tasklist /FI "IMAGENAME eq ..."` 查不到，DLL 仍被映射，`File` 会静默跳过它，装完就是新 exe 配旧 DLL。别用 `taskkill` 或 `tasklist` 的退出码判断「在不在跑」：不带 `/F` 的 `taskkill` 对收不到 `WM_CLOSE` 的进程返回错误码而进程还活着；`tasklist` 无匹配时也返回 0。也别改成 `tasklist /M` 或 `taskkill /FI "MODULES eq ..."`——它们要查 64 位模块表，而安装器引擎是 32 位，在 `nsExec` 里永不返回（同样的命令在 cmd 里 0.3 秒就结束）。`InstallDirRegKey HKCU "Software\LanPlayer" "InstallDir"` 也必须保留，否则覆盖升级会装出第二份。
+**覆盖升级不要求先手动卸载**：`lanplayer.exe` 与 13 个 DLL 运行时是已映射映像，Windows 不允许覆盖正在运行的映像（文件系统规则，不是安装器 bug），所以 `installer.nsi` 有 `!macro StopRunningApp`，在 `Section "LanPlayer 主程序"` 与 `Section "Uninstall"` 各插一次，分三步：**先礼**——`taskkill /IM lanplayer.exe`（**不带 `/F`**，等于发 `WM_CLOSE`，走正常退出、设置能安稳写盘），再用 `tasklist /FI "IMAGENAME eq lanplayer.exe" /NH | findstr` 每 500 ms 探一次、最多 10 次，5 秒还没退才 `taskkill /F`；**后兵**——用 `FileOpen` 追加模式探 `$INSTDIR\lanplayer.dll` 是否可写（被映射的映像既不能改也不能删，打开就失败），写不进去说明还有进程映射着它，于是枚举 `$INSTDIR\*.exe` 逐个 `taskkill /F /IM`；**绕过**——再等 3 秒仍不可写，就把占用中的 `lanplayer.dll` 与 `lanplayer.exe` 改名成 `<名>.old`，让 `File` 在原文件名上写出新文件，装完再尽力删掉 `.old`。最后这一步是关键：Windows 不允许删除或覆盖已映射的映像文件（`os.remove` 报拒绝访问，连所在目录都改不了名），但**允许重命名**，所以不必等占用方退出。`.old` 当场删不掉是正常的（映像还在映射），下一次安装或卸载开头的 `Delete` 会把它清掉，不会越积越多。没有这一步，交互安装会弹「无法打开要写入的文件」、静默安装更糟 —— 退出码 0 却把写不进去的文件静默跳过，装完新旧 DLL 混搭。卸载段同样处理：`Delete` 对占用文件是静默失败，注册表却已删干净，用户以为卸载成功，下次安装继续撞同一堵墙。第二步不能省：把 exe 复制成别的名字再运行，`tasklist /FI "IMAGENAME eq ..."` 查不到，DLL 仍被映射，`File` 会静默跳过它，装完就是新 exe 配旧 DLL。别用 `taskkill` 或 `tasklist` 的退出码判断「在不在跑」：不带 `/F` 的 `taskkill` 对收不到 `WM_CLOSE` 的进程返回错误码而进程还活着；`tasklist` 无匹配时也返回 0。也别改成 `tasklist /M` 或 `taskkill /FI "MODULES eq ..."`——它们要查 64 位模块表，而安装器引擎是 32 位，在 `nsExec` 里永不返回（同样的命令在 cmd 里 0.3 秒就结束）。`InstallDirRegKey HKCU "Software\LanPlayer" "InstallDir"` 也必须保留，否则覆盖升级会装出第二份。
 
-两条验证脚本（都属 `REQUIRED`，check_all 会盯着）：
+三个验证脚本（都属 `REQUIRED`，check_all 会盯着）：
 
 ```powershell
-python scripts\verify_windows_upgrade.py     # 旧版运行中 -> 装新版
-python scripts\verify_windows_uninstall.py   # 应用运行中 -> 卸载
+python scripts\verify_windows_upgrade.py        # 旧版运行中 -> 装新版
+python scripts\verify_windows_uninstall.py      # 应用运行中 -> 卸载
+python scripts\verify_windows_locked_upgrade.py # DLL 被外部句柄占住，杀不掉
 ```
 
-两个都装到 `D:\lp-upgrade-test` / `D:\lp-uninstall-test` 这类 scratch 目录，跑完恢复注册表与快捷方式，不动真实安装；它们做**正负对照**：把宏拆掉的安装器必须让脚本报失败，否则说明断言没在测东西。`verify_windows_uninstall.py` 另外验三件事：静默卸载保留用户数据、`/S /PURGE` 删掉用户数据、删完连 `%APPDATA%` 下的公司目录一并收尾；它会把真实状态目录先挪走再放回，不会动开发机上的配置。跑时注意两点：**先把安装包复制到 `%TEMP%` 再执行**（仓库里的文件带 Low 完整性标签，复制出去跑是为了不弄脏 `dist\`）；**别用异步启动加轮询 `HasExited` 的写法**（在本机会死锁），脚本内部用同步的 `cmd /c "<setup>" /S`。两个脚本在 Git Bash 与 PowerShell 里都能跑，并且不依赖 Windows 自带的 `find`（`installer.nsi` 用 `findstr`，Python 版直接读 `tasklist` 输出）。
+`verify_windows_locked_upgrade.py` 专门盯「改名让开」这一步：它让一个持有 DLL 句柄、但既不在 `$INSTDIR` 里也不叫 `lanplayer.exe` 的进程把文件占住（所以杀不到），再装新包，要求 `lanplayer.dll` 的哈希确实换掉；同一场景装旧包必须失败 —— 这就是负对照。少了这一步，安装器要么弹「无法打开要写入的文件」，要么静默留着旧 DLL。
+
+三个都装到 `D:\lp-upgrade-test` / `D:\lp-uninstall-test` / `D:\lp-locked-test` 这类 scratch 目录，跑完恢复注册表与快捷方式，不动真实安装；它们做**正负对照**：把宏拆掉的安装器必须让脚本报失败，否则说明断言没在测东西。`verify_windows_uninstall.py` 另外验三件事：静默卸载保留用户数据、`/S /PURGE` 删掉用户数据、删完连 `%APPDATA%` 下的公司目录一并收尾；它会把真实状态目录先挪走再放回，不会动开发机上的配置。跑时注意两点：**先把安装包复制到 `%TEMP%` 再执行**（仓库里的文件带 Low 完整性标签，复制出去跑是为了不弄脏 `dist\`）；**别用异步启动加轮询 `HasExited` 的写法**（在本机会死锁），脚本内部用同步的 `cmd /c "<setup>" /S`。三个脚本在 Git Bash 与 PowerShell 里都能跑，并且不依赖 Windows 自带的 `find`（`installer.nsi` 用 `findstr`，Python 版直接读 `tasklist` 输出）。
 
 ### 7.2 macOS（dmg）
 ```bash
@@ -530,7 +533,7 @@ VERSION=0.1.0 python3 scripts/build_macos_dmg.py
 
 Windows 包必须先 `flutter build windows --release`（或 `scripts\build_windows_desktop.py`）把产物放到 `app/build/windows/x64/runner/Release/`——**安装脚本只认这个路径**，再用 `build_windows.py --deploy-to` 把新内核 DLL 覆盖进去，否则打进去的仍是旧 DLL。macOS 先 `flutter build macos --release` 再 `python3 scripts/build_macos_dmg.py`；Android 先 `python3 scripts/build_android_deps.py arm64-v8a` 再 `python3 scripts/build_android_apk.py`。三个打包脚本都要能在 `PATH` 里找到 `flutter`，找不到时 dmg 会安静地把上一次的 `.app` 打进去。
 
-**覆盖升级**：装新版不用先手动卸载。`scripts/windows/installer.nsi` 的 `StopRunningApp` 宏在安装段与卸载段各调一次：先 `taskkill`（不带 `/F`，等于发 WM_CLOSE），轮询 5 秒不退才强杀；强杀完还是写不进 `lanplayer.dll`，就把 `$INSTDIR\*.exe` 逐个按名强杀（改名副本也躲不掉）。判断「在不在跑」必须用 `tasklist | findstr`，**不能用 `find`** —— 某些 shell 的 `PATH` 里 GNU find 排在 System32 前面，它不认 `/FI`、`/I`，退出码非 0，宏会把「还在跑」误判成「没在跑」。回归用 `scripts\verify_windows_upgrade.py` / `verify_windows_uninstall.py`，两个脚本都装到临时目录、跑完恢复注册表与快捷方式，不动真实安装。
+**覆盖升级**：装新版不用先手动卸载。`scripts/windows/installer.nsi` 的 `StopRunningApp` 宏在安装段与卸载段各调一次：先 `taskkill`（不带 `/F`，等于发 WM_CLOSE），轮询 5 秒不退才强杀；强杀完还是写不进 `lanplayer.dll`，就把 `$INSTDIR\*.exe` 逐个按名强杀（改名副本也躲不掉），最后把仍被占用的 `lanplayer.dll` / `lanplayer.exe` 改名成 `.old` 让 `File` 写出新文件。判断「在不在跑」必须用 `tasklist | findstr`，**不能用 `find`** —— 某些 shell 的 `PATH` 里 GNU find 排在 System32 前面，它不认 `/FI`、`/I`，退出码非 0，宏会把「还在跑」误判成「没在跑」。回归用 `scripts\verify_windows_upgrade.py` / `verify_windows_uninstall.py`，两个脚本都装到临时目录、跑完恢复注册表与快捷方式，不动真实安装。
 
 静默安装到自定义目录时 `/D=` 必须是**最后一个参数**且不能带引号；PowerShell 里更稳的写法是 `Start-Process -ArgumentList '/S','/D=D:\path' -Wait`。
 

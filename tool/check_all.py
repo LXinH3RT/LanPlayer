@@ -169,6 +169,7 @@ REQUIRED = [
     "scripts/windows/installer.nsi",
     "scripts/verify_windows_upgrade.py",
     "scripts/verify_windows_uninstall.py",
+    "scripts/verify_windows_locked_upgrade.py",
     "LICENSE",
     "scripts/fix_plugin_links.py",
     "scripts/msvc_chain.py",
@@ -681,12 +682,51 @@ def check_installers() -> None:
                             "would silently skip it")
         if 'taskkill /F /IM' not in nsi_code:
             problems.append("installer.nsi no longer force-kills by image name")
+        # Killing is not enough: whoever maps the DLL may survive (a copy started
+        # from outside $INSTDIR, an antivirus scanner, a process the user cannot
+        # close). Windows refuses to delete or overwrite a mapped image, but it
+        # does allow renaming it -- so the last step moves the old file aside and
+        # lets File write the new one under the original name. Without this the
+        # installer either aborts with "cannot open file for writing" (interactive)
+        # or silently keeps the old DLL (silent). Both were reproduced.
+        if "!macro MoveAsideLocked" not in nsi_code:
+            problems.append("installer.nsi lost the MoveAsideLocked macro; a "
+                            "DLL that cannot be unlocked would never be replaced")
+        else:
+            body = nsi_code[nsi_code.find("!macro MoveAsideLocked"):]
+            body = body[:body.find("!macroend")]
+            if "Rename " not in body:
+                problems.append("MoveAsideLocked no longer renames the locked "
+                                "file; a mapped image cannot be deleted in place")
+        for call in ('!insertmacro MoveAsideLocked "$INSTDIR\\${APP_DLL}"',
+                     '!insertmacro MoveAsideLocked "$INSTDIR\\${APP_EXE}"'):
+            if call not in nsi_code:
+                problems.append(f"installer.nsi no longer calls {call}; without "
+                                "it the mapped file is never moved aside")
+        if "!insertmacro MoveAsideLocked" not in nsi_code[nsi_code.find('Section "Uninstall"'):]:
+            problems.append("the uninstaller does not move a locked DLL aside; "
+                            "Delete fails silently on mapped files, so the "
+                            "uninstall would report success and leave them behind")
+        # The moved-aside copies have to be cleaned up, otherwise every upgrade
+        # leaves a lanplayer.dll.old behind. The install section tries once at the
+        # end (by then the old process is usually gone) and the uninstall deletes
+        # them unconditionally.
+        if "!macro DeleteMovedAside" not in nsi_code:
+            problems.append("installer.nsi lost the DeleteMovedAside macro; each "
+                            "upgrade would leave a lanplayer.dll.old behind")
+        elif "!insertmacro DeleteMovedAside" not in nsi_code[
+                nsi_code.find('Section "LanPlayer'):nsi_code.find('SectionEnd',
+                                                                 nsi_code.find('Section "LanPlayer'))]:
+            problems.append("the install section no longer cleans up the .old "
+                            "copies it moved aside")
+        if '"$INSTDIR\\${APP_DLL}.old"' not in nsi_code:
+            problems.append("the uninstaller no longer deletes lanplayer.dll.old")
 
     notes.append("installers: NSIS per-user with BOM + matching file list, "
                  "dmg uses ditto + UDZO")
     notes.append("upgrade: installer and uninstaller both stop a running copy "
-                 "first, by image name and then by the exes in $INSTDIR when "
-                 "lanplayer.dll is still mapped")
+                 "first, by image name and then by the exes in $INSTDIR, and "
+                 "rename a file that stays mapped out of the way")
     notes.append("iOS device: team id injected, devicectl install")
 
     # Uninstalling used to leave the saved servers and settings behind (user
