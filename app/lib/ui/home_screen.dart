@@ -201,9 +201,15 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             ListTile(
               leading: const Icon(Icons.folder_outlined),
-              title: const Text('添加本机文件夹'),
+              title: const Text('添加本地文件夹'),
               subtitle: const Text('把本机的一块目录固定到首页'),
               onTap: () => Navigator.pop(ctx, 'local'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('直接输入路径'),
+              subtitle: const Text('网络盘符、隐藏目录这些点不到的位置'),
+              onTap: () => Navigator.pop(ctx, 'path'),
             ),
           ],
         ),
@@ -219,6 +225,9 @@ class _HomeScreenState extends State<HomeScreen> {
       case 'local':
         // 已经在 _busy 保护中，走内部实现，避免重复置 busy。
         await _addLocalFolderInner();
+        break;
+      case 'path':
+        await _addFolderByPathInner();
         break;
     }
     if (mounted) {
@@ -267,25 +276,19 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _addFolderByPath() async {
-    if (_busy) return;
-    setState(() => _busy = true);
-    try {
-      final home = _repo.localRoots();
-      final path =
-          await askFolderPath(context, home.isEmpty ? '' : home.first.path);
-      if (path == null || !mounted) return;
-      final segments = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty);
-      await LocalFolderStore.instance.add(
-        label: segments.isEmpty ? path : segments.last,
-        path: path,
-      );
-      if (mounted) {
-        setState(() {});
-        unawaited(_loadAll());
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
+  Future<void> _addFolderByPathInner() async {
+    final home = _repo.localRoots();
+    final path =
+        await askFolderPath(context, home.isEmpty ? '' : home.first.path);
+    if (path == null || !mounted) return;
+    final segments = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty);
+    await LocalFolderStore.instance.add(
+      label: segments.isEmpty ? path : segments.last,
+      path: path,
+    );
+    if (mounted) {
+      setState(() {});
+      unawaited(_loadAll());
     }
   }
 
@@ -395,7 +398,6 @@ class _HomeScreenState extends State<HomeScreen> {
           ? _EmptyState(
               onAdd: _addMenu,
               onLocal: _addLocalFolder,
-              onPath: _addFolderByPath,
             )
           : Column(
               children: [
@@ -654,12 +656,10 @@ class _EmptyState extends StatelessWidget {
   const _EmptyState({
     required this.onAdd,
     required this.onLocal,
-    required this.onPath,
   });
 
   final VoidCallback onAdd;
   final VoidCallback onLocal;
-  final VoidCallback onPath;
 
   @override
   Widget build(BuildContext context) {
@@ -674,13 +674,6 @@ class _EmptyState extends StatelessWidget {
             const SizedBox(height: 20),
             const Text('还没有内容',
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            const Text(
-              '把 SMB 服务器或本机文件夹加进来，首页就会直接列出里面的内容。\n'
-              '在 Windows 上共享文件夹：右键 → 属性 → 共享。',
-              textAlign: TextAlign.center,
-              style: TextStyle(height: 1.5),
-            ),
             const SizedBox(height: 24),
             FilledButton.icon(
               onPressed: onAdd,
@@ -691,13 +684,7 @@ class _EmptyState extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: onLocal,
               icon: const Icon(Icons.folder_outlined),
-              label: const Text('添加本机文件夹'),
-            ),
-            const SizedBox(height: 8),
-            TextButton.icon(
-              onPressed: onPath,
-              icon: const Icon(Icons.edit_outlined, size: 18),
-              label: const Text('直接输入路径'),
+              label: const Text('添加本地文件夹'),
             ),
           ],
         ),
