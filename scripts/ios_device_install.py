@@ -52,7 +52,7 @@ def write_team(pbx: Path, team: str) -> int:
         text = "".join(out)
         count = text.count(f"DEVELOPMENT_TEAM = {team};")
 
-    pbx.write_text(text, encoding="utf-8", newline="")
+    lp.write_text(pbx, text, newline="")
     return count
 
 

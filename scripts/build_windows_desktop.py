@@ -158,7 +158,7 @@ def write_generated_config(eph: Path, fs: Path, app: Path, version: str,
         ")",
         "",
     ])
-    (eph / "generated_config.cmake").write_text(text, encoding="utf-8", newline="")
+    lp.write_text(eph / "generated_config.cmake", text, newline="")
 
 
 def main() -> int:

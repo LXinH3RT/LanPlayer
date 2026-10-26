@@ -49,7 +49,7 @@ def install() -> int:
     hook = hooks / "post-commit"
     # LF endings on purpose: a CRLF shell script fails on some shells with
     # "bad interpreter: /bin/sh^M".
-    hook.write_text(HOOK_BODY, encoding="utf-8", newline="\n")
+    lp.write_text(hook, HOOK_BODY, newline="\n")
     hook.chmod(0o755)
     lp.note("install-git-hooks: wrote .git/hooks/post-commit")
     lp.note("install-git-hooks: every 'git commit' now pushes to origin automatically")

@@ -309,6 +309,21 @@ def has_integrity_label(path: Path) -> bool:
     return "Mandatory Label" in text
 
 
+def write_text(path: Path, text: str, encoding: str = "utf-8",
+               newline: str | None = None) -> None:
+    """Write text with an explicit newline policy, on every supported Python.
+
+    ``Path.write_text`` only grew its ``newline`` argument in 3.10, and the
+    build machines still carry 3.9 (macOS ships that as /usr/bin/python3).
+    Passing it there is a TypeError at the first write, which is a bad way to
+    learn the interpreter is old.
+    """
+    path = Path(path)
+    ensure_dir(path.parent)
+    with open(path, "w", encoding=encoding, newline=newline) as handle:
+        handle.write(text)
+
+
 def copy_tree_files(src: Path, dst: Path, names: list[str]) -> list[Path]:
     """Copy the named files, failing loudly when one is missing."""
     copied: list[Path] = []

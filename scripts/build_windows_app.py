@@ -63,7 +63,7 @@ def write_ephemeral(eph: Path, artifacts: Path, build_root: Path, root: Path) ->
     # A no-op tool_backend keeps flutter_assemble harmless if someone runs CMake.
     stub = build_root / "flutter-verify" / "stub-root" / "packages" / "flutter_tools" / "bin"
     stub.mkdir(parents=True, exist_ok=True)
-    (stub / "tool_backend.bat").write_text("@echo off\r\nexit /b 0\r\n", encoding="ascii", newline="")
+    lp.write_text(stub / "tool_backend.bat", "@echo off\r\nexit /b 0\r\n", newline="")
 
     config = "\n".join([
         "# Written by scripts/build_windows_app.py for offline builds.",
@@ -77,7 +77,7 @@ def write_ephemeral(eph: Path, artifacts: Path, build_root: Path, root: Path) ->
         "set(FLUTTER_VERSION_BUILD 0)",
         "",
     ])
-    (eph / "generated_config.cmake").write_text(config, encoding="utf-8", newline="")
+    lp.write_text(eph / "generated_config.cmake", config, newline="")
 
     links = eph / ".plugin_symlinks"
     links.mkdir(parents=True, exist_ok=True)

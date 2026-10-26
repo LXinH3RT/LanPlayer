@@ -166,9 +166,10 @@ def main() -> int:
     def write_state_fixture() -> None:
         shutil.rmtree(state_dir, ignore_errors=True)
         (state_dir / "thumbs").mkdir(parents=True, exist_ok=True)
-        marker.write_text('{"servers":[{"host":"192.0.2.1"}]}', encoding="ascii", newline="")
-        (state_dir / "settings.json").write_text("{}", encoding="ascii", newline="")
-        (state_dir / "thumbs" / "a.jpg").write_text("x", encoding="ascii", newline="")
+        lp.write_text(marker, '{"servers":[{"host":"192.0.2.1"}]}',
+                      encoding="ascii", newline="")
+        lp.write_text(state_dir / "settings.json", "{}", encoding="ascii", newline="")
+        lp.write_text(state_dir / "thumbs" / "a.jpg", "x", encoding="ascii", newline="")
 
     def restore_state() -> None:
         shutil.rmtree(state_dir, ignore_errors=True)

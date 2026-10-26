@@ -61,7 +61,7 @@ def sync(message: str, quiet: bool) -> int:
         # A non-ASCII commit message has to survive the console code page, so
         # it goes through a UTF-8 file rather than an argv string.
         msg_file = lp.ROOT / ".git" / "SYNC_COMMIT_MSG.txt"
-        msg_file.write_text(message + "\n", encoding="utf-8", newline="\n")
+        lp.write_text(msg_file, message + "\n", newline="\n")
         try:
             commit = lp.run([git, "-c", "core.autocrlf=false", "commit", "-F", msg_file],
                             cwd=lp.ROOT, env=env, check=False, capture=True)

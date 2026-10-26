@@ -79,7 +79,7 @@ def msvc_env(vs: Path) -> dict[str, str]:
     # mangled.
     script = lp.TOOLS / "tmp" / "vsvars.bat"
     script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(f'@echo off\r\ncall "{vcvars}" >nul\r\nset\r\n', encoding="ascii", newline="")
+    lp.write_text(script, f'@echo off\r\ncall "{vcvars}" >nul\r\nset\r\n', newline="")
     result = subprocess.run(["cmd", "/c", str(script)],
                             text=True, capture_output=True, encoding="mbcs", errors="replace")
     if result.returncode != 0:

@@ -140,7 +140,7 @@ def main() -> int:
     srt_path.unlink()
 
     for name in ("embed.ass", "embed.zh.ass"):
-        (sidecar / name).write_text(ASS_TEMPLATE, encoding="utf-8", newline="")
+        lp.write_text(sidecar / name, ASS_TEMPLATE, newline="")
 
     print(f"== doc media built at {out}")
     counts: dict[str, int] = {}
