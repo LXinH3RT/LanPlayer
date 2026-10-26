@@ -303,8 +303,36 @@ security unlock-keychain -p "" ~/Library/Keychains/login.keychain-db
 | 坑 | 现象 / 机制 | 修法 |
 |-|-|-|
 | Team ID 不必等 Xcode 界面 | 证书 subject 里就有 | 上面 `security find-certificate ... \| openssl x509 -noout -subject` |
-| SSH 非交互会话签不了名 | `codesign` 报 `Failed to codesign .../Flutter.framework/Flutter with identity ...`，根因是 `security show-keychain-info` 返回 `User interaction is not allowed.` | login keychain 无密码时先解一次锁（脚本不含这步，不宜写死空密码）：`security unlock-keychain -p "" ~/Library/Keychains/login.keychain-db` |
+| SSH 非交互会话签不了名 | `codesign` 报 `Failed to codesign .../Flutter.framework/Flutter with identity ...`，根因是 `security show-keychain-info` 返回 `User interaction is not allowed.`；后台会话没有 GUI 授权上下文，拿不到私钥 | **先试** `security unlock-keychain -p "" ~/Library/Keychains/login.keychain-db`；解不开就别再折腾钥匙串（`set-key-partition-list` 与 `launchctl asuser` 在这里都无效），改成让命令在登录用户的 GUI 会话里跑（见下） |
 | 卸载重装重置开发者信任 | profile 仍 `Valid`，启动报 `error 10002 ... its profile has not been explicitly trusted by the user` | 在 `设置 → 通用 → VPN与设备管理` 手动点一次信任，**没有命令行替代方案** |
+
+SSH 会话解不开钥匙串时，用一个 LaunchAgent 把构建放到登录用户的 GUI 会话里执行：
+
+```bash
+cat > /tmp/ios_build.sh <<'SH'
+#!/bin/bash
+cd "$HOME/LanPlayer"
+/usr/bin/python3 scripts/ios_device_install.py <UDID>
+SH
+chmod +x /tmp/ios_build.sh
+
+cat > ~/Library/LaunchAgents/local.lanplayer.ios.plist <<'PL'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>local.lanplayer.ios</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string><string>/tmp/ios_build.sh</string></array>
+<key>RunAtLoad</key><true/>
+</dict></plist>
+PL
+
+launchctl unload ~/Library/LaunchAgents/local.lanplayer.ios.plist 2>/dev/null
+launchctl load ~/Library/LaunchAgents/local.lanplayer.ios.plist
+```
+
+输出重定向到文件里看（`launchctl` 不回传 stdout），跑完 `launchctl unload` 并删掉 plist 与
+`/tmp/ios_build.sh`。这一条在 Xcode 27 + macOS 27 上实测通过：同一个 `codesign` 调用在 SSH
+里失败、在 LaunchAgent 里成功。
 
 信任恢复后 `devicectl device process launch --console` 就能直接读内核日志（内核走 `fprintf(stderr, ...)`），不需要 `flutter run`；真机截图也只能用 `devicectl`（`simctl io` 只对模拟器有效）：
 
@@ -318,7 +346,7 @@ xcrun devicectl device capture screenshot --device <UDID> --destination out.png
 # Dimensions: 真机分辨率
 ```
 
-模拟器上的验证钩子：iOS 的 app 由 launchd 拉起，Dart 的 `Platform.environment` **永远是空表**，`SIMCTL_CHILD_LANPLAYER_OPEN=...` 进了进程环境（`ps eww -p <pid>` 能看到）但 Dart 读不到，要改用编译期注入：
+模拟器上的验证钩子：iOS 的 app 由 launchd 拉起，Dart 的 `Platform.environment` **永远是空表**，`SIMCTL_CHILD_LANPLAYER_OPEN=...` 进了进程环境（`ps eww -p <pid>` 能看到）但 Dart 读不到，要改用编译期注入（真机同理，`devicectl` 没有点击能力，靠这组参数把 app 直接送进播放页）：
 
 ```bash
 cd app

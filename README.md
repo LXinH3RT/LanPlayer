@@ -194,6 +194,7 @@ Windows 桌面端已接 D3D11VA 硬解，但仍是「解码在 GPU、出画回 C
 | 覆盖升级 | ✅ 旧版在跑也能直接装新版，安装器会先请退旧进程 |
 | Dart 用例 | ✅ 124 个用例全过，`flutter analyze` 无 issue |
 | 三端安装包 | ✅ Windows / macOS / Android 装到真机后均能播 |
+| iPad 真机 | ✅ 签名装机、SMB 浏览、VideoToolbox 硬解出画、播放位置推进均实测 |
 
 ## 已知限制
 

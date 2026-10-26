@@ -207,6 +207,7 @@ copies frames back to the CPU; zero-copy GPU textures and WASAPI are not impleme
 | Upgrade in place | ✅ Installing a new version over a running one works; the installer asks the old copy to quit first |
 | Dart tests | ✅ 124 cases pass, `flutter analyze` reports no issues |
 | Installers on three platforms | ✅ Windows, macOS and Android all install and play on real hardware |
+| iPad on device | ✅ Signed and installed; SMB browsing, VideoToolbox decoding and playback position all verified |
 
 ## Known limitations
 
