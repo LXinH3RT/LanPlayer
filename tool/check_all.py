@@ -154,6 +154,11 @@ REQUIRED = [
     "native/src/platform/win32/d3d11va_decoder.c",
     "packages/lanplayer_video/windows/include/lanplayer_video/pixel_swizzle.h",
     "app/lib/ui/widgets/subtitle_overlay.dart",
+    "app/lib/ui/widgets/video_surface.dart",
+    "app/test/video_surface_test.dart",
+    "app/assets/fonts/MiSansVF.ttf",
+    "app/assets/fonts/MiSans-LICENSE.txt",
+    "app/assets/fonts/NOTICE.txt",
     "app/lib/data/models.dart",
     "app/lib/data/track_prefs.dart",
     "app/test/track_prefs_test.dart",
@@ -752,11 +757,11 @@ def check_installers() -> None:
         # What it does instead: if the DLL cannot be opened for append, the
         # image is still mapped, so force-kill every exe living in $INSTDIR.
         # That covers renamed copies, which the image-name check misses.
-        if 'FileOpen $R4 "$INSTDIR\${APP_DLL}" a' not in nsi_code:
+        if r'FileOpen $R4 "$INSTDIR\${APP_DLL}" a' not in nsi_code:
             problems.append("installer.nsi lost the writability probe on "
                             "lanplayer.dll; it can no longer tell whether the "
                             "DLL is still mapped")
-        if 'FindFirst $0 $1 "$INSTDIR\*.exe"' not in nsi_code:
+        if r'FindFirst $0 $1 "$INSTDIR\*.exe"' not in nsi_code:
             problems.append("installer.nsi no longer force-kills the exes in "
                             "$INSTDIR when lanplayer.dll is locked; a renamed "
                             "copy would keep the DLL mapped and the upgrade "
@@ -1247,6 +1252,56 @@ def check_player_layout() -> None:
 
     notes.append("player layout: back button pinned top-left, picture controls in the "
                  "bottom row")
+
+    # 用户报过：「画面设置里的三个缩放按钮不起作用」。内核的 scale_mode 只有
+    # Android EGL 会读，桌面与 iOS 走 Flutter 外部纹理，没人消费它，所以缩放
+    # 必须在 Dart 层做。这条护栏钉住三件事：视频区真的包了 VideoSurface、
+    # 三个模式映射到三种不同的 BoxFit、全屏按钮还挂在底栏上。
+    surface = ROOT / "app" / "lib" / "ui" / "widgets" / "video_surface.dart"
+    if not surface.exists():
+        problems.append("widgets/video_surface.dart missing; the three scale modes "
+                        "would go back to being no-ops on desktop")
+    else:
+        vs = surface.read_text(encoding="utf-8")
+        for needle, msg in (
+            ("BoxFit.cover",
+             "VideoSurface must map scaleModeFill to BoxFit.cover"),
+            ("BoxFit.fill",
+             "VideoSurface must map scaleModeStretch to BoxFit.fill"),
+            ("BoxFit.contain",
+             "VideoSurface must map scaleModeFit to BoxFit.contain"),
+            ("clipBehavior: Clip.hardEdge",
+             "VideoSurface must clip; cover overflow must not paint over the HUD"),
+        ):
+            if needle not in vs:
+                problems.append(msg)
+    if "VideoSurface(" not in text:
+        problems.append("player_screen.dart no longer uses VideoSurface; the picture "
+                        "scale buttons would stop having any effect")
+    if "_fullscreenKey" not in bottom or "_toggleFullscreen" not in bottom:
+        problems.append("the fullscreen button is no longer in the bottom transport row")
+    if "Icons.fullscreen" not in bottom:
+        problems.append("the fullscreen entry lost its icon")
+
+    # 界面统一用 MiSans：字体族没配好时，中文会落到系统 fallback 上，同一句里
+    # 「音轨」「关闭」这类中文和数字来自两套字，看起来像字体坏了（用户报的）。
+    pubspec = ROOT / "app" / "pubspec.yaml"
+    if not pubspec.exists():
+        problems.append("app/pubspec.yaml missing")
+    else:
+        ps = pubspec.read_text(encoding="utf-8")
+        if "family: MiSans" not in ps or "assets/fonts/MiSansVF.ttf" not in ps:
+            problems.append("pubspec.yaml lost the bundled MiSans font; CJK text "
+                            "falls back to the system font and looks broken")
+        font_file = ROOT / "app" / "assets" / "fonts" / "MiSansVF.ttf"
+        if not font_file.exists():
+            problems.append("app/assets/fonts/MiSansVF.ttf is missing")
+    theme = ROOT / "app" / "lib" / "ui" / "theme.dart"
+    if not theme.exists():
+        problems.append("app/lib/ui/theme.dart missing")
+    elif "fontFamily: fontFamily" not in theme.read_text(encoding="utf-8"):
+        problems.append("theme.dart no longer sets fontFamily; the default UI font "
+                        "would silently go back to the platform default")
 
 
 def check_script_encoding() -> None:

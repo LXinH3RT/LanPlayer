@@ -7,6 +7,9 @@ class LanPlayerTheme {
   static const Color surfaceAlt = Color(0xFF1B222B);
   static const Color danger = Color(0xFFFF6E6E);
 
+  /// 打包进来的界面字体（见 pubspec.yaml 的 fonts 段）。
+  static const String fontFamily = 'MiSans';
+
   static ThemeData dark() {
     final scheme = ColorScheme.fromSeed(
       seedColor: accent,
@@ -21,11 +24,19 @@ class LanPlayerTheme {
       colorScheme: scheme,
       scaffoldBackgroundColor: surface,
       visualDensity: VisualDensity.standard,
+      // 全局字体：MiSans（见 pubspec.yaml 的 fonts 段）。
+      //
+      // 之前没设 fontFamily，Windows 上中文只能落到系统的 fallback 字体，
+      // 而 Material 的各处 TextStyle 又常常只写 fontSize/fontWeight，于是
+      // 同一个界面里「音轨」「关闭」这类中文与数字、拉丁字母来自两套字，
+      // 笔画粗细和字面大小都不一致，看起来像字体坏了。
+      fontFamily: fontFamily,
       appBarTheme: const AppBarTheme(
         backgroundColor: Colors.transparent,
         elevation: 0,
         centerTitle: false,
         titleTextStyle: TextStyle(
+          fontFamily: fontFamily,
           fontSize: 20,
           fontWeight: FontWeight.w600,
           letterSpacing: 0.2,

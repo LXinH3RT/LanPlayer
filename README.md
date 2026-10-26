@@ -253,3 +253,6 @@ LanPlayer/
 
 代码为本项目原创；FFmpeg（LGPL-2.1+，需动态链接并遵守其条款）、libsmb2（MIT）作为
 外部依赖由使用者自行编译与分发。
+
+界面字体为 [MiSans](https://hyperos.mi.com/font/)，按 Apache License 2.0 随程序分发，
+许可证原文见 `app/assets/fonts/MiSans-LICENSE.txt`。

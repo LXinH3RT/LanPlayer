@@ -31,3 +31,12 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  fonts:
+    # 界面统一用 MiSans（小米开源，Apache-2.0 的 MiSans 变体）。
+    # 系统默认字体族在 Windows 上没有中文字形，中文要落到 fallback 链上，
+    # 于是同一句里的「音」「轨」「关」「闭」会被换成另一套字，看起来像
+    # 字体坏了。打包一份自带 CJK 的字体后中英混排一致。
+    # 这是可变字体（fvar/gvar），Flutter 直接用默认实例，需要粗体时合成。
+    - family: MiSans
+      fonts:
+        - asset: assets/fonts/MiSansVF.ttf

@@ -93,7 +93,7 @@ typedef void (*LpEventCallback)(void *user, int32_t event, const char *json, int
 * 事件类型见 `lp_types.h` 的 `LpEvent`：STATE / POSITION / MEDIA_INFO / ERROR / ENDED /
   SUBTITLE / STATS / LOG / BUFFERING / TRACKS。
 
-## 7. 视频输出两条路
+## 7. 视频输出
 
 **Android**：Kotlin 用 `TextureRegistry.createSurfaceTexture()` 拿 `SurfaceTexture`，
 包成 `Surface`，通过 JNI `ANativeWindow_fromSurface` 得到 `ANativeWindow*`，把指针经
@@ -109,7 +109,13 @@ MethodChannel 交给 Dart，再 `lp_player_set_surface(ptr)`。
 Flutter 直接消费，无拷贝）。内核解出帧后 `lp_render_publish_pixel_buffer` 保存并回调，
 Swift 切到主线程 `textureFrameAvailable`。
 
-**桌面 / 无窗口**：`platform/stub` 提供空渲染 + 空音频设备，但音频设备线程真实按 10 ms 拉取，
+**桌面**：Windows 走我方插件 `packages/lanplayer_video/`，`VideoTexture::Copy()` 把内核的
+BGRA 帧包成 `FlutterDesktopPixelBuffer` 交给引擎（无 GPU 直出，一次 CPU 拷贝 + R↔B 交换）。
+画面怎么贴合窗口由 Flutter 这一层的 `app/lib/ui/widgets/video_surface.dart` 决定（视频区
+包一层 `FittedBox`，按 origin 尺寸的盒子做 contain / cover / fill），内核的 `scale_mode`
+在桌面是不被消费的。
+
+**无窗口（自动检查用）**：`platform/stub` 提供空渲染 + 空音频设备，但音频设备线程真实按 10 ms 拉取，
 所以主时钟、同步、字幕时序都能在没有设备的机器上跑通（`native/tests/lp_smoke_test.c`）。
 Windows 上线程原语由 `platform/desktop/win32_pthread.h` 提供（SRWLOCK/CONDITION_VARIABLE），
 因此同一份内核源码在 Windows x64 可编译、可播放（见 docs/build.md §0.5）。

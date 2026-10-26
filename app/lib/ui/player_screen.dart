@@ -14,6 +14,7 @@ import '../player/playlist.dart';
 import '../util/format.dart';
 import 'video_texture.dart';
 import 'widgets/subtitle_overlay.dart';
+import 'widgets/video_surface.dart';
 import 'widgets/volume_sheet.dart';
 
 /// The playback surface: a Flutter texture fed by the FFmpeg core, plus the
@@ -83,6 +84,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   final GlobalKey _backKey = GlobalKey();
   final GlobalKey _pictureKey = GlobalKey();
   final GlobalKey _volumeKey = GlobalKey();
+  final GlobalKey _fullscreenKey = GlobalKey();
   final GlobalKey _subtitleKey = GlobalKey();
   final GlobalKey _audioKey = GlobalKey();
 
@@ -642,45 +644,54 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const _SheetHeader('画面'),
-            for (final (label, mode) in [('适应屏幕', 0), ('铺满裁切', 1), ('拉伸', 2)])
-              ListTile(
-                leading: Icon(mode == _settings.scaleMode
-                    ? Icons.check
-                    : Icons.crop_free),
-                title: Text(label),
-                onTap: () {
-                  _settings.scaleMode = mode;
-                  _player.setScaleMode(mode);
-                  setState(() {});
-                  Navigator.pop(ctx);
+      // StatefulBuilder 是必须的：面板里的「解码统计」开关直接改的是
+      // 本页 state，不重建面板自己，开关就停在旧位置上（用户报的现象是
+      // 退出面板再进来才刷新）。
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const _SheetHeader('画面'),
+              for (final (label, mode) in [('适应屏幕', 0), ('铺满裁切', 1), ('拉伸', 2)])
+                ListTile(
+                  leading: Icon(mode == _settings.scaleMode
+                      ? Icons.check
+                      : Icons.crop_free),
+                  title: Text(label),
+                  onTap: () {
+                    _settings.scaleMode = mode;
+                    // 内核只把它当渲染提示（Android EGL 会读），真正决定
+                    // 画面如何贴合这一块区域的是 build 里的 FittedBox。
+                    _player.setScaleMode(mode);
+                    setState(() {});
+                    Navigator.pop(ctx);
+                  },
+                ),
+              const Divider(),
+              SwitchListTile(
+                title: const Text('解码统计'),
+                subtitle: Text(
+                    '${_player.hwActive} · ${_player.fps.toStringAsFixed(1)} fps '
+                    '· 丢帧 ${_player.dropped}'),
+                value: _showStats,
+                onChanged: (v) {
+                  _player.wantsStats = v;
+                  setState(() => _showStats = v);
+                  // 面板自己也要重建，否则这一格看起来没反应。
+                  setSheetState(() {});
                 },
               ),
-            const Divider(),
-            SwitchListTile(
-              title: const Text('解码统计'),
-              subtitle: Text(
-                  '${_player.hwActive} · ${_player.fps.toStringAsFixed(1)} fps '
-                  '· 丢帧 ${_player.dropped}'),
-              value: _showStats,
-              onChanged: (v) {
-                _player.wantsStats = v;
-                setState(() => _showStats = v);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.info_outline),
-              title: const Text('媒体信息'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _showMediaInfo();
-              },
-            ),
-          ],
+              ListTile(
+                leading: const Icon(Icons.info_outline),
+                title: const Text('媒体信息'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showMediaInfo();
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -772,18 +783,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                Center(
-                  child: AspectRatio(
-                    aspectRatio:
-                        _player.hasVideo ? _player.aspectRatio : 16 / 9,
-                    child: _texture == null
-                        ? const ColoredBox(
-                            color: Colors.black,
-                            child: Center(
-                                child: Text('无视频输出',
-                                    style: TextStyle(color: Colors.white38))),
-                          )
-                        : Texture(textureId: _texture!.textureId),
+                // 画面如何贴合这一块区域：三种缩放模式都在 Dart 层做。
+                //
+                // 内核里的 `scale_mode` 只有 Android 的 EGL 渲染器会读
+                // （`native/src/platform/android/egl_renderer.c`），Windows /
+                // macOS / iOS 走的是 Flutter 外部纹理，帧被原样交给引擎，
+                // 所以「铺满裁切」「拉伸」在桌面上一直是空操作 —— 用户点了
+                // 三个按钮发现画面没变化就是这个原因。用 FittedBox 把纹理
+                // 按视频原始尺寸摆进去，三种模式在三端一致生效。
+                Positioned.fill(
+                  child: ClipRect(
+                    child: _videoSurface(),
                   ),
                 ),
                 // Simulated brightness: the picture is dimmed, subtitles are not.
@@ -1228,6 +1238,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     // 只做静音切换的话，用户没有任何办法把音量调到 100% 以下。
                     onPressed: _openVolumeSheet,
                   ),
+                  // 全屏。桌面端由插件接管真实窗口，移动端靠 SystemChrome
+                  // 隐藏系统栏；快捷键 F / Esc 走的是同一个方法。
+                  IconButton(
+                    key: _fullscreenKey,
+                    tooltip: _fullscreen ? '退出全屏' : '全屏',
+                    icon: Icon(
+                        _fullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
+                    onPressed: _toggleFullscreen,
+                  ),
                 ],
               ),
             ),
@@ -1261,6 +1280,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  /// 画面本体：一张纹理按选定的缩放方式铺到整块区域上。
+  ///
+  /// 缩放不能交给内核：`scale_mode` 只有 Android 的 EGL 渲染器会读，桌面和 iOS
+  /// 走的是 Flutter 外部纹理，内核帧被原样交给引擎。所以在这里用
+  /// [VideoSurface] 做，三端一致。
+  Widget _videoSurface() {
+    final texture = _texture;
+    if (texture == null) {
+      return const ColoredBox(
+        color: Colors.black,
+        child: Center(
+            child: Text('无视频输出', style: TextStyle(color: Colors.white38))),
+      );
+    }
+    final video = _player.media.video;
+    final ratio = video != null && video.width > 0 && video.height > 0
+        ? video.width / video.height
+        : 16 / 9;
+    return VideoSurface(
+      scaleMode: _settings.scaleMode,
+      videoAspectRatio: ratio,
+      child: Texture(textureId: texture.textureId),
     );
   }
 

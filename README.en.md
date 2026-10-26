@@ -271,3 +271,6 @@ LanPlayer/
 The code here is original to this project. FFmpeg (LGPL-2.1+, must be linked
 dynamically with its terms observed) and libsmb2 (MIT) are external dependencies,
 compiled and distributed by whoever builds the app.
+
+The UI font is [MiSans](https://hyperos.mi.com/font/), redistributed under the
+Apache License 2.0; the licence text ships in `app/assets/fonts/MiSans-LICENSE.txt`.
