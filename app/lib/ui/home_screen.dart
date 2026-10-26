@@ -43,7 +43,9 @@ class _SourceLoad {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final _repo = MediaRepository();
+  // late: 首页在没有来源时也要能渲染（空状态页、添加菜单），不该为了画一屏
+  // 「还没有内容」就去加载 lanplayer.dll。等到真的列目录时才碰内核。
+  late final MediaRepository _repo = MediaRepository();
 
   /// 添加流程（选服务器 / 挑文件夹）进行中时按下添加按钮不再重复触发。
   bool _busy = false;
@@ -187,7 +189,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) unawaited(_load(s));
   }
 
-  // 让用户选择手动添加 SMB 服务器，或把本机文件夹加进首页。
+  // 让用户选择手动添加服务器，或把本机文件/文件夹加进首页。
   Future<void> _addMenu() async {
     if (_busy) return;
     setState(() => _busy = true);
@@ -198,17 +200,24 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _addMenuInner() async {
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
+  /// 弹出「添加」菜单，并且**等它完全收回去**再把选中项交给调用方。
+  ///
+  /// `showModalBottomSheet` 返回的 future 是路由的 `popped`，在导航栈开始 pop
+  /// 的那一刻就完成了，可 sheet 的退场动画还有 200ms。iOS 上紧接着 push 新页面
+  /// 时 UIKit 还在收拾模态视图，新压上去的路由会被丢掉 —— 用户看到的就是
+  /// 「点加号弹出的二级页面立刻自己收回」。所以这里自己 push 路由，再等
+  /// `completed`（动画结束、路由 dispose）才继续。
+  Future<String?> _showAddSheet() async {
+    final navigator = Navigator.of(context);
+    final localizations = MaterialLocalizations.of(context);
+    final route = ModalBottomSheetRoute<String>(
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
               leading: const Icon(Icons.dns_outlined),
-              title: const Text('添加 SMB 服务器'),
+              title: const Text('添加服务器'),
               subtitle: const Text('填写 IP、共享名与账号密码'),
               onTap: () => Navigator.pop(ctx, 'manual'),
             ),
@@ -227,7 +236,19 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
       ),
+      showDragHandle: true,
+      isScrollControlled: false,
+      capturedThemes: InheritedTheme.capture(from: context, to: navigator.context),
+      barrierLabel: localizations.scrimLabel,
+      barrierOnTapHint: localizations.scrimOnTapHint(localizations.bottomSheetLabel),
     );
+    final choice = await navigator.push(route);
+    await route.completed;
+    return choice;
+  }
+
+  Future<void> _addMenuInner() async {
+    final choice = await _showAddSheet();
     if (!mounted || choice == null) return;
     switch (choice) {
       case 'manual':
@@ -696,16 +717,40 @@ class _EmptyState extends StatelessWidget {
             const Text('还没有内容',
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600)),
             const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: onAdd,
-              icon: const Icon(Icons.dns_outlined),
-              label: const Text('添加 SMB 服务器'),
-            ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: onLocal,
-              icon: const Icon(Icons.folder_open_outlined),
-              label: const Text('添加本地文件/文件夹'),
+            // 两颗按钮同宽同高：主题给 FilledButton 设了
+            // minimumSize: Size.fromHeight(48)（宽度是无穷大），它在 Column 里
+            // 会撑满可用宽度，而 OutlinedButton 没有这条约束，于是蓝色那颗
+            // 明显比下面那颗宽。这里统一钉成同一个宽度和高度。
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 320),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size(0, 48),
+                      ),
+                      onPressed: onAdd,
+                      icon: const Icon(Icons.dns_outlined),
+                      label: const Text('添加服务器'),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(0, 48),
+                      ),
+                      onPressed: onLocal,
+                      icon: const Icon(Icons.folder_open_outlined),
+                      label: const Text('添加本地文件/文件夹'),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),

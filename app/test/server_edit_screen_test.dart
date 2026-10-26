@@ -15,7 +15,7 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: ServerEditScreen()));
     await tester.pump();
 
-    expect(find.text('添加 SMB 服务器'), findsOneWidget);
+    expect(find.text('添加服务器'), findsOneWidget);
     // 扫描入口
     expect(find.text('扫描局域网'), findsOneWidget);
     // 地址 / 端口 / 共享名 / 用户名 / 密码（不再有「显示名称」那一栏）

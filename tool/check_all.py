@@ -532,6 +532,18 @@ def check_thumbnails() -> None:
                             "list; the add entry belongs in the app bar")
         if "tooltip: '添加'" not in hc:
             problems.append("home_screen lost the add entry in the app bar")
+        # 添加菜单收起之后才能压新页面。showModalBottomSheet 返回的是路由的
+        # `popped`，在退场动画开始时就完成了；iOS 上紧接着 push 会被 UIKit
+        # 丢掉，用户看到「点加号弹出的二级页面自己收回」。所以首页必须自己
+        # push 路由并等 `completed`。
+        if "ModalBottomSheetRoute<" not in hc:
+            problems.append("home_screen must push the add sheet itself; "
+                            "showModalBottomSheet resolves before the sheet "
+                            "is off screen and the next push gets dropped")
+        if "route.completed" not in hc:
+            problems.append("home_screen must await route.completed before "
+                            "opening the next page; otherwise the sheet's exit "
+                            "animation races the push and iOS drops it")
 
     notes.append("thumbnails: LPT2 header round-trips, hex cache key, "
                  "covers only for video rows, decoding is throttled and "

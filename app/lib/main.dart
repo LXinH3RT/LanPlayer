@@ -108,7 +108,7 @@ Future<void> main() async {
   }
 }
 
-/// 打开「添加 SMB 服务器」页。`LANPLAYER_AUTOSCAN=1` 时进去后自动扫描一次。
+/// 打开「添加服务器」页。`LANPLAYER_AUTOSCAN=1` 时进去后自动扫描一次。
 Future<void> _openAddServer() async {
   final navigator = appNavigatorKey.currentState;
   if (navigator == null) {

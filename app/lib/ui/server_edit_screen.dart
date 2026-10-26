@@ -193,7 +193,7 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar:
-          AppBar(title: Text(widget.profile == null ? '添加 SMB 服务器' : '编辑服务器')),
+          AppBar(title: Text(widget.profile == null ? '添加服务器' : '编辑服务器')),
       body: Form(
         key: _form,
         child: ListView(
