@@ -1635,6 +1635,14 @@ def check_subtitle_fonts() -> None:
                 "native/src/core/subtitle.c: the Style: name is no longer "
                 "trimmed; ' Default' never matches and every line falls back "
                 "to the first style in the file")
+        # ass_color() must read colours as unsigned: every value with an alpha
+        # byte is above LONG_MAX on Windows, and strtol clamps it to LONG_MAX,
+        # which turned &H80202020 into half-transparent white.
+        if "strtoul(digits" not in ct or "strtoul(v" not in ct:
+            problems.append(
+                "native/src/core/subtitle.c: ass_color() must parse with "
+                "strtoul; strtol overflows on 32-bit long and every colour "
+                "with an alpha byte collapses to half-transparent white")
 
     notes.append("subtitle fonts: inline \\fn parsed, cue and run families reach "
                  "fontFamily with a CJK fallback")

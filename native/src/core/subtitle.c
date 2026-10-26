@@ -1323,25 +1323,29 @@ static int parse_srt(const char *text, LpSubtitleTrack *t, char *err, size_t err
 }
 static uint32_t ass_color(const char *v)
 {
-    /* &HAABBGGRR or decimal (BGR order, AA = alpha inverted). */
-    long raw = 0;
+    /* &HAABBGGRR or decimal (BGR order, AA = alpha inverted).
+     *
+     * strtoul, not strtol: on Windows long is 32 bits, so every colour with an
+     * alpha byte (everything from &H80000000 up, which is most of them) used to
+     * overflow to LONG_MAX and come back as half-transparent white. */
+    unsigned long raw = 0;
     if (!v || !*v) {
         return 0xFFFFFFFF;
     }
     if (v[0] == '&') {
         /* "&HAABBGGRR" and the shorter "&HBBGGRR": the H is part of the
-         * literal, so it has to be skipped before strtol sees hex digits. */
+         * literal, so it has to be skipped before strtoul sees hex digits. */
         const char *digits = v + 1;
         if (*digits == 'H' || *digits == 'h') {
             digits++;
         }
         char *end = NULL;
-        raw = strtol(digits, &end, 16);
+        raw = strtoul(digits, &end, 16);
         if (end == digits) {
             raw = 0;
         }
     } else {
-        raw = strtol(v, NULL, 10);
+        raw = strtoul(v, NULL, 10);
     }
     unsigned a = (unsigned)((raw >> 24) & 0xFF);
     unsigned b = (unsigned)((raw >> 16) & 0xFF);
