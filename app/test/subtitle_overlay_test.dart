@@ -53,28 +53,51 @@ List<TextSpan> _leaves(InlineSpan span) {
   return out;
 }
 
-/// Pins the surface to 1000x800 so the style fraction `0.05` maps to a 40 px
-/// font and the expectations below are exact.
+/// Pins the surface to 1000x800 so the expectations below are exact.
 ///
-/// The overlay stacks two identical layers when an outline is configured: the
-/// lower one strokes the edge, the upper one fills it.  Only the fill layer
-/// carries the run colours, so read the *last* `RichText` — with `outline: 0`
-/// there is exactly one layer and `last` is still that layer.
-Future<InlineSpan> _pump(WidgetTester tester, SubtitleCue cue) async {
+/// The test video is forced to 1000x800 (`videoAspectRatio: 1.25`), so the
+/// picture fills the whole surface and the overlay's "video height" is the
+/// full 800 px.  Font size then follows ASS semantics: `font_scale` is a
+/// fraction of the *picture* height, and that glyph height still has to be
+/// converted to Flutter's em size (`scriptToEm`).
+///
+/// Every line is painted as its own block (each Dialogue keeps its own colour,
+/// box and margins), so the helper collects the *fill* layer of every block and
+/// returns them as one synthetic span.  Stroke layers are skipped: their runs
+/// carry a `foreground` paint instead of a colour.
+Future<InlineSpan> _pump(
+  WidgetTester tester,
+  SubtitleCue cue, {
+  double scale = 1.0,
+}) async {
   tester.view.physicalSize = const Size(1000, 800);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
     MaterialApp(
       home: Scaffold(
-        body: SubtitleOverlay(cue: cue, scale: 1.0, safeArea: 24),
+        body: SubtitleOverlay(
+          cue: cue,
+          scale: scale,
+          safeArea: 24,
+          videoAspectRatio: 1.25,
+        ),
       ),
     ),
   );
-  final fill = find.byType(RichText).last;
-  final rich = tester.widget<RichText>(fill);
-  return rich.text;
+  final collected = <InlineSpan>[];
+  for (final rich in tester.widgetList<RichText>(find.byType(RichText))) {
+    final leaves = _leaves(rich.text);
+    if (leaves.isEmpty) continue;
+    final stroke = leaves.every((s) => s.style?.foreground != null);
+    if (stroke) continue;
+    collected.addAll(leaves);
+  }
+  return TextSpan(children: collected);
 }
+
+/// `0.05` of an 800 px picture, converted from ASS glyph height to em.
+const double _plainFontSize = 0.05 * 800 * SubtitleOverlay.scriptToEm;
 
 void main() {
   testWidgets('plain cue renders its text with the style colour',
@@ -85,8 +108,7 @@ void main() {
     expect(leaves.map((s) => s.text).join(), contains('PLAIN WHITE'));
     final style = leaves.first.style!;
     expect(style.color, const Color(0xFFFFFFFF));
-    // font_scale 0.05 of an 800 px tall test surface.
-    expect(style.fontSize, closeTo(40.0, 0.01));
+    expect(style.fontSize, closeTo(_plainFontSize, 0.01));
   });
 
   testWidgets('runs become separate spans with their own colours',
@@ -153,9 +175,9 @@ void main() {
     );
     final span = await _pump(tester, cue);
     final leaves = _leaves(span);
-    expect(leaves[0].style!.fontSize, closeTo(40.0, 0.01));
-    // 0.10 of the surface height, not 0.05.
-    expect(leaves[1].style!.fontSize, closeTo(80.0, 0.01));
+    expect(leaves[0].style!.fontSize, closeTo(_plainFontSize, 0.01));
+    // 0.10 of the picture height, not 0.05.
+    expect(leaves[1].style!.fontSize, closeTo(_plainFontSize * 2, 0.01));
   });
 
   testWidgets('multi-line cue renders one span per line', (tester) async {
@@ -171,6 +193,106 @@ void main() {
     expect(leaves.length, 2);
     expect(leaves[0].text, 'first');
     expect(leaves[1].text, 'second');
+  });
+
+  // ASS 允许多条 Dialogue 同时出现在画面上，各带自己的对齐和边距。内核把
+  // 每行的位置一起发下来，渲染层按对齐分组摆：同一角上的多行竖直排开，
+  // 不同角的各占一处 —— 否则三条字幕会叠在同一行上（用户报的「样式渲染
+  // 依然有问题」就是这个）。
+  testWidgets('lines with different alignments are placed separately',
+      (tester) async {
+    final cue = _cue(
+      text: 'bottom\nbox\nright',
+      lines: const [
+        SubtitleLine(text: 'bottom', align: 2, marginV: 50),
+        SubtitleLine(text: 'box', align: 2, marginV: 260),
+        SubtitleLine(text: 'right', align: 9, marginR: 40),
+      ],
+    );
+    await _pump(tester, cue);
+    // 底部的两行边距不同，各自定位；右边那行在另一个角上。三块互不重叠，
+    // 所以每个文本块里只应当出现自己的字。
+    final blocks = <Set<String>>[];
+    for (final rich in tester.widgetList<RichText>(find.byType(RichText))) {
+      final leaves = _leaves(rich.text);
+      if (leaves.isEmpty) continue;
+      if (leaves.every((s) => s.style?.foreground != null)) continue;
+      blocks.add(leaves.map((e) => e.text ?? '').toSet());
+    }
+    expect(blocks.length, 3, reason: '每行都该有自己的文本块');
+    for (final block in blocks) {
+      expect(block.length, 1, reason: '一个块里不应混进别的行');
+    }
+    expect(blocks.any((s) => s.contains('right')), isTrue);
+  });
+
+  // 两条 Dialogue 同时在场、各自带不同的 Style:，必须按各自的颜色/粗细/方框
+  // 画，而不是全用最后一条的样式 —— 用户报的「样式渲染依然存在问题」是
+  // 三行不同样式叠成一模一样的一团。
+  testWidgets('each line keeps its own style', (tester) async {
+    final cue = _cue(
+      text: 'white\nred',
+      lines: const [
+        SubtitleLine(
+          text: 'white',
+          align: 2,
+          marginV: 50,
+          style: SubtitleStyle(color: 0xFFFFFFFF, outline: 1),
+        ),
+        SubtitleLine(
+          text: 'red',
+          align: 2,
+          marginV: 260,
+          style: SubtitleStyle(
+            color: 0xFFFF0000,
+            outline: 3,
+            borderStyle: 3,
+            backColor: 0xFF102030,
+            bold: true,
+          ),
+        ),
+      ],
+    );
+    await _pump(tester, cue);
+    final fill = <TextSpan>[];
+    for (final rich in tester.widgetList<RichText>(find.byType(RichText))) {
+      final leaves = _leaves(rich.text);
+      if (leaves.isEmpty) continue;
+      if (leaves.every((s) => s.style?.foreground != null)) continue;
+      fill.addAll(leaves);
+    }
+    final white = fill.firstWhere((s) => s.text == 'white');
+    final red = fill.firstWhere((s) => s.text == 'red');
+    expect(white.style!.color, const Color(0xFFFFFFFF));
+    expect(white.style!.fontWeight, isNot(FontWeight.bold));
+    expect(red.style!.color, const Color(0xFFFF0000));
+    expect(red.style!.fontWeight, FontWeight.bold,
+        reason: '第二条字幕自己声明了 Bold，不能被第一条覆盖');
+    // BorderStyle 3 是实心方框，底色来自它自己的 back_color。
+    final boxes = tester
+        .widgetList<DecoratedBox>(find.byType(DecoratedBox))
+        .map((d) => d.decoration)
+        .whereType<BoxDecoration>()
+        .map((d) => d.color)
+        .toList();
+    expect(boxes, contains(const Color(0xFF102030)));
+  });
+
+  testWidgets('a line keeps its own margin in pixels', (tester) async {
+    // 1000x800 的画面，PlayResY 1080 → 一个脚本单位是 800/1080 px。
+    const unit = 800 / 1080;
+    final cue = _cue(
+      text: 'margin',
+      lines: const [SubtitleLine(text: 'margin', align: 2, marginV: 60)],
+    );
+    await _pump(tester, cue);
+    final padding = tester
+        .widgetList<Padding>(find.byType(Padding))
+        .map((p) => p.padding.resolve(TextDirection.ltr))
+        .whereType<EdgeInsets>()
+        .firstWhere((e) => e.bottom > 0 && e.bottom < 800,
+            orElse: () => EdgeInsets.zero);
+    expect(padding.bottom, greaterThanOrEqualTo(60 * unit));
   });
 
   testWidgets('an empty cue paints nothing', (tester) async {

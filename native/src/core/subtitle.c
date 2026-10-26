@@ -348,11 +348,22 @@ static void style_default(LpSubStyle *s)
     snprintf(s->name, sizeof(s->name), "Default");
     s->color = 0xFFFFFFFF;
     s->outline_color = 0xFF000000;
+    s->back_color = 0xFF000000;
     s->outline_width = 1;
+    s->shadow = 0;
+    s->border_style = 1;
+    s->spacing = 0.0;
+    s->scale_x = 100.0;
+    s->scale_y = 100.0;
+    s->angle = 0.0;
+    s->margin_l = 0.0;
+    s->margin_r = 0.0;
+    s->margin_v = 0.0;
     s->align = 2;
     s->pos_x = -1.0;
     s->pos_y = -1.0;
     s->font_scale = 0.05;
+    s->play_res_y = 1080.0;
     snprintf(s->font_name, sizeof(s->font_name), "sans-serif");
 }
 
@@ -626,6 +637,12 @@ typedef struct SubRunState {
     unsigned flags;
     uint32_t color;    /* 0 = inherit the cue style */
     double font_scale; /* 0 = inherit the cue style */
+    double scale_x;    /* percent, 0 = inherit */
+    double scale_y;    /* percent, 0 = inherit */
+    double spacing;    /* script units, 0 = inherit */
+    double angle;      /* degrees, 0 = inherit */
+    int border;        /* script units, -1 = inherit */
+    int shadow;        /* script units, -1 = inherit */
     char font_name[64]; /* empty = inherit the cue style */
 } SubRunState;
 
@@ -643,6 +660,10 @@ static void sub_rich_init(SubRich *b, LpSubCue *cue)
 {
     memset(b, 0, sizeof(*b));
     b->cue = cue;
+    /* -1 means "inherit the cue style" for the numeric decorations, so an
+     * absent {\bord} cannot be confused with an explicit {\bord0}. */
+    b->st.border = -1;
+    b->st.shadow = -1;
     lp_str_init(&b->plain);
 }
 
@@ -705,6 +726,12 @@ static int sub_rich_append(SubRich *b, const char *text, size_t len)
     r->flags = b->st.flags;
     r->color = b->st.color;
     r->font_scale = b->st.font_scale;
+    r->scale_x = b->st.scale_x;
+    r->scale_y = b->st.scale_y;
+    r->spacing = b->st.spacing;
+    r->angle = b->st.angle;
+    r->border = b->st.border;
+    r->shadow = b->st.shadow;
     snprintf(r->font_name, sizeof(r->font_name), "%s", b->st.font_name);
     b->nb++;
     return 0;
@@ -766,9 +793,21 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
         double num = 0;
         switch (cmd) {
         case 'b':
-            b->st.flags = tag_number(&p, &num) == 0 && num == 0
-                              ? (b->st.flags & ~LP_SUB_BOLD)
-                              : (b->st.flags | LP_SUB_BOLD);
+            /* \b1 bold; \bord<w> outline width; \blur is unsupported. */
+            if (!strncmp(p, "ord", 3)) {
+                p += 3;
+                if (tag_number(&p, &num) == 0 && num >= 0) {
+                    b->st.border = (int)(num + 0.5);
+                }
+            } else if (!strncmp(p, "lur", 3)) {
+                p += 3;
+                double ignored = 0;
+                tag_number(&p, &ignored);
+            } else {
+                b->st.flags = tag_number(&p, &num) == 0 && num == 0
+                                  ? (b->st.flags & ~LP_SUB_BOLD)
+                                  : (b->st.flags | LP_SUB_BOLD);
+            }
             break;
         case 'i':
             b->st.flags = tag_number(&p, &num) == 0 && num == 0
@@ -781,8 +820,18 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
                               : (b->st.flags | LP_SUB_UNDERLINE);
             break;
         case 's':
-            /* \s0 / \s1 is strikeout; \shad and \fscx are different tags. */
-            if (tag_has_arg(p)) {
+            /* \s0 / \s1 is strikeout; \shad<d> is the shadow offset. */
+            if (!strncmp(p, "had", 3)) {
+                p += 3;
+                if (tag_number(&p, &num) == 0 && num >= 0) {
+                    b->st.shadow = (int)(num + 0.5);
+                }
+            } else if (!strncmp(p, "pacing", 6)) {
+                p += 6;
+                if (tag_number(&p, &num) == 0) {
+                    b->st.spacing = num;
+                }
+            } else if (tag_has_arg(p)) {
                 if (tag_number(&p, &num) == 0) {
                     b->st.flags = num == 0 ? (b->st.flags & ~LP_SUB_STRIKEOUT)
                                            : (b->st.flags | LP_SUB_STRIKEOUT);
@@ -812,8 +861,35 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
             break;
         }
         case 'f':
-            /* \fs48 (size), \fscx/\fscy (scale), \fn<name> (family) */
-            if (*p == 's' && tag_has_arg(p + 1)) {
+            /* \fs48 (size), \fscx/\fscy (scale), \fn<name> (family),
+             * \frz/\frx/\fry (rotation) */
+            if (!strncmp(p, "scx", 3)) {
+                p += 3;
+                if (tag_number(&p, &num) == 0 && num > 0) {
+                    b->st.scale_x = num;
+                }
+            } else if (!strncmp(p, "scy", 3)) {
+                p += 3;
+                if (tag_number(&p, &num) == 0 && num > 0) {
+                    b->st.scale_y = num;
+                }
+            } else if (!strncmp(p, "rz", 2) || !strncmp(p, "rx", 2) ||
+                       !strncmp(p, "ry", 2)) {
+                /* Only the in-plane rotation (\frz / \fr) can be honoured by a
+                 * 2D text layout; \frx / \fry tilt out of plane and are read
+                 * only to keep the parser in sync. */
+                int planar = p[1] == 'z';
+                p += 2;
+                if (tag_number(&p, &num) == 0 && planar) {
+                    b->st.angle = num;
+                }
+            } else if (!strncmp(p, "r", 1) && !tag_has_arg(p + 1)) {
+                /* \fr without a suffix is the same as \frz. */
+                p += 1;
+                if (tag_number(&p, &num) == 0) {
+                    b->st.angle = num;
+                }
+            } else if (*p == 's' && tag_has_arg(p + 1)) {
                 p++;
                 if (tag_number(&p, &num) == 0 && num > 0 && ctx->play_h > 0) {
                     b->st.font_scale = num / ctx->play_h;
@@ -894,6 +970,12 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
             b->st.flags = 0;
             b->st.color = 0;
             b->st.font_scale = 0;
+            b->st.scale_x = 0;
+            b->st.scale_y = 0;
+            b->st.spacing = 0;
+            b->st.angle = 0;
+            b->st.border = -1;
+            b->st.shadow = -1;
             b->st.font_name[0] = '\0';
             b->cue->align_override = 0;
             (void)name; /* named style switching is left to the cue style */
@@ -1221,6 +1303,9 @@ static int parse_srt(const char *text, LpSubtitleTrack *t, char *err, size_t err
             cue.end_us = end;
             cue.pos_x = -1.0;
             cue.pos_y = -1.0;
+            cue.margin_l = -1.0;
+            cue.margin_r = -1.0;
+            cue.margin_v = -1.0;
             if (sub_compile_text(body.p ? body.p : "", &cue, &ctx) == 0 &&
                 track_add_cue_full(t, &cue) == 0) {
                 count++;
@@ -1290,6 +1375,9 @@ static int parse_ass(const char *text, LpSubtitleTrack *t, char *err, size_t err
     /* Style format map. */
     int f_name = -1, f_font = -1, f_size = -1, f_color = -1, f_bold = -1, f_italic = -1;
     int f_outline = -1, f_outcolor = -1, f_align = -1;
+    int f_backcolor = -1, f_shadow = -1, f_border = -1, f_spacing = -1;
+    int f_scalex = -1, f_scaley = -1, f_angle = -1;
+    int f_ml = -1, f_mr = -1, f_mv = -1;
     char *e_name = NULL, *e_start = NULL, *e_end = NULL, *e_text = NULL, *e_style = NULL;
     int e_count = 0;
     int in_styles = 0, in_events = 0, count = 0;
@@ -1328,10 +1416,20 @@ static int parse_ass(const char *text, LpSubtitleTrack *t, char *err, size_t err
                 else if (!strcmp(fields[i], "Fontname")) f_font = i;
                 else if (!strcmp(fields[i], "Fontsize")) f_size = i;
                 else if (!strcmp(fields[i], "PrimaryColour")) f_color = i;
+                else if (!strcmp(fields[i], "BackColour")) f_backcolor = i;
                 else if (!strcmp(fields[i], "Bold")) f_bold = i;
                 else if (!strcmp(fields[i], "Italic")) f_italic = i;
                 else if (!strcmp(fields[i], "Outline")) f_outline = i;
                 else if (!strcmp(fields[i], "OutlineColour")) f_outcolor = i;
+                else if (!strcmp(fields[i], "Shadow")) f_shadow = i;
+                else if (!strcmp(fields[i], "BorderStyle")) f_border = i;
+                else if (!strcmp(fields[i], "Spacing")) f_spacing = i;
+                else if (!strcmp(fields[i], "ScaleX")) f_scalex = i;
+                else if (!strcmp(fields[i], "ScaleY")) f_scaley = i;
+                else if (!strcmp(fields[i], "Angle")) f_angle = i;
+                else if (!strcmp(fields[i], "MarginL")) f_ml = i;
+                else if (!strcmp(fields[i], "MarginR")) f_mr = i;
+                else if (!strcmp(fields[i], "MarginV")) f_mv = i;
                 else if (!strcmp(fields[i], "Alignment")) f_align = i;
             }
             continue;
@@ -1344,15 +1442,38 @@ static int parse_ass(const char *text, LpSubtitleTrack *t, char *err, size_t err
             }
             LpSubStyle *s = &t->styles[t->nb_styles];
             style_default(s);
+            /* Without the name every Style block collapses onto "Default" and
+             * every dialogue resolves to the first one. */
+            if (f_name >= 0) {
+                /* "Style: Default,..." splits into " Default": drop the leading
+                 * pad, or the name lookup below never matches. */
+                const char *nm = fields[f_name];
+                while (*nm == ' ' || *nm == '\t') nm++;
+                snprintf(s->name, sizeof(s->name), "%s", nm);
+            }
             if (f_font >= 0) snprintf(s->font_name, sizeof(s->font_name), "%s", fields[f_font]);
             if (f_size >= 0 && atof(fields[f_size]) > 0) {
                 s->font_scale = atof(fields[f_size]) / play_h;
             }
+            s->play_res_y = play_h;
             if (f_color >= 0) s->color = ass_color(fields[f_color]);
             if (f_outcolor >= 0) s->outline_color = ass_color(fields[f_outcolor]);
+            if (f_backcolor >= 0) s->back_color = ass_color(fields[f_backcolor]);
             if (f_bold >= 0) s->bold = atoi(fields[f_bold]) != 0;
             if (f_italic >= 0) s->italic = atoi(fields[f_italic]) != 0;
             if (f_outline >= 0) s->outline_width = atoi(fields[f_outline]);
+            if (f_shadow >= 0) s->shadow = atoi(fields[f_shadow]);
+            if (f_border >= 0) {
+                int bs = atoi(fields[f_border]);
+                if (bs > 0) s->border_style = bs;
+            }
+            if (f_spacing >= 0) s->spacing = atof(fields[f_spacing]);
+            if (f_scalex >= 0 && atof(fields[f_scalex]) > 0) s->scale_x = atof(fields[f_scalex]);
+            if (f_scaley >= 0 && atof(fields[f_scaley]) > 0) s->scale_y = atof(fields[f_scaley]);
+            if (f_angle >= 0) s->angle = atof(fields[f_angle]);
+            if (f_ml >= 0) s->margin_l = atof(fields[f_ml]);
+            if (f_mr >= 0) s->margin_r = atof(fields[f_mr]);
+            if (f_mv >= 0) s->margin_v = atof(fields[f_mv]);
             if (f_align >= 0) {
                 int a = atoi(fields[f_align]);
                 if (a >= 1 && a <= 9) s->align = a;
@@ -1430,6 +1551,9 @@ static int parse_ass(const char *text, LpSubtitleTrack *t, char *err, size_t err
             cue.style = style_idx;
             cue.pos_x = -1.0;
             cue.pos_y = -1.0;
+            cue.margin_l = -1.0;
+            cue.margin_r = -1.0;
+            cue.margin_v = -1.0;
             if (sub_compile_text(fields[text_idx], &cue, &ctx) == 0 &&
                 track_add_cue_full(t, &cue) == 0) {
                 count++;
@@ -1762,6 +1886,9 @@ void lp_subtitle_feed_packet(LpPlayer *p, int stream_index, AVPacket *pkt)
     cue.end_us = start_us + dur_us;
     cue.pos_x = -1.0;
     cue.pos_y = -1.0;
+    cue.margin_l = -1.0;
+    cue.margin_r = -1.0;
+    cue.margin_v = -1.0;
     SubRich merged;
     sub_rich_init(&merged, &cue);
     int merge_ok = 1;
@@ -1881,6 +2008,30 @@ void lp_subtitle_seek(LpPlayer *p, int64_t pos_us)
     pthread_mutex_unlock(&p->subs.mutex);
 }
 
+/* One cue style as JSON.  Shared by the whole-cue payload (kept for the plain
+ * case) and by the per-line list, which is what lets two simultaneously
+ * visible dialogues keep their own colours, weight and box. */
+static void append_style_json(LpStr *s, const LpSubStyle *st)
+{
+    lp_str_append(s, "\"bold\":%s,\"italic\":%s,\"underline\":%s,\"strikeout\":%s,",
+                  st->bold ? "true" : "false", st->italic ? "true" : "false",
+                  st->underline ? "true" : "false", st->strikeout ? "true" : "false");
+    lp_str_append(s, "\"color\":%u,\"outline_color\":%u,\"back_color\":%u,",
+                  (unsigned)st->color, (unsigned)st->outline_color,
+                  (unsigned)st->back_color);
+    lp_str_append(s, "\"outline\":%d,\"shadow\":%d,\"border_style\":%d,",
+                  st->outline_width, st->shadow, st->border_style);
+    lp_str_append(s, "\"spacing\":%.4f,\"scale_x\":%.4f,\"scale_y\":%.4f,\"angle\":%.4f,",
+                  st->spacing, st->scale_x, st->scale_y, st->angle);
+    lp_str_append(s, "\"margin_l\":%.4f,\"margin_r\":%.4f,\"margin_v\":%.4f,",
+                  st->margin_l, st->margin_r, st->margin_v);
+    lp_str_append(s, "\"align\":%d,\"font_scale\":%.6f,\"play_res_y\":%.2f,",
+                  st->align, st->font_scale, st->play_res_y);
+    lp_str_append(s, "\"pos_x\":%.4f,\"pos_y\":%.4f,", st->pos_x, st->pos_y);
+    lp_str_append(s, "\"font\":");
+    lp_str_append_json_str(s, st->font_name);
+}
+
 static void emit_subtitle(LpPlayer *p, const char *text, int64_t start_us, int64_t end_us,
                           const LpSubStyle *st, const char *runs_json)
 {
@@ -1890,15 +2041,7 @@ static void emit_subtitle(LpPlayer *p, const char *text, int64_t start_us, int64
     lp_str_append_json_str(&s, text);
     lp_str_append(&s, ",\"start\":%lld,\"end\":%lld,\"style\":{", (long long)start_us,
                   (long long)end_us);
-    lp_str_append(&s, "\"bold\":%s,\"italic\":%s,\"underline\":%s,\"strikeout\":%s,",
-                  st->bold ? "true" : "false", st->italic ? "true" : "false",
-                  st->underline ? "true" : "false", st->strikeout ? "true" : "false");
-    lp_str_append(&s, "\"color\":%u,\"outline_color\":%u,\"outline\":%d,",
-                  (unsigned)st->color, (unsigned)st->outline_color, st->outline_width);
-    lp_str_append(&s, "\"align\":%d,\"font_scale\":%.4f,\"pos_x\":%.4f,\"pos_y\":%.4f,",
-                  st->align, st->font_scale, st->pos_x, st->pos_y);
-    lp_str_append(&s, "\"font\":");
-    lp_str_append_json_str(&s, st->font_name);
+    append_style_json(&s, st);
     lp_str_append(&s, "}");
     if (runs_json && *runs_json) {
         lp_str_append(&s, ",\"runs\":[%s]", runs_json);
@@ -1908,17 +2051,12 @@ static void emit_subtitle(LpPlayer *p, const char *text, int64_t start_us, int64
     lp_str_free(&s);
 }
 
-/* Serialises the styled runs of the cues on screen.  Returns an empty string
- * when no cue overrides anything, so plain lines stay on the cheap path. */
+/* Serialises the cues on screen line by line: their text, their inline runs
+ * and their own placement.  Every hit gets an entry even when it carries no
+ * inline styling, because two plain cues can still sit in different corners. */
 static void append_runs_json(LpStr *out, LpSubtitleTrack *t, const int *idx, int n)
 {
-    int any = 0;
-    for (int k = 0; k < n && !any; k++) {
-        if (t->cues[idx[k]].nb_runs > 0) {
-            any = 1;
-        }
-    }
-    if (!any) {
+    if (n <= 0) {
         return;
     }
     for (int k = 0; k < n; k++) {
@@ -1928,6 +2066,24 @@ static void append_runs_json(LpStr *out, LpSubtitleTrack *t, const int *idx, int
         }
         lp_str_append(out, "{\"text\":");
         lp_str_append_json_str(out, c->text ? c->text : "");
+        /* Every line carries its own style and placement.  Two dialogues can
+         * be on screen at once with different colours, weights, boxes and
+         * margins; reusing the last hit's style paints both the same way. */
+        LpSubStyle *cst = track_style(t, c->style);
+        if (cst) {
+            LpSubStyle line = *cst;
+            /* Per-cue {\\anN} / {\\pos(x,y)} win over the style. */
+            if (c->align_override) {
+                line.align = c->align_override;
+            }
+            if (c->pos_x >= 0 && c->pos_y >= 0) {
+                line.pos_x = c->pos_x;
+                line.pos_y = c->pos_y;
+            }
+            lp_str_append(out, ",\"style\":{");
+            append_style_json(out, &line);
+            lp_str_append(out, "}");
+        }
         /* Runs are optional: a cue can be plain while a sibling is styled. */
         if (c->nb_runs > 0) {
             lp_str_append(out, ",\"runs\":[");
@@ -1947,7 +2103,25 @@ static void append_runs_json(LpStr *out, LpSubtitleTrack *t, const int *idx, int
                     lp_str_append(out, ",\"color\":%u", (unsigned)r->color);
                 }
                 if (r->font_scale > 0) {
-                    lp_str_append(out, ",\"scale\":%.4f", r->font_scale);
+                    lp_str_append(out, ",\"scale\":%.6f", r->font_scale);
+                }
+                if (r->scale_x > 0 && r->scale_x != 100.0) {
+                    lp_str_append(out, ",\"scale_x\":%.4f", r->scale_x);
+                }
+                if (r->scale_y > 0 && r->scale_y != 100.0) {
+                    lp_str_append(out, ",\"scale_y\":%.4f", r->scale_y);
+                }
+                if (r->spacing != 0.0) {
+                    lp_str_append(out, ",\"spacing\":%.4f", r->spacing);
+                }
+                if (r->angle != 0.0) {
+                    lp_str_append(out, ",\"angle\":%.4f", r->angle);
+                }
+                if (r->border >= 0) {
+                    lp_str_append(out, ",\"border\":%d", r->border);
+                }
+                if (r->shadow >= 0) {
+                    lp_str_append(out, ",\"shadow\":%d", r->shadow);
                 }
                 if (r->font_name[0]) {
                     lp_str_append(out, ",\"font\":");

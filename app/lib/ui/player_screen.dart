@@ -799,10 +799,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     child: ColoredBox(
                         color: Colors.black.withValues(alpha: 1 - _brightness)),
                   ),
+                // 字幕按**画面**而不是窗口定位：画面留黑边时，字幕的位置和
+                // 字号都该跟着画面走，不然窗口一拉宽字幕就飞了。
                 SubtitleOverlay(
                   cue: _player.cue,
                   scale: _settings.subtitleScale,
                   safeArea: _controls ? 110 : 28,
+                  videoAspectRatio: _videoAspectRatio,
+                  scaleMode: _settings.scaleMode,
                 ),
                 if (_player.buffering && !_starting)
                   const Center(
@@ -1327,15 +1331,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
             child: Text('无视频输出', style: TextStyle(color: Colors.white38))),
       );
     }
-    final video = _player.media.video;
-    final ratio = video != null && video.width > 0 && video.height > 0
-        ? video.width / video.height
-        : 16 / 9;
     return VideoSurface(
       scaleMode: _settings.scaleMode,
-      videoAspectRatio: ratio,
+      videoAspectRatio: _videoAspectRatio,
       child: Texture(textureId: texture.textureId),
     );
+  }
+
+  /// 视频原始画面的宽高比；还没拿到媒体信息时按 16:9 兜底。
+  double get _videoAspectRatio {
+    final video = _player.media.video;
+    if (video != null && video.width > 0 && video.height > 0) {
+      return video.width / video.height;
+    }
+    return 16 / 9;
   }
 
   Widget _statsOverlay() {

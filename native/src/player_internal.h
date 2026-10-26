@@ -318,11 +318,22 @@ typedef struct LpSubStyle {
     int strikeout;
     uint32_t color;         /* 0xAARRGGBB */
     uint32_t outline_color; /* 0xAARRGGBB */
-    int outline_width;      /* in "units", UI scales by text size */
+    uint32_t back_color;    /* 0xAARRGGBB, used by BorderStyle 3/4 */
+    int outline_width;      /* in script units (ASS Outline) */
+    int shadow;             /* in script units (ASS Shadow) */
+    int border_style;       /* 1 = outline + shadow, 3 = opaque box, 4 = box */
+    double spacing;         /* script units (ASS Spacing) */
+    double scale_x;         /* percent, 100 = normal (ASS ScaleX) */
+    double scale_y;         /* percent, 100 = normal (ASS ScaleY) */
+    double angle;           /* degrees, clockwise (ASS Angle) */
+    double margin_l;        /* script units (ASS MarginL) */
+    double margin_r;        /* script units (ASS MarginR) */
+    double margin_v;        /* script units (ASS MarginV) */
     int align;              /* ASS alignment 1..9 (2 = bottom center) */
     double pos_x;           /* 0..1, < 0 for automatic */
     double pos_y;
     double font_scale;      /* fraction of video height, default 0.05 */
+    double play_res_y;      /* script resolution height, for margins/borders */
     char font_name[64];
 } LpSubStyle;
 
@@ -340,6 +351,12 @@ typedef struct LpSubRun {
     unsigned flags;    /* LP_SUB_* */
     uint32_t color;    /* 0 = inherit from the cue style */
     double font_scale; /* 0 = inherit from the cue style */
+    double scale_x;    /* percent, 0 = inherit */
+    double scale_y;    /* percent, 0 = inherit */
+    double spacing;    /* script units, 0 = inherit */
+    double angle;      /* degrees, 0 = inherit */
+    int border;        /* script units, -1 = inherit */
+    int shadow;        /* script units, -1 = inherit */
     char font_name[64]; /* empty = inherit from the cue style */
 } LpSubRun;
 
@@ -366,6 +383,9 @@ typedef struct LpSubCue {
     int align_override; /* ASS 1..9 from {\anN}, 0 = use the style */
     double pos_x;       /* from {\pos(x,y)}, normalised, < 0 = use the style */
     double pos_y;
+    double margin_l;    /* script units, < 0 = use the style */
+    double margin_r;
+    double margin_v;
 } LpSubCue;
 
 typedef struct LpSubtitleTrack {

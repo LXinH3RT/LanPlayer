@@ -1549,8 +1549,99 @@ def check_subtitle_fonts() -> None:
                             "only override is a family would collapse to plain "
                             "text and lose the font")
 
+    # 字号与坐标必须按**画面**算，不能按窗口算。用户报「字幕字号明显过大」：
+    # 旧实现取 `MediaQuery.sizeOf(context).height`（整个窗口）直接当 em 用，
+    # 于是 ①窗口留黑边时画面比窗口小、②ASS 的 Fontsize 是字面高度不是 em、
+    # ③Text 层还会乘一次 textScaler 1.3 —— 三层叠起来把字幕放大约 1.6 倍。
+    # 同族（Microsoft YaHei）在 Fontsize 30/45/60/90 四档上与 libass 逐档
+    # 标定后，现在的偏差在 ±3% 内。
+    if overlay.exists():
+        if "MediaQuery.sizeOf(context).height" in ot:
+            problems.append(
+                "subtitle_overlay.dart sizes text from the window height "
+                "again; ASS font size is a fraction of the *picture* height, "
+                "so letterboxed windows make subtitles too big")
+        if "static const double scriptToEm" not in ot:
+            problems.append(
+                "subtitle_overlay.dart: the ASS glyph-height to em conversion "
+                "is gone; subtitles render 1.26x larger than libass draws them")
+        if "static Rect videoRect(" not in ot:
+            problems.append(
+                "subtitle_overlay.dart: the picture rectangle helper is gone; "
+                "subtitles are positioned against the window again")
+        if "MediaQuery.textScalerOf(context).scale(10)" not in ot:
+            problems.append(
+                "subtitle_overlay.dart stopped compensating for the system "
+                "text scale; main.dart clamps it to 1.3, which alone inflates "
+                "subtitles by 30%")
+
+    screen = ROOT / "app" / "lib" / "ui" / "player_screen.dart"
+    if screen.exists() and "videoAspectRatio: _videoAspectRatio" not in \
+            screen.read_text(encoding="utf-8"):
+        problems.append(
+            "player_screen.dart no longer passes the picture aspect ratio to "
+            "SubtitleOverlay; the overlay would fall back to 16:9 and "
+            "misplace subtitles on non-16:9 video")
+
+    if models.exists():
+        if "final double playResY;" not in mt:
+            problems.append(
+                "data/models.dart lost SubtitleStyle.playResY; margins and "
+                "outlines are in script units and cannot become pixels "
+                "without it")
+        if "final int borderStyle;" not in mt:
+            problems.append(
+                "data/models.dart lost SubtitleStyle.borderStyle; ASS "
+                "BorderStyle 3 draws an opaque box instead of an outline")
+        if "final SubtitleStyle? style;" not in mt:
+            problems.append(
+                "data/models.dart: SubtitleLine lost its own style; two "
+                "dialogues on screen at once would be painted with the last "
+                "hit's colour and weight")
+
+    # 每行带自己的样式：内核按行下发 `style`，渲染层必须真的用它。旧实现
+    # 一律读 `cue.style`（取最后一条命中的 cue），于是同一时刻三条不同
+    # Style: 的字幕被画成一模一样（用户报的「样式渲染依然存在问题」）。
+    if overlay.exists():
+        if "SubtitleStyle _styleOf(SubtitleLine line)" not in ot:
+            problems.append(
+                "subtitle_overlay.dart: the per-line style lookup is gone; "
+                "every dialogue would be painted with one shared style")
+        if "line.style ?? cue.style" not in ot:
+            problems.append(
+                "subtitle_overlay.dart: per-line styles no longer fall back to "
+                "the cue style; plain SRT cues would lose their look")
+        if "class _Placement" not in ot:
+            problems.append(
+                "subtitle_overlay.dart: lines with different margins or "
+                "\\pos are no longer grouped separately; simultaneous "
+                "dialogues would be stacked on top of each other")
+
+    core = ROOT / "native" / "src" / "core" / "subtitle.c"
+    if core.exists():
+        ct = core.read_text(encoding="utf-8")
+        if ct.count(",\\\"style\\\":{") < 2:
+            problems.append(
+                "native/src/core/subtitle.c: append_runs_json() stopped "
+                "emitting a per-line style; the host cannot paint two "
+                "dialogues differently")
+        if "play_res_y" not in ct:
+            problems.append(
+                "native/src/core/subtitle.c stopped reporting play_res_y; "
+                "margins and outlines are script units and cannot be turned "
+                "into pixels without it")
+        if 'while (*nm == ' not in ct:
+            problems.append(
+                "native/src/core/subtitle.c: the Style: name is no longer "
+                "trimmed; ' Default' never matches and every line falls back "
+                "to the first style in the file")
+
     notes.append("subtitle fonts: inline \\fn parsed, cue and run families reach "
                  "fontFamily with a CJK fallback")
+    notes.append("subtitle sizing: picture-relative size, glyph->em conversion, "
+                 "textScaler compensation, calibrated against libass")
+    notes.append("subtitle styles: per-line style from the core, own margins "
+                 "and \\pos per dialogue, BorderStyle 3 boxes")
 
 
 def check_subtitle_sheet_selection() -> None:

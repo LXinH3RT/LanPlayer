@@ -551,9 +551,20 @@ class SubtitleStyle {
   final bool strikeout;
   final int color; // 0xAARRGGBB
   final int outlineColor;
+  final int backColor; // BorderStyle 3/4 的方框底色
   final int outline;
+  final int shadow; // 阴影偏移，脚本单位
+  final int borderStyle; // 1 = 描边+阴影，3/4 = 不透明方框
+  final double spacing; // 字间距，脚本单位
+  final double scaleX; // 百分比，100 = 原样
+  final double scaleY;
+  final double angle; // 旋转角度（度，顺时针）
+  final double marginL; // 脚本单位
+  final double marginR;
+  final double marginV;
   final int align; // ASS 1..9
   final double fontScale;
+  final double playResY; // 脚本分辨率高度，margin/描边按它折算成像素
   final double posX;
   final double posY;
   final String font;
@@ -565,9 +576,20 @@ class SubtitleStyle {
     this.strikeout = false,
     this.color = 0xFFFFFFFF,
     this.outlineColor = 0xFF000000,
+    this.backColor = 0xFF000000,
     this.outline = 1,
+    this.shadow = 0,
+    this.borderStyle = 1,
+    this.spacing = 0,
+    this.scaleX = 100,
+    this.scaleY = 100,
+    this.angle = 0,
+    this.marginL = 0,
+    this.marginR = 0,
+    this.marginV = 0,
     this.align = 2,
     this.fontScale = 0.05,
+    this.playResY = 1080,
     this.posX = -1,
     this.posY = -1,
     this.font = 'sans-serif',
@@ -580,9 +602,20 @@ class SubtitleStyle {
         strikeout: j['strikeout'] == true,
         color: (j['color'] as num?)?.toInt() ?? 0xFFFFFFFF,
         outlineColor: (j['outline_color'] as num?)?.toInt() ?? 0xFF000000,
+        backColor: (j['back_color'] as num?)?.toInt() ?? 0xFF000000,
         outline: (j['outline'] as num?)?.toInt() ?? 1,
+        shadow: (j['shadow'] as num?)?.toInt() ?? 0,
+        borderStyle: (j['border_style'] as num?)?.toInt() ?? 1,
+        spacing: (j['spacing'] as num?)?.toDouble() ?? 0,
+        scaleX: (j['scale_x'] as num?)?.toDouble() ?? 100,
+        scaleY: (j['scale_y'] as num?)?.toDouble() ?? 100,
+        angle: (j['angle'] as num?)?.toDouble() ?? 0,
+        marginL: (j['margin_l'] as num?)?.toDouble() ?? 0,
+        marginR: (j['margin_r'] as num?)?.toDouble() ?? 0,
+        marginV: (j['margin_v'] as num?)?.toDouble() ?? 0,
         align: (j['align'] as num?)?.toInt() ?? 2,
         fontScale: (j['font_scale'] as num?)?.toDouble() ?? 0.05,
+        playResY: (j['play_res_y'] as num?)?.toDouble() ?? 1080,
         posX: (j['pos_x'] as num?)?.toDouble() ?? -1,
         posY: (j['pos_y'] as num?)?.toDouble() ?? -1,
         font: j['font'] as String? ?? 'sans-serif',
@@ -591,6 +624,7 @@ class SubtitleStyle {
   /// 1 = left, 2 = center, 3 = right (vertical handled separately).
   int get horizontalAlign => ((align - 1) % 3) + 1;
   bool get isTop => align >= 7;
+  bool get isMiddle => align >= 4 && align <= 6;
 }
 
 /// One inline-styled fragment of a subtitle line. ASS override tags such as
@@ -604,6 +638,12 @@ class SubtitleSpan {
   final bool strikeout;
   final int color; // 0 = inherit from the cue style
   final double scale; // 0 = inherit from the cue style
+  final double scaleX; // 百分比，0 = 继承
+  final double scaleY;
+  final double spacing; // 脚本单位，0 = 继承
+  final double angle; // 度，0 = 继承
+  final int border; // 脚本单位，-1 = 继承
+  final int shadow; // 脚本单位，-1 = 继承
   final String font; // '' = inherit from the cue style
 
   const SubtitleSpan({
@@ -614,6 +654,12 @@ class SubtitleSpan {
     this.strikeout = false,
     this.color = 0,
     this.scale = 0,
+    this.scaleX = 0,
+    this.scaleY = 0,
+    this.spacing = 0,
+    this.angle = 0,
+    this.border = -1,
+    this.shadow = -1,
     this.font = '',
   });
 
@@ -625,20 +671,54 @@ class SubtitleSpan {
         strikeout: j['strikeout'] == true,
         color: (j['color'] as num?)?.toInt() ?? 0,
         scale: (j['scale'] as num?)?.toDouble() ?? 0,
+        scaleX: (j['scale_x'] as num?)?.toDouble() ?? 0,
+        scaleY: (j['scale_y'] as num?)?.toDouble() ?? 0,
+        spacing: (j['spacing'] as num?)?.toDouble() ?? 0,
+        angle: (j['angle'] as num?)?.toDouble() ?? 0,
+        border: (j['border'] as num?)?.toInt() ?? -1,
+        shadow: (j['shadow'] as num?)?.toInt() ?? -1,
         font: j['font'] as String? ?? '',
       );
 }
 
 /// A single displayed subtitle line: the plain text plus, when the source
 /// styled it inline, the ordered runs that make it up.
+///
+/// 同一时刻画面上可能有多条字幕（ASS 里是几条独立的 `Dialogue`），它们各有
+/// 自己的对齐、边距和 `\pos`。这些字段为 null 表示「跟随整条 cue 的样式」，
+/// 只有该行确实覆盖了样式时内核才输出。
 class SubtitleLine {
   final String text;
   final List<SubtitleSpan> runs;
 
-  const SubtitleLine({required this.text, this.runs = const []});
+  /// 这一行自己的样式。同一时刻在屏上的几条字幕各按自己的 `Style:` 渲染
+  /// （颜色、粗细、边框盒、字号都可能不同），所以样式跟着行走而不是整条
+  /// cue 共用一份。纯文本的老载荷没有这个字段，回落到 cue 的样式。
+  final SubtitleStyle? style;
+  final int? align;
+  final double? marginL;
+  final double? marginR;
+  final double? marginV;
+  final double? posX;
+  final double? posY;
+  final double? playResY;
+
+  const SubtitleLine({
+    required this.text,
+    this.runs = const [],
+    this.style,
+    this.align,
+    this.marginL,
+    this.marginR,
+    this.marginV,
+    this.posX,
+    this.posY,
+    this.playResY,
+  });
 
   factory SubtitleLine.fromJson(Map<String, dynamic> j) {
     final raw = j['runs'];
+    final style = j['style'];
     return SubtitleLine(
       text: j['text'] as String? ?? '',
       runs: raw is List
@@ -647,6 +727,16 @@ class SubtitleLine {
               .map(SubtitleSpan.fromJson)
               .toList(growable: false)
           : const [],
+      style: style is Map<String, dynamic>
+          ? SubtitleStyle.fromJson(style)
+          : null,
+      align: (j['align'] as num?)?.toInt(),
+      marginL: (j['margin_l'] as num?)?.toDouble(),
+      marginR: (j['margin_r'] as num?)?.toDouble(),
+      marginV: (j['margin_v'] as num?)?.toDouble(),
+      posX: (j['pos_x'] as num?)?.toDouble(),
+      posY: (j['pos_y'] as num?)?.toDouble(),
+      playResY: (j['play_res_y'] as num?)?.toDouble(),
     );
   }
 
@@ -658,8 +748,22 @@ class SubtitleLine {
             r.strikeout ||
             r.color != 0 ||
             r.scale != 0 ||
+            r.scaleX != 0 ||
+            r.scaleY != 0 ||
+            r.spacing != 0 ||
+            r.angle != 0 ||
+            r.border >= 0 ||
+            r.shadow >= 0 ||
             r.font.isNotEmpty,
       );
+
+  /// 这一行是否自己指定了位置/对齐（否则跟 cue 走）。
+  bool get placed =>
+      align != null ||
+      (posX != null && posY != null) ||
+      (marginV ?? 0) > 0 ||
+      (marginL ?? 0) > 0 ||
+      (marginR ?? 0) > 0;
 }
 
 class SubtitleCue {
