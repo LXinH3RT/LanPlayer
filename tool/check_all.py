@@ -2121,6 +2121,17 @@ def check_local_picker() -> None:
         ):
             if needle not in pc:
                 problems.append(f"app/lib/ui/folder_picker.dart: {why}")
+
+        # 往回走的时候必须重新列目录。选择器只保留「当前这一层」的列表，
+        # 弹栈之后那份数据就不属于要显示的那一层了；少了这次重拉，上级
+        # 目录会画成「这一层是空的」，用户以为里面的文件全没了。
+        up_part = pc.split("void _up()", 1)[-1].split(
+            "LocalChoice? get _choice", 1)[0]
+        if "unawaited(_reload())" not in up_part:
+            problems.append("app/lib/ui/folder_picker.dart: _up() must reload "
+                            "the parent listing; the stack only records paths, "
+                            "so the parent renders as an empty folder and its "
+                            "files seem to disappear")
     else:
         problems.append("app/lib/ui/folder_picker.dart missing")
 

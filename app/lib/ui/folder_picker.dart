@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -19,6 +20,11 @@ class LocalChoice {
   final bool isFile;
 }
 
+/// 列一层目录。抽成参数只是为了测试能塞一份假数据进来 —— 真机上永远是
+/// [MediaRepository.browseUrl]。
+typedef LocalLister = Future<DirectoryListing> Function(
+    String url, Map<String, dynamic> options);
+
 /// 打开「挑一个本机文件或文件夹」的对话框。
 ///
 /// 从常用位置和盘符起步，可以一层层往下点；目录本身也能选中（和以前一样
@@ -27,17 +33,23 @@ class LocalChoice {
 /// 为什么不用系统对话框：桌面端没有跨平台的目录选择插件；Android 的 SAF
 /// 交回的是 `content://` URI，内核打不开。自己画还能让三个平台行为一致。
 Future<LocalChoice?> pickLocalPath(
-    BuildContext context, List<({String label, String path})> roots) {
+  BuildContext context,
+  List<({String label, String path})> roots, {
+  LocalLister? lister,
+}) {
   return showDialog<LocalChoice>(
     context: context,
-    builder: (ctx) => _LocalPickerDialog(roots: roots),
+    builder: (ctx) => _LocalPickerDialog(roots: roots, lister: lister),
   );
 }
 
 class _LocalPickerDialog extends StatefulWidget {
-  const _LocalPickerDialog({required this.roots});
+  const _LocalPickerDialog({required this.roots, this.lister});
 
   final List<({String label, String path})> roots;
+
+  /// 测试用：替换真的列目录实现。生产代码不传。
+  final LocalLister? lister;
 
   @override
   State<_LocalPickerDialog> createState() => _LocalPickerDialogState();
@@ -79,10 +91,13 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
   /// 内核返回的条目 `path` 已经带 `file://` 前缀（列表里点进来就是它），
   /// 而常用位置与盘符这些根是裸路径。两种都要接住，否则会拼出
   /// `file://file://D:/x`，内核报「not found」。
-  Future<DirectoryListing> _list(String path) => _repo.browseUrl(
-        path.startsWith('file://') ? path : 'file://$path',
-        const {'list_all': 1},
-      );
+  Future<DirectoryListing> _list(String path) {
+    final url = path.startsWith('file://') ? path : 'file://$path';
+    const options = {'list_all': 1};
+    final lister = widget.lister;
+    if (lister != null) return lister(url, options);
+    return _repo.browseUrl(url, options);
+  }
 
   Future<void> _enter(String rawPath) async {
     final path = _plain(rawPath);
@@ -136,6 +151,11 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
     }
   }
 
+  /// 回到上一层。
+  ///
+  /// 这里不能只把上一层的目录项弹出来了事：`_listing` 只对应「当前这一层」，
+  /// 弹栈之后它就没有内容了，列表会显示成「这一层是空的」—— 用户看到的就是
+  /// 上级目录里的文件全不见了。所以弹完栈必须立刻把上一层重新拉一遍。
   void _up() {
     if (_stack.isEmpty) return;
     setState(() {
@@ -143,7 +163,10 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
       _listing = null;
       _error = null;
       _pickedFile = null;
+      // 弹回盘符/常用位置那一层时不需要请求，那里是本地常量列表。
+      _loading = _stack.isNotEmpty;
     });
+    if (_stack.isNotEmpty) unawaited(_reload());
   }
 
   /// 底部按钮的结果：选中的文件优先，否则就是当前这一层目录。
