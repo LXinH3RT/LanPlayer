@@ -813,7 +813,10 @@ def check_release_policy() -> None:
         the three leaves the download page lying about what the version
         supports, and nothing about the repository shows it happened. The
         release script therefore has to name all three packages and has to
-        fail before uploading when one is missing.
+        fail before uploading when one is missing. Narrowing a single release
+        to a subset is allowed only by passing --platforms explicitly; the
+        default path must keep shipping all three, which is what the
+        assertion below pins down.
       * Notes that only apply to one checkout must stay off to the side.
         They describe the machine the code happens to sit on, not the
         product; publishing them is noise at best. They belong in the
@@ -843,6 +846,12 @@ def check_release_policy() -> None:
     if "if missing:" not in text or "return 1" not in text:
         problems.append("scripts/release_all.py no longer refuses to upload "
                         "when a platform package is missing")
+    # --platforms may narrow one release, but the default has to stay "all
+    # three": asset_names() with no platforms must not silently drop a suffix.
+    if 'wanted = set(platforms) if platforms else' not in text:
+        problems.append("scripts/release_all.py lost the all-three-platform "
+                        "default; --platforms must be an explicit opt-out, not "
+                        "the normal path")
     for builder in ("build_windows_installer.py", "build_macos_dmg.py",
                     "build_android_apk.py"):
         if not (ROOT / "scripts" / builder).is_file():

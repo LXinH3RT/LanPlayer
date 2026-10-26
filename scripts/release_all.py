@@ -42,14 +42,17 @@ import lpscript as lp  # noqa: E402
 
 DEFAULT_REPO = "LXinH3RT/LanPlayer"
 ASSET_SUFFIXES = (
-    ("windows-x64-setup.exe", "scripts/build_windows_installer.py"),
-    ("macos-arm64.dmg", "scripts/build_macos_dmg.py"),
-    ("android-arm64.apk", "scripts/build_android_apk.py"),
+    ("windows-x64-setup.exe", "scripts/build_windows_installer.py", "windows"),
+    ("macos-arm64.dmg", "scripts/build_macos_dmg.py", "macos"),
+    ("android-arm64.apk", "scripts/build_android_apk.py", "android"),
 )
 
 
-def asset_names(version: str) -> list[str]:
-    return [f"LanPlayer-{version}-{suffix}" for suffix, _ in ASSET_SUFFIXES]
+def asset_names(version: str, platforms: list[str] | None = None) -> list[str]:
+    """Asset names for the requested platforms; all three by default."""
+    wanted = set(platforms) if platforms else {p for _, _, p in ASSET_SUFFIXES}
+    return [f"LanPlayer-{version}-{suffix}" for suffix, _, platform in ASSET_SUFFIXES
+            if platform in wanted]
 
 
 def github_token() -> str:
@@ -147,25 +150,37 @@ def main() -> int:
     parser.add_argument("--body-file", default="", help="markdown file used as the release body")
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--platforms", default="",
+                        help="comma separated subset of windows,macos,android "
+                             "(default: all three); the release body still names "
+                             "every platform that is actually uploaded")
     parser.add_argument("--verify", action="store_true",
                         help="download every asset again and compare SHA256 (slow, ~120 MB)")
     args = parser.parse_args()
 
+    platforms = [p.strip() for p in args.platforms.split(",") if p.strip()]
+    known = [p for _, _, p in ASSET_SUFFIXES]
+    unknown = [p for p in platforms if p not in known]
+    if unknown:
+        raise lp.ScriptError(f"unknown platform(s) {unknown}; pick from {known}")
+
     version = args.version or lp.pubspec_version()
     tag = args.tag or f"v{version}"
-    names = asset_names(version)
+    names = asset_names(version, platforms)
 
     print(f"== release {tag} ({args.repo}) ==")
 
     # Fail before touching the network: one missing package means no release.
     missing = [name for name in names if not (lp.DIST / name).exists()]
     if missing:
-        print("error: all three platform packages must exist before releasing.")
+        print(f"error: every requested platform package must exist before releasing "
+              f"({', '.join(platforms) if platforms else 'windows, macos, android'}).")
         for name in missing:
             print(f"  missing: dist/{name}")
         print("  build them with:")
-        for _, builder in ASSET_SUFFIXES:
-            print(f"    python {builder}")
+        for suffix, builder, platform in ASSET_SUFFIXES:
+            if not platforms or platform in platforms:
+                print(f"    python {builder}")
         return 1
 
     for name in names:
@@ -196,7 +211,8 @@ def main() -> int:
                 raise lp.ScriptError(f"missing body file {args.body_file}")
             body = body_path.read_text(encoding="utf-8")
         else:
-            body = f"Windows / macOS / Android packages for {version}."
+            label = " / ".join(p.capitalize() for p in (platforms or known))
+            body = f"{label} packages for {version}."
         release = api.json("POST", f"{api.api}/releases", {
             "tag_name": tag,
             "target_commitish": "main",
