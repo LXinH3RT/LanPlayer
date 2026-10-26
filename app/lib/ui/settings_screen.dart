@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/bindings.dart';
 import '../data/models.dart' show kLanguageOptions;
 import '../data/stores.dart';
+import 'widgets/volume_sheet.dart' show VolumeSheet;
 
 /// Module 4: the knobs advanced users reach for when a file misbehaves.
 class SettingsScreen extends StatefulWidget {
@@ -67,13 +68,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const _Section('音频'),
           ListTile(
             title: const Text('默认音量'),
+            // 和播放页的音量面板用同一套刻度：滑杆上显示 0–100，内部存
+            // 0–2.0 的增益。两处口径不一致的话，用户会以为设置没生效。
             subtitle: Slider(
-              value: _settings.volume,
-              max: 2.0,
+              value: VolumeSheet.displayOf(_settings.volume).toDouble(),
+              max: VolumeSheet.displayMax.toDouble(),
               divisions: 20,
-              label: '${(_settings.volume * 100).round()}%',
+              label: VolumeSheet.displayOf(_settings.volume).toString(),
               onChanged: (v) {
-                setState(() => _settings.volume = v);
+                setState(() => _settings.volume = VolumeSheet.volumeOf(v));
               },
               onChangeEnd: (_) => _persist(),
             ),

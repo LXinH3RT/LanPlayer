@@ -84,6 +84,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// rect is exact.
   final GlobalKey _backKey = GlobalKey();
   final GlobalKey _pictureKey = GlobalKey();
+  final GlobalKey _volumeValueKey = GlobalKey();
+
+  /// 音量按钮本身（数值那一格）。布局探针用它打印真实矩形。
   final GlobalKey _volumeKey = GlobalKey();
   final GlobalKey _fullscreenKey = GlobalKey();
   final GlobalKey _subtitleKey = GlobalKey();
@@ -605,11 +608,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _scheduleHide();
   }
 
-  /// 底部操作行的「音量」入口：滑杆调音量 + 静音开关 + 常用档位。
+  /// 键盘上下键与手势共用的音量微调，统一按显示值给反馈。
+  void _nudgeVolume(double delta) {
+    _player.setVolume(_player.volume + delta);
+    _showHud('音量 ${VolumeSheet.displayOf(_player.volume)}');
+  }
+
+  /// 底栏音量按钮点一下就走这里：静音 / 解除静音。
   ///
-  /// 以前这一格只是一个 IconButton，点了只会 `toggleMute()` —— 只能静音，
-  /// 没法把音量调小或调大。内核早就支持 0.0–2.0 的增益（`lp_ring_set_gain`），
-  /// 缺的只是这个入口。面板本身在 [VolumeSheet] 里，便于单元测试。
+  /// 静音不改音量值本身，解除后回到原来的档位 —— 用户要的就是「按一下闭麦、
+  /// 再按一下恢复」，不需要在两次点击之间记住别的东西。
+  void _toggleMute() {
+    _player.toggleMute();
+    _showHud(
+        _player.muted ? '静音' : '音量 ${VolumeSheet.displayOf(_player.volume)}');
+  }
+
+  /// 底部操作行的音量面板：滑杆调音量 + 静音开关 + 常用档位。
+  ///
+  /// 面板本身在 [VolumeSheet] 里，便于单元测试。底栏那颗按钮不再打开它 ——
+  /// 用户要求「点击音量按钮即为静音/解除静音」，按音量值调档的事交给这个
+  /// 面板（长按按钮或按上下键进来）。
   Future<void> _openVolumeSheet() async {
     _hideTimer?.cancel();
     await showModalBottomSheet<void>(
@@ -892,9 +911,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     // Full screen height maps to the whole 0..1 range; upward is more.
     final delta = -d.delta.dy / 320;
     if (_dragOnVolume) {
-      final v = (_player.volume + delta).clamp(0.0, 1.0);
+      final v = (_player.volume + delta).clamp(0.0, VolumeSheet.maxVolume);
       _player.setVolume(v);
-      _showHud('音量 ${(v * 100).round()}%');
+      _showHud('音量 ${VolumeSheet.displayOf(v)}');
     } else {
       final b = (_brightness + delta).clamp(0.25, 1.0);
       setState(() => _brightness = b);
@@ -967,13 +986,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       return true;
     }
     if (key == LogicalKeyboardKey.arrowUp) {
-      _player.setVolume(_player.volume + 0.05);
-      _showHud('音量 ${(_player.volume * 100).round()}%');
+      _nudgeVolume(0.05);
       return true;
     }
     if (key == LogicalKeyboardKey.arrowDown) {
-      _player.setVolume(_player.volume - 0.05);
-      _showHud('音量 ${(_player.volume * 100).round()}%');
+      _nudgeVolume(-0.05);
       return true;
     }
     if (key == LogicalKeyboardKey.keyM) {
@@ -1202,19 +1219,54 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     icon: const Icon(Icons.graphic_eq, size: 18),
                     label: const Text('音轨'),
                   ),
-                  IconButton(
-                    key: _volumeKey,
-                    tooltip: _player.muted
-                        ? '音量（已静音）'
-                        : '音量 ${(_player.volume * 100).round()}%',
-                    icon: Icon(_player.muted
-                        ? Icons.volume_off
-                        : _player.volume < 0.5
-                            ? Icons.volume_down
-                            : Icons.volume_up),
-                    // 点一下打开音量面板（滑杆 + 静音 + 常用档位）。
-                    // 只做静音切换的话，用户没有任何办法把音量调到 100% 以下。
-                    onPressed: _openVolumeSheet,
+                  // 音量：图标 + 数值。点一下是静音/解除静音（用户要求），
+                  // 长按才打开音量面板 —— 面板仍然需要，因为静音之外还得能把
+                  // 音量调小调大，而底栏没地方放一条常驻滑杆。
+                  Tooltip(
+                    message: _player.muted
+                        ? '已静音，点击恢复'
+                        : '音量 ${VolumeSheet.displayOf(_player.volume)}'
+                            '（点击静音，长按调音量）',
+                    child: InkWell(
+                      key: _volumeKey,
+                      onTap: _toggleMute,
+                      onLongPress: _openVolumeSheet,
+                      borderRadius: BorderRadius.circular(8),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 10),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _player.muted
+                                  ? Icons.volume_off
+                                  : _player.volume < 0.5
+                                      ? Icons.volume_down
+                                      : Icons.volume_up,
+                              size: 24,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              '${VolumeSheet.displayOf(_player.volume)}',
+                              key: _volumeValueKey,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontFeatures: const [
+                                  FontFeature.tabularFigures()
+                                ],
+                                color: _player.muted
+                                    ? Theme.of(context)
+                                        .colorScheme
+                                        .onSurface
+                                        .withValues(alpha: 0.45)
+                                    : null,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
                   // 全屏。桌面端由插件接管真实窗口，移动端靠 SystemChrome
                   // 隐藏系统栏；快捷键 F / Esc 走的是同一个方法。

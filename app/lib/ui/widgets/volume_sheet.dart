@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// 音量面板：滑杆（0–200%）+ 静音开关 + 常用档位。
+/// 音量面板：滑杆（显示 0–100）+ 静音开关 + 常用档位。
 ///
 /// 单独抽成 widget 有实际原因：它此前只是底部操作行里的一个
 /// `IconButton`，`onPressed` 里只有 `toggleMute()` —— 用户能静音，却
@@ -9,6 +9,11 @@ import 'package:flutter/material.dart';
 ///
 /// 这是个**受控组件**：不持有音量状态，值从 [volume] 进来、变化经
 /// [onVolumeChanged] / [onMutedChanged] 出去，方便测试与复用。
+///
+/// 关于刻度：内核的增益是 0–2（2.0 = 200%，会放大到削顶），但界面上不该
+/// 出现「150%」这种读法 —— 用户要的是「音量条最大 100」。所以对外显示
+/// 一律走 [displayOf] / [volumeOf] 这对映射：显示 0–100 对应增益 0–2.0，
+/// 显示 100 就是内核的满增益 200%。
 class VolumeSheet extends StatefulWidget {
   const VolumeSheet({
     super.key,
@@ -24,11 +29,26 @@ class VolumeSheet extends StatefulWidget {
   final ValueChanged<double> onVolumeChanged;
   final ValueChanged<bool> onMutedChanged;
 
-  /// 常用档位。0–2 之间取这六个，覆盖「小声听」到「增强」。
-  static const List<double> presets = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0];
+  /// 常用档位，按**显示值**给（0–100）。
+  static const List<int> presets = [10, 25, 50, 75, 90, 100];
 
-  /// 滑杆上限。内核 `lp_player_set_volume` 也是夹到 0–2。
+  /// 滑杆上限增益。内核 `lp_player_set_volume` 也是夹到 0–2。
   static const double maxVolume = 2.0;
+
+  /// 滑杆上显示的满刻度。
+  static const int displayMax = 100;
+
+  /// 增益 → 显示值。1.0 增益显示成 50，2.0 显示成 100。
+  static int displayOf(double volume) {
+    final v = volume.clamp(0.0, maxVolume);
+    return (v / maxVolume * displayMax).round();
+  }
+
+  /// 显示值 → 增益。100 显示值就是 2.0。
+  static double volumeOf(num display) {
+    final v = display.clamp(0, displayMax).toDouble();
+    return (v / displayMax * maxVolume).clamp(0.0, maxVolume);
+  }
 
   @override
   State<VolumeSheet> createState() => _VolumeSheetState();
@@ -60,6 +80,8 @@ class _VolumeSheetState extends State<VolumeSheet> {
     }
   }
 
+  void _setDisplay(num display) => _setVolume(VolumeSheet.volumeOf(display));
+
   void _setMuted(bool m) {
     setState(() => _muted = m);
     widget.onMutedChanged(m);
@@ -73,7 +95,8 @@ class _VolumeSheetState extends State<VolumeSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final pct = (_value * 100).round();
+    final shown = VolumeSheet.displayOf(_value);
+    final label = '$shown';
     return SafeArea(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -83,7 +106,7 @@ class _VolumeSheetState extends State<VolumeSheet> {
             child: Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                _muted ? '音量（已静音）' : '音量  $pct%',
+                _muted ? '音量（已静音）' : '音量  $label / ${VolumeSheet.displayMax}',
                 style: TextStyle(
                   fontSize: 12,
                   letterSpacing: 1,
@@ -105,17 +128,19 @@ class _VolumeSheetState extends State<VolumeSheet> {
                 Expanded(
                   child: Slider(
                     key: const Key('volume-slider'),
-                    value: _value,
-                    max: VolumeSheet.maxVolume,
-                    // 0 → 1.0 是最常用的区间，40 档 = 每档 5%。
+                    value: shown.toDouble(),
+                    max: VolumeSheet.displayMax.toDouble(),
+                    // 40 档 = 每档 2.5 显示值，等值于原来的 5% 增益。
                     divisions: 40,
-                    label: '$pct%',
-                    onChanged: _setVolume,
+                    label: label,
+                    // 滑杆按显示值走，回调时换算回增益。
+                    onChanged: _setDisplay,
                   ),
                 ),
                 SizedBox(
-                  width: 56,
-                  child: Text('$pct%',
+                  width: 48,
+                  child: Text(label,
+                      key: const Key('volume-value'),
                       textAlign: TextAlign.end,
                       style: Theme.of(context).textTheme.bodyMedium),
                 ),
@@ -129,10 +154,10 @@ class _VolumeSheetState extends State<VolumeSheet> {
               children: [
                 for (final preset in VolumeSheet.presets)
                   ChoiceChip(
-                    key: Key('volume-preset-${(preset * 100).round()}'),
-                    label: Text('${(preset * 100).round()}%'),
-                    selected: (_value - preset).abs() < 0.001,
-                    onSelected: (_) => _setVolume(preset),
+                    key: Key('volume-preset-$preset'),
+                    label: Text('$preset'),
+                    selected: shown == preset,
+                    onSelected: (_) => _setDisplay(preset),
                   ),
               ],
             ),

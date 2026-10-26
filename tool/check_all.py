@@ -1227,14 +1227,34 @@ def check_player_layout() -> None:
         problems.append("the top-right 'more' button is back; picture controls should "
                         "live in the bottom row")
 
-    # Volume must be adjustable, not just mute (user report: "音量设置按钮只能
-    # 设置是否静音，不能调节音量大小"). Guard both layers: the transport row has to
-    # open the volume sheet, and that sheet has to carry a real slider.
+    # Volume needs three things at once, and each of them has been reported
+    # missing at some point:
+    #   a) 点一下音量按钮 = 静音/解除静音（用户 2026-10-27 明确要求）
+    #   b) 按钮旁边直接显示当前音量数值
+    #   c) 音量条显示 0–100，内部增益 0–2.0（用户：「实际最大值为 200」）
+    # 面板仍然要能打开，否则没有把音量调小调大的入口 —— 现在挂在长按上。
     if "_openVolumeSheet" not in bottom:
-        problems.append("the volume button no longer opens the volume sheet; "
-                        "toggling mute alone cannot change the level")
+        problems.append("the volume button no longer reaches the volume sheet; "
+                        "mute alone cannot change the level")
+    if "_toggleMute" not in bottom:
+        problems.append("tapping the volume button must toggle mute "
+                        "(user asked for click-to-mute)")
+    if "onLongPress: _openVolumeSheet" not in bottom:
+        problems.append("the volume sheet lost its remaining entry point; put it "
+                        "on long-press of the volume button")
     if "_volumeKey" not in bottom:
         problems.append("the volume button lost its layout-probe key")
+    if "_volumeValueKey" not in bottom:
+        problems.append("the volume button must show the current level next to "
+                        "the icon (user asked for it)")
+    if "VolumeSheet.displayOf(_player.volume)" not in bottom:
+        problems.append("the volume readout must go through VolumeSheet.displayOf "
+                        "so 2.0 gain reads as 100")
+    value_at = bottom.find("key: _volumeValueKey")
+    if value_at > 0 and "VolumeSheet.displayOf(" not in bottom[max(0, value_at - 240):value_at]:
+        problems.append("the number next to the volume icon must be "
+                        "VolumeSheet.displayOf(...); printing the raw gain shows "
+                        "200 at the top of the range")
     sheet = ROOT / "app" / "lib" / "ui" / "widgets" / "volume_sheet.dart"
     if not sheet.exists():
         problems.append("widgets/volume_sheet.dart missing")
@@ -1246,9 +1266,18 @@ def check_player_layout() -> None:
         if "maxVolume = 2.0" not in sc:
             problems.append("VolumeSheet.maxVolume must stay 2.0 (the core gain "
                             "range); clamping it to 1.0 loses the boost range")
+        if "displayMax = 100" not in sc:
+            problems.append("VolumeSheet.displayMax must stay 100; the slider "
+                            "shows 0-100 while the gain runs 0-2.0")
+        if "static int displayOf(" not in sc or "static double volumeOf(" not in sc:
+            problems.append("VolumeSheet must keep the display<->gain mapping "
+                            "helpers; inlining one side drifts the two apart")
         if "divisions" not in sc:
             problems.append("VolumeSheet slider must stay discrete so a drag "
-                            "lands on a stable 5% step")
+                            "lands on a stable step")
+        if "max: VolumeSheet.maxVolume" in sc:
+            problems.append("the slider max must be VolumeSheet.displayMax, not "
+                            "maxVolume; otherwise the readout goes to 200")
 
     notes.append("player layout: back button pinned top-left, picture controls in the "
                  "bottom row")

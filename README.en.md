@@ -31,7 +31,7 @@ address, a share name, a user and a password.
 | **Audio** | waveOut on Windows, AudioQueue on Apple, AAudio on Android; AAC / MP3 / FLAC / Vorbis / Opus and more |
 | **Subtitles** | Embedded tracks plus external SRT / ASS / SSA / VTT; ASS styling (colour, outline, size, font, positioning); PGS / VobSub / DVB bitmap subtitles |
 | **Track selection** | Separate audio and subtitle panels listing every track in the file, with default pick by preferred / fallback language |
-| **Playback control** | Play-pause, ±10 s, seek by dragging, 0.5x–2.0x pitch-preserving speed, volume 0–200 %, mute, full screen |
+| **Playback control** | Play-pause, ±10 s, seek by dragging, 0.5x–2.0x pitch-preserving speed, volume 0–100 (gain to 200 %), click-to-mute, full screen |
 | **Continuous play** | The current directory is ordered by `SxxEzz` or "episode N" and the next one starts on its own |
 | **Resume** | Reopening a file continues where it stopped; the list shows a progress bar and percentage |
 | **Browsing** | First-frame thumbnails, cached on disk, generated on demand; only videos and subtitles are listed, `.txt` / `.docx` and friends stay hidden, subtitles sit under their video |
@@ -107,7 +107,8 @@ audio tracks and subtitles, shift subtitle timing and change speed.
 
 Desktop shortcuts: `Space` / `K` play-pause, `←` / `→` ±10 s (hold for 5 s),
 `↑` / `↓` volume, `M` mute, `F` full screen, `[` / `]` subtitle delay, `S` media
-info overlay, `Esc` leave full screen or go back.
+info overlay, `Esc` leave full screen or go back. The volume button in the bottom
+bar shows the current level; tap it to mute, long-press for the volume panel.
 
 ## Building
 
