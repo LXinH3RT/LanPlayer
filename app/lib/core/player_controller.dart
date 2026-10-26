@@ -264,7 +264,7 @@ class PlayerController extends ChangeNotifier {
         if (hw != null) hwActive = hw;
         // Lighter cadence: stats change constantly, do not rebuild the tree
         // unless the user asked for the debugging overlay.
-        if (!_wantsStats) return;
+        if (!wantsStats) return;
         break;
       case 9: // buffering
         buffering = map['buffering'] == true;
@@ -275,11 +275,9 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
-  bool _wantsStats = false;
-
-  set wantsStats(bool v) {
-    _wantsStats = v;
-  }
+  /// 关掉时 stats 事件不再通知，省掉每秒一次的重建；界面要在面板里显示
+  /// 实时数字之前必须先把这里打开。
+  bool wantsStats = false;
 
   Future<void> disposePlayer() async {
     final p = _player;

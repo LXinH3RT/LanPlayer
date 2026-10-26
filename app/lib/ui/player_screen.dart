@@ -13,6 +13,7 @@ import '../data/stores.dart';
 import '../player/playlist.dart';
 import '../util/format.dart';
 import 'video_texture.dart';
+import 'widgets/media_info_dialog.dart';
 import 'widgets/subtitle_overlay.dart';
 import 'widgets/video_surface.dart';
 import 'widgets/volume_sheet.dart';
@@ -669,22 +670,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   },
                 ),
               const Divider(),
-              SwitchListTile(
-                title: const Text('解码统计'),
-                subtitle: Text(
-                    '${_player.hwActive} · ${_player.fps.toStringAsFixed(1)} fps '
-                    '· 丢帧 ${_player.dropped}'),
-                value: _showStats,
-                onChanged: (v) {
-                  _player.wantsStats = v;
-                  setState(() => _showStats = v);
-                  // 面板自己也要重建，否则这一格看起来没反应。
-                  setSheetState(() {});
-                },
-              ),
+              // 「媒体信息」和「解码统计」原本是两个入口：前者弹对话框看
+              // 一遍就关，后者开一个常驻浮层。用户要的是同一件事 —— 看这
+              // 一帧到底是哪路码流、解码器是谁、现在跑得怎么样 —— 所以并
+              // 成一个「媒体信息」面板，静态参数和实时计数放在一起。
               ListTile(
                 leading: const Icon(Icons.info_outline),
                 title: const Text('媒体信息'),
+                subtitle: Text(
+                    '${_player.hwActive} · ${_player.fps.toStringAsFixed(1)} fps '
+                    '· 丢帧 ${_player.dropped}'),
                 onTap: () {
                   Navigator.pop(ctx);
                   _showMediaInfo();
@@ -698,58 +693,41 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _scheduleHide();
   }
 
+  /// 「媒体信息」面板：静态码流参数 + 实时解码计数 + 画面浮层开关。
+  ///
+  /// 原来是两个入口（一个对话框、一个常驻浮层），但用户要的是同一件事，
+  /// 所以并成一个面板。实时数字靠面板里的 `AnimatedBuilder` 跟着控制器
+  /// 重建 —— 控制器收到 stats 事件时只在 [PlayerController.wantsStats] 为
+  /// 真才通知，一秒一次的重建会拖累整个播放页，所以打开期间强制打开它，
+  /// 关掉后再还原。
   void _showMediaInfo() {
-    final m = _player.media;
-    final v = m.video;
+    final wasWantsStats = _player.wantsStats;
+    _player.wantsStats = true;
+    MediaStatsSnapshot read() => MediaStatsSnapshot(
+          media: _player.media,
+          decoder: _player.hwActive,
+          fps: _player.fps,
+          dropped: _player.dropped,
+          avDiffUs: _player.avDiffUs,
+          queuedPackets: _player.queuedPackets,
+          positionUs: _player.positionUs,
+        );
     showDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('媒体信息'),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _infoRow('容器', m.format),
-              if (v != null) ...[
-                _infoRow('视频', v.label),
-                _infoRow('像素格式', v.pixFmt),
-              ],
-              _infoRow('解码', _player.hwActive),
-              _infoRow('音频', m.audio.map((a) => a.label).join(', ')),
-              _infoRow(
-                  '字幕',
-                  m.subtitles.isEmpty
-                      ? '无'
-                      : m.subtitles.map((s) => s.label).join(', ')),
-              _infoRow('时长', formatDuration(m.durationUs)),
-              _infoRow('A/V 偏差',
-                  '${(_player.avDiffUs / 1000).toStringAsFixed(0)} ms'),
-              _infoRow('丢帧', '${_player.dropped}'),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('关闭')),
-        ],
+      builder: (ctx) => MediaInfoDialog(
+        read: read,
+        listen: _player,
+        overlay: _showStats,
+        onOverlayChanged: (v) {
+          _player.wantsStats = v;
+          setState(() => _showStats = v);
+        },
       ),
-    );
+    ).whenComplete(() {
+      // 关掉面板后仍然要让浮层拿到数据（`_showStats` 还开着的话）。
+      _player.wantsStats = wasWantsStats || _showStats;
+    });
   }
-
-  Widget _infoRow(String k, String v) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-                width: 76,
-                child: Text(k, style: const TextStyle(fontSize: 12))),
-            Expanded(
-                child: SelectableText(v, style: const TextStyle(fontSize: 12))),
-          ],
-        ),
-      );
 
   // ------------------------------------------------------------------ build ---
 
@@ -1341,7 +1319,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
 class _SheetHeader extends StatelessWidget {
   const _SheetHeader(this.text);
-
   final String text;
 
   @override

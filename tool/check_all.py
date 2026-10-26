@@ -1303,6 +1303,38 @@ def check_player_layout() -> None:
         problems.append("theme.dart no longer sets fontFamily; the default UI font "
                         "would silently go back to the platform default")
 
+    # 「媒体信息」和「解码统计」原本是「画面」面板里的两个入口。用户要求
+    # 并成一项：他点开看的其实是同一件事 —— 这帧是什么码流、谁在解、现在
+    # 跑得好不好。护栏钉三件事：面板里只剩一行入口；统计数字由面板自己的
+    # AnimatedBuilder 驱动；打开期间把 wantsStats 拉起来，否则控制器根本
+    # 不发通知，数字是死的。
+    dialog = ROOT / "app" / "lib" / "ui" / "widgets" / "media_info_dialog.dart"
+    if not dialog.exists():
+        problems.append("widgets/media_info_dialog.dart missing; media info and "
+                        "decode stats would drift back into two separate entries")
+    else:
+        dlg = dialog.read_text(encoding="utf-8")
+        for needle, msg in (
+            ("AnimatedBuilder(",
+             "media_info_dialog must rebuild from the player; otherwise the "
+             "decode counters stay at the value read when it opened"),
+            ("'媒体信息'", "media_info_dialog lost its title"),
+            ("'解码'", "media_info_dialog lost the decode section"),
+        ):
+            if needle not in dlg:
+                problems.append(msg)
+    if "MediaInfoDialog(" not in text:
+        problems.append("player_screen.dart no longer opens MediaInfoDialog")
+    code = "\n".join(line for line in text.splitlines()
+                     if not line.lstrip().startswith("//"))
+    if "解码统计" in code:
+        problems.append("player_screen.dart still has a separate 解码统计 entry; it "
+                        "was merged into 媒体信息 and must not come back")
+    if "wasWantsStats" not in text:
+        problems.append("opening 媒体信息 must turn wantsStats on for the duration "
+                        "and restore it afterwards; otherwise the panel would "
+                        "show frozen numbers")
+
 
 def check_script_encoding() -> None:
     """Every script under scripts/ and tool/ must be valid UTF-8.

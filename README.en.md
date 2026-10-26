@@ -106,8 +106,8 @@ Tap a video and it plays. A subtitle file next to it with the same stem
 audio tracks and subtitles, shift subtitle timing and change speed.
 
 Desktop shortcuts: `Space` / `K` play-pause, `←` / `→` ±10 s (hold for 5 s),
-`↑` / `↓` volume, `M` mute, `F` full screen, `[` / `]` subtitle delay, `S` decoder
-statistics, `Esc` leave full screen or go back.
+`↑` / `↓` volume, `M` mute, `F` full screen, `[` / `]` subtitle delay, `S` media
+info overlay, `Esc` leave full screen or go back.
 
 ## Building
 
