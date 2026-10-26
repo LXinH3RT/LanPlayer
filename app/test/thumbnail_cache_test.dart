@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lanplayer/data/models.dart';
 import 'package:lanplayer/data/progress.dart';
 import 'package:lanplayer/data/thumbs.dart';
 
@@ -80,6 +81,60 @@ void main() {
       final a = ThumbnailCache.keyFor('smb://host/s/a.mkv');
       final b = ThumbnailCache.keyFor('smb://host/s/a.mkvv');
       expect(a, isNot(b));
+    });
+  });
+
+  group('ThumbnailCache.keyForVersion', () {
+    const url = 'smb://host/share/a.mkv';
+
+    test('没有版本号时退回只按 URL 缓存', () {
+      expect(
+          ThumbnailCache.keyForVersion(url, null), ThumbnailCache.keyFor(url));
+    });
+
+    test('文件换了版本就换键，旧封面自动失效', () {
+      final old = ThumbnailCache.keyForVersion(url, '1000-1024');
+      final next = ThumbnailCache.keyForVersion(url, '2000-1024');
+      expect(old, isNot(next));
+      expect(old, isNot(ThumbnailCache.keyFor(url)));
+    });
+
+    test('版本相同则键相同，刷新不会反复重解', () {
+      expect(ThumbnailCache.keyForVersion(url, '1000-1024'),
+          ThumbnailCache.keyForVersion(url, '1000-1024'));
+    });
+  });
+
+  group('MediaEntry.version', () {
+    MediaEntry entry({int size = 1024, DateTime? modified}) => MediaEntry(
+          name: 'a.mkv',
+          path: 'smb://h/s/a.mkv',
+          isDir: false,
+          size: size,
+          kind: 'video',
+          ext: 'mkv',
+          modified: modified,
+        );
+
+    test('同样大小、同样时间 → 同一个版本标记', () {
+      final t = DateTime.fromMillisecondsSinceEpoch(1700000000000);
+      expect(entry(modified: t).version, entry(modified: t).version);
+    });
+
+    test('同名文件被替换（大小变了）→ 版本标记跟着变', () {
+      final t = DateTime.fromMillisecondsSinceEpoch(1700000000000);
+      expect(entry(size: 1024, modified: t).version,
+          isNot(entry(size: 2048, modified: t).version));
+    });
+
+    test('只有时间变了也算换了一版', () {
+      final a = entry(modified: DateTime.fromMillisecondsSinceEpoch(1000));
+      final b = entry(modified: DateTime.fromMillisecondsSinceEpoch(2000));
+      expect(a.version, isNot(b.version));
+    });
+
+    test('拿不到时间且大小为空时不给版本，避免空文件共用一个键', () {
+      expect(entry(size: 0).version, isNull);
     });
   });
 

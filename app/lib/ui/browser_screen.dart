@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../data/location.dart';
@@ -63,23 +65,34 @@ class _BrowserScreenState extends State<BrowserScreen> {
   }
 
   /// 刷新当前目录，但不会修改导航栈。
+  ///
+  /// 刷新期间把 [_loading] 置上：SMB 上列一个大目录要好几秒，没有进度条时
+  /// 用户会以为按钮没反应，接着反复点击。这里也不做「正在刷新就忽略」的
+  /// 守卫 —— 点两次就该真的去拉两次，否则第二次点击会被悄悄吞掉，看起来
+  /// 更像按钮坏了。
   Future<void> _reload() async {
+    if (mounted) setState(() => _loading = true);
     try {
       final listing =
           await _repo.browseUrl(_listing.url, widget.location.options);
       if (mounted) setState(() => _listing = listing);
     } on MediaSourceException catch (e) {
       if (mounted) await showError(context, e.message);
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
   }
 
   /// 返回上一级目录（如果存在）。
   ///
-  /// 优先使用内存中的返回栈；如果没有历史目录，
-  /// 则回退到当前列表的父级 URL 进行导航。
+  /// 返回栈里的那份列表是**进入子目录那一刻的快照**：用户可能已经在服务器
+  /// 那边改了文件名，甚至就是在子目录里改的。所以先用快照把界面切回去
+  /// （不闪空白），紧接着重新拉一次父目录 —— 只靠快照的话，返回后看到的
+  /// 永远是旧名字，得再手动点一次刷新才对得上。
   void _up() {
     if (_stack.isNotEmpty) {
       setState(() => _listing = _stack.removeLast());
+      unawaited(_reload());
       return;
     }
     if (_listing.parent.isNotEmpty) {

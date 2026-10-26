@@ -83,6 +83,7 @@ class MediaRow extends StatelessWidget {
           ? ThumbnailTile(
               url: entry.path,
               options: location.options,
+              version: entry.version,
               fallback: Icons.movie_outlined,
             )
           : Icon(

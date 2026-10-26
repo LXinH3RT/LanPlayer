@@ -209,6 +209,16 @@ class MediaEntry {
   bool get isVideo => kind == 'video';
   bool get isSubtitle => kind == 'subtitle';
 
+  /// 「这个文件现在这一版」的标记。
+  ///
+  /// 同名文件被替换后，修改时间或大小至少有一个会变，所以把它拼进缩略图的
+  /// 缓存键，刷新后封面才会跟着换。两者都没有（老服务器不给 mtime、空文件
+  /// 也不该复用别人的封面）时返回 null，调用方退回只按 URL 缓存。
+  String? get version {
+    if (modified == null && size == 0) return null;
+    return '${modified?.millisecondsSinceEpoch ?? 0}-$size';
+  }
+
   factory MediaEntry.fromJson(Map<String, dynamic> j) {
     final mtime = (j['mtime'] as num?)?.toInt() ?? 0;
     return MediaEntry(

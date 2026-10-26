@@ -390,11 +390,48 @@ def check_thumbnails() -> None:
         problems.append("ThumbnailTile must not dispose the ui.Image: the "
                         "cache owns it and would hand out a dead handle")
 
+    # A cover keyed only by the URL never expires: replacing a file under the
+    # same name kept showing the old frame until the user wiped the cache by
+    # hand.  The key now carries the entry's version (mtime + size).
+    if "keyForVersion(url, version)" not in code:
+        problems.append("thumbs.dart must key covers by keyForVersion(url, "
+                        "version); a URL-only key never expires when a file is "
+                        "replaced in place")
+    if "version: widget.version" not in tile_code:
+        problems.append("ThumbnailTile must hand its version to the cache, "
+                        "or a replaced file keeps its old cover")
+    if "oldWidget.version" not in tile_code:
+        problems.append("ThumbnailTile must refetch when the version changes "
+                        "too, not just when the URL does")
+    row = ROOT / "app" / "lib" / "ui" / "widgets" / "media_row.dart"
+    if not row.exists() or "version: entry.version" not in row.read_text(
+            encoding="utf-8"):
+        problems.append("media_row must pass entry.version to the cover tile")
+
     browser_code = "\n".join(
         l for l in browser.read_text(encoding="utf-8").splitlines()
         if not l.strip().startswith("//"))
     if "e.isVideo" not in browser_code:
         problems.append("the browser list must only request covers for videos")
+
+    # Going back re-used the listing snapshot taken on the way in, so a rename
+    # on the server stayed invisible until the user pressed refresh.  The back
+    # button has to refetch, and refresh has to show progress and not swallow
+    # a second click.
+    if "unawaited(_reload())" not in browser_code:
+        problems.append("browser _up() must reload the parent listing; the "
+                        "stack holds a snapshot and renames never show up")
+    if "Future<void> _reload() async" not in browser_code:
+        problems.append("browser lost _reload(); the refresh button needs one")
+    else:
+        body = browser_code.split("Future<void> _reload() async", 1)[1]
+        body = body.split("Future<void> ", 1)[0]
+        if "_loading = true" not in body:
+            problems.append("browser _reload() must raise _loading; a slow "
+                            "share then looks like a dead refresh button")
+        if "if (_loading) return" in body or "if (_loads[s.id]?.loading == true)" in body:
+            problems.append("browser _reload() must not drop a second click; "
+                            "ignoring it makes the button feel broken")
 
     # Regression guards for the "opening a folder full of .flv hangs" bug.
     # Each of these was a real defect:
@@ -544,12 +581,21 @@ def check_thumbnails() -> None:
             problems.append("home_screen must await route.completed before "
                             "opening the next page; otherwise the sheet's exit "
                             "animation races the push and iOS drops it")
+        # 首页单块加载曾经用「正在加载就跳过」做去重，结果从子目录返回时那次
+        # 回填被悄悄丢掉，看上去就是刷新没生效。过期结果由 _loadGen 丢弃，
+        # 不需要入口守卫。
+        if "if (_loads[s.id]?.loading == true) return;" in hc:
+            problems.append("home_screen _load must not swallow a reload while "
+                            "one is in flight; the stale result is already "
+                            "dropped by _loadGen")
 
-    notes.append("thumbnails: LPT2 header round-trips, hex cache key, "
-                 "covers only for video rows, decoding is throttled and "
-                 "cannot spin or seek past the end")
+    notes.append("thumbnails: LPT2 header round-trips, hex cache key keyed by "
+                 "mtime+size so a replaced file gets a fresh cover, covers only "
+                 "for video rows, decoding is throttled and cannot spin or seek "
+                 "past the end")
     notes.append("browser: only video/subtitle/audio rows, subtitles grouped "
-                 "under their own video")
+                 "under their own video, back and refresh both refetch "
+                 "(the back stack only holds a snapshot)")
     notes.append("source: listing hides OS metadata (.DS_Store/._*/desktop.ini), "
                  "SMB transport is read-only")
 

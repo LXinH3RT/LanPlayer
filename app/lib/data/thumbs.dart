@@ -121,9 +121,21 @@ class ThumbnailCache {
   /// 判断必须完全一致，否则封面与续播位置会各认各的。
   static String sanitizeKey(String key) => ProgressStore.sanitizeKey(key);
 
+  /// 带版本号的缓存键。
+  ///
+  /// [version] 来自目录列表里的修改时间与大小：同名文件被替换后它会变，
+  /// 于是键也变，旧封面自然失效。[version] 为 null 时退回只按 URL 缓存。
+  static String keyForVersion(String url, String? version) =>
+      keyFor(version == null ? url : '$url?v=$version');
+
   /// 取封面。永远不抛异常：拿不到就返回 null，界面显示占位图标。
-  Future<ui.Image?> load(String url, Map<String, dynamic> options) {
-    final key = keyFor(url);
+  ///
+  /// [version] 是这家文件「当前这一版」的标记（来自目录列表的修改时间 +
+  /// 大小）。同名文件被替换后它就会变，缓存键随之改变，封面自然重解；
+  /// 传 null 时退回只按 URL 缓存 —— 这是老行为，只在拿不到元数据时用。
+  Future<ui.Image?> load(String url, Map<String, dynamic> options,
+      {String? version}) {
+    final key = keyForVersion(url, version);
     final hit = _memory[key];
     if (hit != null) return Future<ui.Image?>.value(hit);
     final pending = _inflight[key];

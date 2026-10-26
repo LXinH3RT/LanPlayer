@@ -96,9 +96,13 @@ class _HomeScreenState extends State<HomeScreen> {
     await Future.wait(sources.map((s) => _loadOne(s, gens[s.id]!)));
   }
 
-  /// 重新加载一块来源（用于单块重试）。
+  /// 重新加载一块来源（用于单块重试、从子目录返回后的回填）。
+  ///
+  /// 这里不做「正在加载就跳过」的守卫：从浏览页返回时、以及用户连点重试时，
+  /// 请求本来就该真的再发一次。以前那句 `if (loading) return` 会把这种请求
+  /// 悄悄吞掉，界面停留在旧列表上，看上去就是「刷新没生效」。
+  /// 过期结果由 [_loadGen] 的代际比较丢弃，不需要靠入口判断。
   Future<void> _load(HomeSource s) async {
-    if (_loads[s.id]?.loading == true) return;
     final gen = (_loadGen[s.id] ?? 0) + 1;
     _loadGen[s.id] = gen;
     setState(() => _loads[s.id] =

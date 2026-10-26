@@ -14,6 +14,7 @@ class ThumbnailTile extends StatefulWidget {
     super.key,
     required this.url,
     required this.options,
+    this.version,
     this.size = 56,
     this.fallback,
   });
@@ -23,6 +24,12 @@ class ThumbnailTile extends StatefulWidget {
 
   /// 传给内核的选项（含 user/password）。
   final Map<String, dynamic> options;
+
+  /// 这个文件「这一版」的标记（修改时间 + 大小）。
+  ///
+  /// 缓存键里带上它，同名文件被替换后才能重新解一帧；不传就退回只按 URL
+  /// 缓存，那样换了内容的文件会一直显示旧封面。
+  final String? version;
 
   /// 方块边长（逻辑像素）。
   final double size;
@@ -51,9 +58,10 @@ class _ThumbnailTileState extends State<ThumbnailTile> {
   @override
   void didUpdateWidget(covariant ThumbnailTile oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // 列表是复用的：同一个 State 可能被挪去显示另一个文件，
-    // 这时必须重新取图，否则会显示上一行的封面。
-    if (oldWidget.url != widget.url) {
+    // 列表是复用的：同一个 State 可能被挪去显示另一个文件，这时必须重新
+    // 取图，否则会显示上一行的封面。同一个 URL 但文件被替换过（version 变了）
+    // 也要重取 —— 否则刷新完还是旧封面。
+    if (oldWidget.url != widget.url || oldWidget.version != widget.version) {
       _image = null;
       _loading = true;
       _fetch();
@@ -62,7 +70,8 @@ class _ThumbnailTileState extends State<ThumbnailTile> {
 
   Future<void> _fetch() async {
     final seq = ++_seq;
-    final image = await ThumbnailCache.instance.load(widget.url, widget.options);
+    final image = await ThumbnailCache.instance
+        .load(widget.url, widget.options, version: widget.version);
     // 这一行已经被复用去显示别的文件了，本次结果作废。
     if (!mounted || seq != _seq) return;
     if (_image == image && !_loading) return;
