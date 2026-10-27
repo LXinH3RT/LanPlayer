@@ -58,8 +58,8 @@ List<TextSpan> _leaves(InlineSpan span) {
 /// The test video is forced to 1000x800 (`videoAspectRatio: 1.25`), so the
 /// picture fills the whole surface and the overlay's "video height" is the
 /// full 800 px.  Font size then follows ASS semantics: `font_scale` is a
-/// fraction of the *picture* height, and that glyph height still has to be
-/// converted to Flutter's em size (`scriptToEm`).
+/// fraction of the *picture* height, and that is already an em size, so the
+/// glyph size is `font_scale * picture height * scriptToEm`.
 ///
 /// Every line is painted as its own block (each Dialogue keeps its own colour,
 /// box and margins), so the helper collects the *fill* layer of every block and
@@ -96,8 +96,17 @@ Future<InlineSpan> _pump(
   return TextSpan(children: collected);
 }
 
-/// `0.05` of an 800 px picture, converted from ASS glyph height to em.
+/// `0.05` of an 800 px picture.  ASS `Fontsize` is an em size, so this is the
+/// em the overlay should ask Flutter for (modulo the `scriptToEm` factor).
 const double _plainFontSize = 0.05 * 800 * SubtitleOverlay.scriptToEm;
+
+/// `Color.value` is deprecated; the channels are the stable way to spell the
+/// same comparison, and this keeps the expectations readable.
+int _argb(Color c) =>
+    ((c.a * 255).round() << 24) |
+    ((c.r * 255).round() << 16) |
+    ((c.g * 255).round() << 8) |
+    (c.b * 255).round();
 
 void main() {
   testWidgets('plain cue renders its text with the style colour',
@@ -461,6 +470,77 @@ void main() {
     expect(cue.lines.single.runs.single.font, '新宋体');
     final span = await _pump(tester, cue);
     expect(_leaves(span).first.style!.fontFamily, '新宋体');
+  });
+
+  // 行内 \3c 只换描边色，字还是白的。内核已经把它下发到 run 的
+  // `outline_color` 上；Dart 这边如果 `SubtitleLine.styled` 漏掉这个字段，
+  // 整行会退回 cue 的样式，描边又变回 Style 行里的黑色 —— 真机上就是这样
+  // 复现的（字幕白字黑边，`\3c&H006C3300&` 完全没生效）。
+  testWidgets('an inline \\3c repaints the stroke, not the text',
+      (tester) async {
+    final json = <String, dynamic>{
+      'text': 'OUTLINED',
+      'start': 0,
+      'end': 9000000,
+      'style': <String, dynamic>{
+        'color': 4294967295,
+        'outline_color': 4278190080,
+        'outline': 2,
+        'align': 2,
+        'font_scale': 0.05,
+        'pos_x': -1.0,
+        'pos_y': -1.0,
+        'font': 'sans-serif',
+      },
+      'runs': [
+        {
+          'text': 'OUTLINED',
+          'runs': [
+            {
+              'text': 'OUTLINED',
+              // 内核把 ASS 的 &H006C3300 拆成 0xAARRGGBB 下发。
+              'outline_color': 4278203244,
+            },
+          ],
+        },
+      ],
+    };
+    final cue = SubtitleCue.fromJson(json);
+    expect(cue.lines.single.styled, isTrue,
+        reason: '只改描边色的行也算有内联样式，否则描边退回 cue 的颜色');
+    expect(cue.lines.single.runs.single.outlineColor, 4278203244);
+
+    tester.view.physicalSize = const Size(1000, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SubtitleOverlay(cue: cue, scale: 1.0, safeArea: 24),
+        ),
+      ),
+    );
+    final stroke = <TextSpan>[];
+    for (final rich in tester.widgetList<RichText>(find.byType(RichText))) {
+      for (final span in _leaves(rich.text)) {
+        final paint = span.style?.foreground;
+        if (paint is Paint) stroke.add(span);
+      }
+    }
+    expect(stroke, isNotEmpty, reason: '这一行有描边，应当有一层描边文字');
+    final color = stroke.first.style!.foreground!.color;
+    expect(_argb(color), 0xFF00336C,
+        reason: '描边必须是 \\3c 指定的深蓝，而不是 Style 行里的黑色');
+    final filled = _leaves(
+      TextSpan(
+        children: [
+          for (final rich in tester.widgetList<RichText>(find.byType(RichText)))
+            ..._leaves(rich.text).where((s) => s.style?.color != null),
+        ],
+      ),
+    );
+    expect(_argb(filled.first.style!.color!), 0xFFFFFFFF,
+        reason: '\\3c 不该动文字主色，白字要保持白色');
   });
 
   // The tests above assert the *span tree*; this one asserts actual painted

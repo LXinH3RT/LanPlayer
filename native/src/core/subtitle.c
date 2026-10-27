@@ -635,7 +635,9 @@ static uint32_t ass_color(const char *v);
 
 typedef struct SubRunState {
     unsigned flags;
-    uint32_t color;    /* 0 = inherit the cue style */
+    uint32_t color;         /* 0 = inherit the cue style */
+    uint32_t outline_color; /* 0 = inherit; \3c targets this slot */
+    uint32_t back_color;    /* 0 = inherit; \4c targets this slot */
     double font_scale; /* 0 = inherit the cue style */
     double scale_x;    /* percent, 0 = inherit */
     double scale_y;    /* percent, 0 = inherit */
@@ -693,6 +695,8 @@ static int sub_rich_append(SubRich *b, const char *text, size_t len)
     if (b->nb > 0) {
         LpSubRun *last = &b->runs[b->nb - 1];
         if (last->flags == b->st.flags && last->color == b->st.color &&
+            last->outline_color == b->st.outline_color &&
+            last->back_color == b->st.back_color &&
             last->font_scale == b->st.font_scale &&
             !strcmp(last->font_name, b->st.font_name)) {
             size_t old = strlen(last->text);
@@ -725,6 +729,8 @@ static int sub_rich_append(SubRich *b, const char *text, size_t len)
     r->text[len] = '\0';
     r->flags = b->st.flags;
     r->color = b->st.color;
+    r->outline_color = b->st.outline_color;
+    r->back_color = b->st.back_color;
     r->font_scale = b->st.font_scale;
     r->scale_x = b->st.scale_x;
     r->scale_y = b->st.scale_y;
@@ -781,8 +787,12 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
             continue;
         }
         p++;
-        /* \1c, \2c ... carry a channel digit before the command letter. */
+        /* \1c, \2c, \3c, \4c carry a channel digit before the command letter;
+         * each one targets a different colour slot, so the digit has to be
+         * remembered rather than skipped.  \1a..\4a work the same way. */
+        int channel = 0;
         if (isdigit((unsigned char)*p) && (p[1] == 'c' || p[1] == 'a')) {
+            channel = *p - '0';
             p++;
         }
         char cmd = *p;
@@ -854,9 +864,28 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
             }
             memcpy(color, start, n);
             color[n] = '\0';
-            b->st.color = n ? ass_color(color) : 0;
-            if (b->st.color == 0xFFFFFFFF) {
-                b->st.color = 0; /* \c&HFFFFFF& is the default: inherit */
+            /* ASS 的四个通道各有归属：\1c 主色、\2c 次色、\3c 描边、
+             * \4c 背景（\3c 最常用，写成 {\3c&H...&} 是给描边上色的标准
+             * 做法，不能被当成主色）。 */
+            uint32_t parsed = n ? ass_color(color) : 0;
+            if (parsed == 0xFFFFFFFF) {
+                parsed = 0; /* \c&HFFFFFF& is the default: inherit */
+            }
+            switch (channel) {
+            case 2:
+                /* \2c is the "secondary colour" used by karaoke fills; the
+                 * renderer has nowhere to put it, so it must not touch the
+                 * text colour. */
+                break;
+            case 3:
+                b->st.outline_color = parsed;
+                break;
+            case 4:
+                b->st.back_color = parsed;
+                break;
+            default:
+                b->st.color = parsed;
+                break;
             }
             break;
         }
@@ -969,6 +998,8 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
             name[n] = '\0';
             b->st.flags = 0;
             b->st.color = 0;
+            b->st.outline_color = 0;
+            b->st.back_color = 0;
             b->st.font_scale = 0;
             b->st.scale_x = 0;
             b->st.scale_y = 0;
@@ -1127,7 +1158,8 @@ static int sub_compile_text(const char *in, LpSubCue *cue, const AssCtx *ctx)
         /* Drop the runs entirely when nothing overrides the cue style. */
         int styled = 0;
         for (int i = 0; i < b.nb; i++) {
-            if (b.runs[i].flags || b.runs[i].color || b.runs[i].font_scale != 0 ||
+            if (b.runs[i].flags || b.runs[i].color || b.runs[i].outline_color ||
+                b.runs[i].back_color || b.runs[i].font_scale != 0 ||
                 b.runs[i].font_name[0]) {
                 styled = 1;
                 break;
@@ -1162,6 +1194,8 @@ static int merge_cue_into(SubRich *dst, LpSubCue *src)
         for (int i = 0; i < src->nb_runs; i++) {
             dst->st.flags = src->runs[i].flags;
             dst->st.color = src->runs[i].color;
+            dst->st.outline_color = src->runs[i].outline_color;
+            dst->st.back_color = src->runs[i].back_color;
             dst->st.font_scale = src->runs[i].font_scale;
             snprintf(dst->st.font_name, sizeof(dst->st.font_name), "%s",
                      src->runs[i].font_name);
@@ -1172,6 +1206,8 @@ static int merge_cue_into(SubRich *dst, LpSubCue *src)
     } else if (src->text) {
         dst->st.flags = 0;
         dst->st.color = 0;
+        dst->st.outline_color = 0;
+        dst->st.back_color = 0;
         dst->st.font_scale = 0;
         dst->st.font_name[0] = '\0';
         if (sub_rich_append(dst, src->text, strlen(src->text)) != 0) {
@@ -1180,6 +1216,8 @@ static int merge_cue_into(SubRich *dst, LpSubCue *src)
     }
     dst->st.flags = 0;
     dst->st.color = 0;
+    dst->st.outline_color = 0;
+    dst->st.back_color = 0;
     dst->st.font_scale = 0;
     dst->st.font_name[0] = '\0';
     return 0;
@@ -2106,6 +2144,14 @@ static void append_runs_json(LpStr *out, LpSubtitleTrack *t, const int *idx, int
                 if (r->color) {
                     lp_str_append(out, ",\"color\":%u", (unsigned)r->color);
                 }
+                if (r->outline_color) {
+                    lp_str_append(out, ",\"outline_color\":%u",
+                                  (unsigned)r->outline_color);
+                }
+                if (r->back_color) {
+                    lp_str_append(out, ",\"back_color\":%u",
+                                  (unsigned)r->back_color);
+                }
                 if (r->font_scale > 0) {
                     lp_str_append(out, ",\"scale\":%.6f", r->font_scale);
                 }
@@ -2272,4 +2318,37 @@ void lp_subtitle_set_delay(LpPlayer *p, int64_t delay_ms)
     p->subs.delay_us = delay_ms * 1000;
     p->subs.dirty = 1;
     pthread_mutex_unlock(&p->subs.mutex);
+}
+
+/* 测试入口：把一段只含 override 标签和文字的 ASS 行编成 run 列表，返回
+ * 第一段文本生效的四色。仅供 native/tests/lp_subcolor_test.c 使用 —— 正常
+ * 播放路径不会调它。 */
+int lp_sub_test_parse_runs(const char *dialogue_text, int run_index,
+                           uint32_t *color, uint32_t *outline_color,
+                           uint32_t *back_color)
+{
+    LpSubStyle base;
+    style_default(&base);
+    LpSubCue cue;
+    memset(&cue, 0, sizeof(cue));
+    AssCtx ctx;
+    ctx.play_w = 384.0;
+    ctx.play_h = 288.0;
+    ctx.base = &base;
+    int rc = sub_compile_text(dialogue_text, &cue, &ctx);
+    if (rc != 0) {
+        cue_free(&cue);
+        return -1;
+    }
+    uint32_t c = 0, o = 0, k = 0;
+    if (run_index >= 0 && run_index < cue.nb_runs) {
+        c = cue.runs[run_index].color;
+        o = cue.runs[run_index].outline_color;
+        k = cue.runs[run_index].back_color;
+    }
+    cue_free(&cue);
+    if (color) *color = c;
+    if (outline_color) *outline_color = o;
+    if (back_color) *back_color = k;
+    return 0;
 }

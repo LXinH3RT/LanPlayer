@@ -19,10 +19,11 @@ import 'video_surface.dart';
 /// 高度，用窗口高度算字号会让字幕凭空变大 —— 这是用户报「字号明显过大」的
 /// 第一层原因。
 ///
-/// 第二层原因是单位换算：ASS 的 `Fontsize` 是字面高度（ascender 到
-/// descender），Flutter 的 `TextStyle.fontSize` 是 em 尺寸，两者差一个
-/// 约 1.26 的系数。这个系数是用同一种字体（Microsoft YaHei）在
-/// Fontsize 30 / 45 / 60 / 90 四档上与 libass 逐档标定出来的。
+/// 第二层原因是单位换算：ASS 的 `Fontsize` 就是 em 尺寸，不需要再折算出
+/// 一个「字面高度」。用 libass 对同一句、同一 PlayResY、同一画面高度逐档
+/// 量墨迹高（Fontsize 20/288、52/480、52/1080、30/1080、90/1080），
+/// libass 的墨迹高稳定在 0.933–0.942 em；本层按 em 直接排，SimHei 的墨迹
+/// 高约 0.95 em，两者相差不到 2%。
 ///
 /// 第三层是 `textScaler`：`app/lib/main.dart` 把系统文字缩放钳到 1.3 倍，
 /// `Text` 会在这个字号基础上再乘一次。字幕要贴着画面走，不该跟着系统字号
@@ -51,8 +52,13 @@ class SubtitleOverlay extends StatelessWidget {
   /// 与 `PlaybackSettings.scaleMode` 同一套取值，决定画面是留黑边还是被裁。
   final int scaleMode;
 
-  /// ASS 的字面高度换算成 Flutter 的 em 尺寸时的系数（1/1.26）。
-  static const double scriptToEm = 1 / 1.26;
+  /// ASS 的 `Fontsize` 与 Flutter 的 `TextStyle.fontSize` 同为 em 尺寸。
+  ///
+  /// 曾经这里取过 `1 / 1.26`，把 `Fontsize` 当成「字面高度」再折算一次，结果
+  /// 整块字幕比 libass 小 20%。与 libass 逐档标定后确认：`Fontsize` 本身就是
+  /// em，量出来的墨迹高只比 em 略小（libass 0.933–0.942，Flutter/SimHei 约
+  /// 0.95），所以系数取 1。
+  static const double scriptToEm = 1.0;
 
   /// 视频画面在给定区域里实际占据的矩形（与 [VideoSurface] 的贴合规则一致）。
   static Rect videoRect(Size area, double aspectRatio, int mode) {
@@ -106,8 +112,8 @@ class SubtitleOverlay extends StatelessWidget {
   /// 这一行的样式：内核按行下发，缺省时回落到整条 cue 的样式。
   SubtitleStyle _styleOf(SubtitleLine line) => line.style ?? cue.style;
 
-  /// 字幕字号：`Fontsize / PlayResY` 是内核给出的比例，乘画面高度得到的是
-  /// 字面高度，再换算成 em，并抵消掉 `Text` 层会施加的 textScaler。
+  /// 字幕字号：`Fontsize / PlayResY` 是内核给出的比例，乘画面高度就是 em
+  /// 尺寸（与 libass 同语义），再抵消掉 `Text` 层会施加的 textScaler。
   double _fontSize(
     BuildContext context,
     double videoHeight, {
@@ -143,6 +149,7 @@ class SubtitleOverlay extends StatelessWidget {
     String fontOverride = '',
     double? strokePx,
     int? colorOverride,
+    int outlineColorOverride = 0,
     double spacing = 0,
     SubtitleStyle? styleOverride,
   }) {
@@ -182,7 +189,8 @@ class SubtitleOverlay extends StatelessWidget {
           ..strokeWidth = width * 2
           ..strokeJoin = StrokeJoin.round
           ..strokeCap = StrokeCap.round
-          ..color = Color(style.outlineColor),
+          ..color = Color(
+              outlineColorOverride != 0 ? outlineColorOverride : style.outlineColor),
       );
     }
 
@@ -235,6 +243,8 @@ class SubtitleOverlay extends StatelessWidget {
       fontOverride: r.font,
       // 行内 \bord 会覆盖整条字幕的描边粗细。
       strokePx: r.border >= 0 ? r.border * unit : null,
+      // 行内 \3c 只改描边色，不影响文字主色。
+      outlineColorOverride: r.outlineColor,
       spacing: r.spacing != 0 ? r.spacing : 0,
       styleOverride: style,
     );
@@ -257,7 +267,8 @@ class SubtitleOverlay extends StatelessWidget {
           ? TextDecoration.none
           : TextDecoration.combine(decorations),
       // Outline layers paint the stroke in the cue outline colour, ignoring
-      // per-run colours so the edge stays one consistent shade.
+      // per-run text colours so the edge stays one consistent shade.  An inline
+      // \3c still overrides that shade through `outlineColorOverride`.
       color: outline ? null : color,
       foreground: outline ? base.foreground : null,
     );

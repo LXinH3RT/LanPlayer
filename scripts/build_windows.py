@@ -289,6 +289,12 @@ def main() -> int:
                       "submatch test"):
         return 1
 
+    # ASS 的 c/c/c/c 各改一种颜色。曾经的 bug 是把通道数字吃掉，四条
+    # 通道全写进主色，于是 {c...} 的描边色变成了字色。
+    if not build_test("lp_subcolor_test.exe", native / "tests" / "lp_subcolor_test.c",
+                      "subcolour test"):
+        return 1
+
     # Loads lanplayer.dll at runtime and drives the texture path, exactly like
     # the Flutter Windows plugin does.  It also compiles the plugin's own
     # BGRA->RGBA header, so a regression in that conversion fails here instead

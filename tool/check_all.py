@@ -1570,6 +1570,32 @@ def check_subtitle_fonts() -> None:
             problems.append("subtitle.c no longer emits a per-run font name; the "
                             "host would have nothing to put in fontFamily")
 
+        # ASS 的 \1c/\2c/\3c/\4c 各改一种颜色。曾经把通道数字直接吃掉，四条
+        # 通道全写进主色：{\3c&H006C3300&} 的行会整行变成描边色、描边却还是
+        # 默认黑。真实素材（勇敢的心.ass）就是这么写的。
+        if "channel = *p - '0';" not in st:
+            problems.append("subtitle.c dropped the colour-channel digit in "
+                            "apply_override; \\3c would repaint the text instead "
+                            "of the outline")
+        if "b->st.outline_color = parsed;" not in st:
+            problems.append("subtitle.c no longer routes \\3c to "
+                            "outline_color; outlines would stay default black")
+        if "b->st.back_color = parsed;" not in st:
+            problems.append("subtitle.c no longer routes \\4c to back_color; "
+                            "BorderStyle 3/4 boxes would lose their fill")
+        if "b.runs[i].outline_color ||" not in st:
+            problems.append("subtitle.c drops runs whose only override is an "
+                            "outline colour; such a line falls back to the cue "
+                            "style and loses the \\3c entirely")
+        if ",\\\"outline_color\\\":%u" not in st:
+            problems.append("subtitle.c stopped emitting a per-run "
+                            "outline_color; the host cannot repaint the outline")
+
+    subcolor = ROOT / "native" / "tests" / "lp_subcolor_test.c"
+    if not subcolor.exists():
+        problems.append("native/tests/lp_subcolor_test.c missing; the ASS "
+                        "colour-channel routing has no regression test")
+
     overlay = ROOT / "app" / "lib" / "ui" / "widgets" / "subtitle_overlay.dart"
     if not overlay.exists():
         problems.append("ui/widgets/subtitle_overlay.dart missing")
@@ -1598,23 +1624,31 @@ def check_subtitle_fonts() -> None:
             problems.append("SubtitleLine.styled ignores r.font; a line whose "
                             "only override is a family would collapse to plain "
                             "text and lose the font")
+        if "r.outlineColor != 0" not in mt:
+            problems.append("SubtitleLine.styled ignores r.outlineColor; a line "
+                            "whose only override is an inline \\3c collapses to "
+                            "plain text and the outline goes back to the cue "
+                            "colour")
 
     # 字号与坐标必须按**画面**算，不能按窗口算。用户报「字幕字号明显过大」：
     # 旧实现取 `MediaQuery.sizeOf(context).height`（整个窗口）直接当 em 用，
-    # 于是 ①窗口留黑边时画面比窗口小、②ASS 的 Fontsize 是字面高度不是 em、
-    # ③Text 层还会乘一次 textScaler 1.3 —— 三层叠起来把字幕放大约 1.6 倍。
-    # 同族（Microsoft YaHei）在 Fontsize 30/45/60/90 四档上与 libass 逐档
-    # 标定后，现在的偏差在 ±3% 内。
+    # 于是 ①窗口留黑边时画面比窗口小、②Text 层还会乘一次 textScaler 1.3 ——
+    # 两层叠起来把字幕放大约 1.5 倍。
+    # 另外 ASS 的 Fontsize **就是 em**，不需要再折算成「字面高度」。曾经这里
+    # 乘过 1/1.26，结果整块字幕比 libass 小 20%；用同一句、同一 PlayResY、
+    # 同一画面高度与 libass 逐档量墨迹高（20/288、52/480、52/1080、30/1080、
+    # 90/1080）后确认系数取 1，偏差在 2% 以内。
     if overlay.exists():
         if "MediaQuery.sizeOf(context).height" in ot:
             problems.append(
                 "subtitle_overlay.dart sizes text from the window height "
                 "again; ASS font size is a fraction of the *picture* height, "
                 "so letterboxed windows make subtitles too big")
-        if "static const double scriptToEm" not in ot:
+        if "static const double scriptToEm = 1.0;" not in ot:
             problems.append(
-                "subtitle_overlay.dart: the ASS glyph-height to em conversion "
-                "is gone; subtitles render 1.26x larger than libass draws them")
+                "subtitle_overlay.dart: scriptToEm must stay 1.0 — ASS "
+                "Fontsize is already an em size, and any other factor makes "
+                "subtitles disagree with libass by that amount")
         if "static Rect videoRect(" not in ot:
             problems.append(
                 "subtitle_overlay.dart: the picture rectangle helper is gone; "

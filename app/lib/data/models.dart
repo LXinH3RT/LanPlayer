@@ -615,6 +615,8 @@ class SubtitleSpan {
   final bool underline;
   final bool strikeout;
   final int color; // 0 = inherit from the cue style
+  final int outlineColor; // 0 = inherit; set by an inline \3c
+  final int backColor; // 0 = inherit; set by an inline \4c
   final double scale; // 0 = inherit from the cue style
   final double scaleX; // 百分比，0 = 继承
   final double scaleY;
@@ -631,6 +633,8 @@ class SubtitleSpan {
     this.underline = false,
     this.strikeout = false,
     this.color = 0,
+    this.outlineColor = 0,
+    this.backColor = 0,
     this.scale = 0,
     this.scaleX = 0,
     this.scaleY = 0,
@@ -648,6 +652,8 @@ class SubtitleSpan {
         underline: j['underline'] == true,
         strikeout: j['strikeout'] == true,
         color: (j['color'] as num?)?.toInt() ?? 0,
+        outlineColor: (j['outline_color'] as num?)?.toInt() ?? 0,
+        backColor: (j['back_color'] as num?)?.toInt() ?? 0,
         scale: (j['scale'] as num?)?.toDouble() ?? 0,
         scaleX: (j['scale_x'] as num?)?.toDouble() ?? 0,
         scaleY: (j['scale_y'] as num?)?.toDouble() ?? 0,
@@ -725,6 +731,10 @@ class SubtitleLine {
             r.underline ||
             r.strikeout ||
             r.color != 0 ||
+            // 行内 \3c / \4c 只改描边、底色，也算「这一行有内联样式」——
+            // 否则整行会退回 cue 的样式，描边色又变回黑色。
+            r.outlineColor != 0 ||
+            r.backColor != 0 ||
             r.scale != 0 ||
             r.scaleX != 0 ||
             r.scaleY != 0 ||

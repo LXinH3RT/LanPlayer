@@ -350,6 +350,8 @@ typedef struct LpSubRun {
     char *text;        /* owned UTF-8, may contain '\n' */
     unsigned flags;    /* LP_SUB_* */
     uint32_t color;    /* 0 = inherit from the cue style */
+    uint32_t outline_color; /* 0 = inherit; set by an inline \3c */
+    uint32_t back_color;    /* 0 = inherit; set by an inline \4c */
     double font_scale; /* 0 = inherit from the cue style */
     double scale_x;    /* percent, 0 = inherit */
     double scale_y;    /* percent, 0 = inherit */
@@ -622,6 +624,11 @@ void lp_sub_overlay_blend(LpPlayer *p, uint8_t *bgra, int w, int h, int stride);
  * app/lib/data/subtitle_match.dart 同一套判定，改一边必须同步另一边。 */
 void lp_sub_match_stem(const char *name, char *out, size_t outlen);
 int lp_sub_match_related(const char *video_stem, const char *sub_stem);
+
+/* subtitle.c — 仅供 native/tests/lp_subcolor_test.c 用，正常播放不会调。 */
+int lp_sub_test_parse_runs(const char *dialogue_text, int run_index,
+                           uint32_t *color, uint32_t *outline_color,
+                           uint32_t *back_color);
 
 /* source layer (see src/source) */
 typedef struct LpIo LpIo;
