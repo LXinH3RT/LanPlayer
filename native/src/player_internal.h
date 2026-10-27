@@ -346,6 +346,7 @@ typedef struct LpSubStyle {
     int underline;
     int strikeout;
     uint32_t color;         /* 0xAARRGGBB */
+    uint32_t secondary_color; /* 0xAARRGGBB, karaoke before it is sung */
     uint32_t outline_color; /* 0xAARRGGBB */
     uint32_t back_color;    /* 0xAARRGGBB, used by BorderStyle 3/4 */
     int outline_width;      /* in script units (ASS Outline) */
@@ -363,6 +364,7 @@ typedef struct LpSubStyle {
     double pos_y;
     double font_scale;      /* fraction of video height, default 0.05 */
     double play_res_y;      /* script resolution height, for margins/borders */
+    double play_res_x;      /* script resolution width, for \p and \clip x */
     char font_name[64];
 } LpSubStyle;
 
@@ -371,6 +373,52 @@ typedef struct LpSubStyle {
 #define LP_SUB_ITALIC 0x2
 #define LP_SUB_UNDERLINE 0x4
 #define LP_SUB_STRIKEOUT 0x8
+
+/* Which properties a `\t` animation actually drives.  Only these get
+ * interpolated; everything else keeps whatever the run already had. */
+#define LP_SUB_ANIM_COLOR 0x1
+#define LP_SUB_ANIM_SCALE_X 0x2
+#define LP_SUB_ANIM_SCALE_Y 0x4
+#define LP_SUB_ANIM_FONT 0x8
+#define LP_SUB_ANIM_ANGLE 0x10
+#define LP_SUB_ANIM_SPACING 0x20
+#define LP_SUB_ANIM_BORDER 0x40
+#define LP_SUB_ANIM_SHADOW 0x80
+#define LP_SUB_ANIM_ALPHA 0x100
+#define LP_SUB_ANIM_CLIP 0x200
+
+/* One entry of a `\t(<t1>,<t2>,<tags>)` list.  ASS replays the nested tags
+ * continuously between t1 and t2 (milliseconds relative to the cue start). */
+typedef struct LpSubAnim {
+    double t1_ms;
+    double t2_ms;
+    double accel;    /* 0 = linear, 1..3 = the ASS power curve */
+    unsigned fields; /* LP_SUB_ANIM_* bits, only the animated ones */
+    uint32_t color;
+    double scale_x;
+    double scale_y;
+    double font_scale;
+    double angle;
+    double spacing;
+    int border;
+    int shadow;
+    double alpha;
+    /* \clip animated inside \t: the rectangle moves, which is how ASS wipes
+     * reveal a title.  Coordinates are script units (see LpSubCue). */
+    int clip_on;
+    double clip_x1;
+    double clip_y1;
+    double clip_x2;
+    double clip_y2;
+} LpSubAnim;
+
+/* One node of a `\p<n>` drawing.  `sub` groups the points into subpaths so a
+ * polygon can be closed per contour. */
+typedef struct LpSubPathPoint {
+    int sub;
+    double x;
+    double y;
+} LpSubPathPoint;
 
 /* One styled span inside a cue.  A cue with nb_runs == 0 is plain text that
  * inherits the whole cue style; otherwise each run carries the inline
@@ -389,6 +437,30 @@ typedef struct LpSubRun {
     int border;        /* script units, -1 = inherit */
     int shadow;        /* script units, -1 = inherit */
     char font_name[64]; /* empty = inherit from the cue style */
+    double alpha;      /* 0..1 text opacity, 1 = opaque */
+    /* Karaoke: \k / \kf / \ko attach a duration to the glyphs that follow,
+     * counted from the cue start.  karaoke_end_ms is the running total when
+     * this run ends, so the renderer only needs the cue-relative time. */
+    double karaoke_start_ms;
+    double karaoke_end_ms;
+    int karaoke_kind;  /* 0 = none, 1 = \k, 2 = \kf, 3 = \ko */
+    /* Animated overrides produced by \t. */
+    LpSubAnim *anims;
+    int nb_anims;
+    /* Vector drawing (\p<n>); when nb_path > 0 the run paints a shape instead
+     * of glyphs and `text` holds the raw command string. */
+    LpSubPathPoint *path;
+    int nb_path;
+    int drawing_scale; /* the \p exponent: 2^scale script units per pixel */
+    /* \clip(x1,y1,x2,y2) in script units.  clip_on = 0 means "no clip"; the
+     * renderer clips the line block, which is how ASS reveals a title with a
+     * moving rectangle. */
+    int clip_on;
+    double clip_x1;
+    double clip_y1;
+    double clip_x2;
+    double clip_y2;
+    int clip_inverse; /* \iclip */
 } LpSubRun;
 
 /* One decoded bitmap subtitle rectangle (PGS / VobSub / DVB).  Pixels are
@@ -661,6 +733,43 @@ int lp_sub_match_related(const char *video_stem, const char *sub_stem);
 int lp_sub_test_parse_runs(const char *dialogue_text, int run_index,
                            uint32_t *color, uint32_t *outline_color,
                            uint32_t *back_color);
+
+/* \t / \k / \clip / \p 的解析结果，供 native/tests/lp_subanim_test.c 断言。
+ * 正常播放路径不碰这个结构。 */
+typedef struct LpSubTestAnim {
+    int nb_runs;
+    int nb_anims;
+    double anim_t1;
+    double anim_t2;
+    double anim_accel;
+    unsigned anim_fields;
+    uint32_t anim_color;
+    double anim_scale_x;
+    double anim_scale_y;
+    double anim_alpha;
+    int anim_clip_on;
+    double anim_clip_x1;
+    double anim_clip_x2;
+    int karaoke_kind;
+    double karaoke_start_ms;
+    double karaoke_end_ms;
+    double alpha;
+    int clip_on;
+    double clip_x1;
+    double clip_y1;
+    double clip_x2;
+    double clip_y2;
+    int drawing_scale;
+    int nb_path;
+    int nb_subpaths;
+    double path_x0;
+    double path_y0;
+    double path_last_x;
+    double path_last_y;
+} LpSubTestAnim;
+
+int lp_sub_test_parse_anim(const char *dialogue_text, int run_index,
+                           int64_t cue_dur_us, LpSubTestAnim *out);
 
 /* source layer (see src/source) */
 typedef struct LpIo LpIo;

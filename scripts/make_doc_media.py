@@ -52,6 +52,49 @@ ASS_TEMPLATE = "\r\n".join([
     "Dialogue: 0,0:00:01.00,0:00:28.00,CHS,,0,0,0,,sidecar subtitle",
 ])
 
+# One cue per advanced tag.  `SecondaryColour` is the karaoke "not sung yet"
+# colour, so it is deliberately different from `PrimaryColour`: the shot must
+# show part of the line still white while the rest has turned red.
+ADVANCED_ASS_TEMPLATE = "\r\n".join([
+    "[Script Info]",
+    "Title: Advanced tags",
+    "ScriptType: v4.00+",
+    "PlayResX: 1280",
+    "PlayResY: 720",
+    "WrapStyle: 2",
+    "ScaledBorderAndShadow: yes",
+    "",
+    "[V4+ Styles]",
+    ("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+     "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+     "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"),
+    ("Style: Probe,Microsoft YaHei,56,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,"
+     "0,0,0,0,100,100,0,0,1,3,2,2,40,40,36,1"),
+    "",
+    "[Events]",
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    # colour animation: red, fading to white between 0.5 s and 2.5 s
+    (r"Dialogue: 0,0:00:00.50,0:00:20.00,Probe,,0,0,0,,"
+     r"{\pos(640,120)\fad(200,200)\t(500,2500,\1c&H0000FF&)}colour animation"),
+    # clip window: the left and right ends of the line are cut away, the full
+    # height survives, so the crop reads as a crop and not as a broken glyph.
+    (r"Dialogue: 0,0:00:00.50,0:00:20.00,Probe,,0,0,0,,"
+     r"{\pos(640,240)}{\clip(400,200,880,280)}only the middle survives the clip"),
+    # karaoke: one \k slice per syllable
+    (r"Dialogue: 0,0:00:00.50,0:00:20.00,Probe,,0,0,0,,"
+     r"{\pos(640,360)}{\k40}ka{\k40}ra{\k40}o{\k40}ke{\k40} fill{\k40}s{\k40} l{\k40}eft"),
+    # vector drawing 1: rectangle
+    (r"Dialogue: 0,0:00:00.50,0:00:20.00,Probe,,0,0,0,,"
+     r"{\an7\pos(120,440)\p1\c&H30D0FF&}m 0 0 l 200 0 l 200 120 l 0 120{\p0}"),
+    # vector drawing 2: triangle
+    (r"Dialogue: 0,0:00:00.50,0:00:20.00,Probe,,0,0,0,,"
+     r"{\an7\pos(420,440)\p1\c&H30FF90&}m 0 0 l 200 0 l 100 140{\p0}"),
+    # whole-line transparency
+    (r"Dialogue: 0,0:00:00.50,0:00:20.00,Probe,,0,0,0,,"
+     r"{\pos(640,640)\alpha&H60&}half transparent line"),
+])
+
+
 
 def find_ffmpeg() -> Path:
     for candidate in (lp.TOOLS / "ffmpeg").rglob("ffmpeg.exe"):
@@ -141,6 +184,22 @@ def main() -> int:
 
     for name in ("embed.ass", "embed.zh.ass"):
         lp.write_text(sidecar / name, ASS_TEMPLATE, newline="")
+
+    # --- one video whose sidecar exercises the advanced ASS tags -------------
+    # This is the "advanced tags" screenshot: a colour animation, a clip window,
+    # karaoke fill, two vector drawings and one semi-transparent line, all in a
+    # single file.  The picture underneath is a flat dark field so the caption
+    # is the only thing on screen.
+    print("== advanced/advanced.mkv + advanced.ass")
+    advanced = share / "advanced"
+    advanced.mkdir(parents=True, exist_ok=True)
+    lp.run([str(ff), "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "color=c=0x202020:size=1280x720:rate=24:duration=20",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=20",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+            str(advanced / "advanced.mkv")], show=False)
+    lp.write_text(advanced / "advanced.ass", ADVANCED_ASS_TEMPLATE, newline="")
 
     print(f"== doc media built at {out}")
     counts: dict[str, int] = {}

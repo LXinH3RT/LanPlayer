@@ -29,7 +29,7 @@ address, a share name, a user and a password.
 | **Containers / codecs** | Whatever FFmpeg supports: MKV / MP4 / AVI / MOV / TS / FLV / WebM, H.264 / HEVC / VP9 / AV1, and more |
 | **Hardware decoding** | D3D11VA on Windows, VideoToolbox on macOS / iOS, MediaCodec on Android, falling back to software automatically |
 | **Audio** | WASAPI on Windows, AudioQueue on Apple, AAudio on Android; AAC / MP3 / FLAC / Vorbis / Opus and more |
-| **Subtitles** | Embedded tracks plus external SRT / ASS / SSA / VTT; ASS styling (colour, outline, size, font, positioning); PGS / VobSub / DVB bitmap subtitles |
+| **Subtitles** | Embedded tracks plus external SRT / ASS / SSA / VTT; ASS styling (colour, outline, size, font, positioning, animation, clipping, vector drawing, karaoke); PGS / VobSub / DVB bitmap subtitles |
 | **Track selection** | Separate audio and subtitle panels listing every track in the file, with default pick by preferred / fallback language |
 | **Playback control** | Play-pause, ±10 s, seek by dragging, 0.5x–2.0x pitch-preserving speed, volume 0–100 (gain to 200 %), click-to-mute, full screen |
 | **Continuous play** | The current directory is ordered by `SxxEzz` or "episode N" and the next one starts on its own |
@@ -51,6 +51,11 @@ Both `Fontname` and the inline `\fn` override in ASS subtitles really take effec
 two fonts can be mixed inside one subtitle:
 
 ![Subtitle fonts](docs/images/desktop-subtitle-fonts.jpg)
+
+The advanced tags render too: `\t` colour animation, `\clip` cropping, `\p` vector
+drawing and `\k` karaoke fill:
+
+![ASS advanced features](docs/images/desktop-ass-advanced.png)
 
 On mobile the same UI is used (texture plus subtitle bubbles):
 
@@ -200,7 +205,7 @@ on WASAPI shared mode and falls back to waveOut when the device cannot be opened
 | Video with audio | ✅ H.264 software decode, AAC → float stereo, position advances correctly |
 | Hardware decoding | ✅ D3D11VA (within 0.2 levels of the software reference), VideoToolbox and MediaCodec all confirmed on devices |
 | 10-bit sources | ✅ Wide-colour H.264 / HEVC fall back to software decoding where hardware decoding is unreliable, so progress without a picture no longer happens |
-| Subtitles | ✅ Embedded plus external SRT/ASS/VTT, code-page fallback for non-UTF-8 files, ASS styling (including inline `\fn`), bitmap subtitles |
+| Subtitles | ✅ Embedded plus external SRT/ASS/VTT, code-page fallback for non-UTF-8 files, ASS styling (including inline `\fn`, `\t`, `\clip`, `\p` and `\k`), bitmap subtitles |
 | SMB browsing / credential check / LAN scan | ✅ Read-only, share name typed by hand, no enumeration |
 | List thumbnails | ✅ First frame only, `LPT2` header on disk, requested for video rows only |
 | Folders full of FLV no longer hang | ✅ Three core defects plus one concurrency overload fixed |
@@ -214,7 +219,7 @@ on WASAPI shared mode and falls back to waveOut when the device cannot be opened
 
 ## Known limitations
 
-* ASS `\t` animation, `\clip`, vector drawing `\p` and karaoke `\k` are not rendered
+* ASS `\t` animation is interpolated linearly or with the `accel` curve; `\fade` inside `\t` and shape animations beyond `\clip` are not supported, and `\move` is still a static `\pos`.
   (every other inline tag is).
 * The server's share list is not enumerated; the share name has to be typed.
 * No AC3 / DTS passthrough to a receiver; HDR is decoded and shown as-is, without tone

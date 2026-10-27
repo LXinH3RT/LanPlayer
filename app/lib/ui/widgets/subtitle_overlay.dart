@@ -1,8 +1,10 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../../data/models.dart';
+import '../../data/subtitle_anim.dart';
 import 'video_surface.dart';
 
 /// 字幕渲染在 Flutter 这一层，不在内核里：文字在任何分辨率下都保持清晰，
@@ -28,7 +30,7 @@ import 'video_surface.dart';
 /// 第三层是 `textScaler`：`app/lib/main.dart` 把系统文字缩放钳到 1.3 倍，
 /// `Text` 会在这个字号基础上再乘一次。字幕要贴着画面走，不该跟着系统字号
 /// 变大，所以这里再除回去。
-class SubtitleOverlay extends StatelessWidget {
+class SubtitleOverlay extends StatefulWidget {
   const SubtitleOverlay({
     super.key,
     required this.cue,
@@ -59,6 +61,21 @@ class SubtitleOverlay extends StatelessWidget {
   /// em，量出来的墨迹高只比 em 略小（libass 0.933–0.942，Flutter/SimHei 约
   /// 0.95），所以系数取 1。
   static const double scriptToEm = 1.0;
+
+  @override
+  State<SubtitleOverlay> createState() => _SubtitleOverlayState();
+}
+
+class _SubtitleOverlayState extends State<SubtitleOverlay> {
+  SubtitleCue get cue => widget.cue;
+  double get scale => widget.scale;
+  int get scaleMode => widget.scaleMode;
+  double get videoAspectRatio => widget.videoAspectRatio;
+  double get safeArea => widget.safeArea;
+
+  /// 这条 Dialogue 里已经播过去的毫秒数。内核每 20ms 重发一次带 `now` 的
+  /// 事件（只在有动画/卡拉 OK 时），所以这里直接用内核给的时刻。
+  double get _nowMs => cue.nowUs / 1000.0;
 
   /// 视频画面在给定区域里实际占据的矩形（与 [VideoSurface] 的贴合规则一致）。
   static Rect videoRect(Size area, double aspectRatio, int mode) {
@@ -123,7 +140,11 @@ class SubtitleOverlay extends StatelessWidget {
     final style = styleOverride ?? cue.style;
     final fraction = style.fontScale > 0 ? style.fontScale : 0.05;
     final textScale = MediaQuery.textScalerOf(context).scale(10) / 10;
-    final raw = fraction * videoHeight * scriptToEm * scale * scaleFactor;
+    final raw = fraction *
+        videoHeight *
+        SubtitleOverlay.scriptToEm *
+        scale *
+        scaleFactor;
     return (raw / (textScale <= 0 ? 1 : textScale)).clamp(1.0, 400.0);
   }
 
@@ -189,8 +210,9 @@ class SubtitleOverlay extends StatelessWidget {
           ..strokeWidth = width * 2
           ..strokeJoin = StrokeJoin.round
           ..strokeCap = StrokeCap.round
-          ..color = Color(
-              outlineColorOverride != 0 ? outlineColorOverride : style.outlineColor),
+          ..color = Color(outlineColorOverride != 0
+              ? outlineColorOverride
+              : style.outlineColor),
       );
     }
 
@@ -229,8 +251,10 @@ class SubtitleOverlay extends StatelessWidget {
     SubtitleSpan r, {
     required bool outline,
     SubtitleStyle? styleOverride,
+    ResolvedSpan? resolved,
   }) {
     final style = styleOverride ?? cue.style;
+    final res = resolved ?? SubtitleAnimator.resolve(r, _nowMs);
     // A run's {\fs..} overwrites the size outright: the core normalises it to
     // a fraction of video height, so divide by the line style's fraction.
     final cueFraction = style.fontScale > 0 ? style.fontScale : 0.05;
@@ -238,14 +262,14 @@ class SubtitleOverlay extends StatelessWidget {
     final base = _base(
       context,
       videoHeight,
-      scaleFactor: r.scale > 0 ? r.scale / cueFraction : 1.0,
+      scaleFactor: res.scale > 0 ? res.scale / cueFraction : 1.0,
       outline: outline,
       fontOverride: r.font,
       // 行内 \bord 会覆盖整条字幕的描边粗细。
-      strokePx: r.border >= 0 ? r.border * unit : null,
+      strokePx: res.border >= 0 ? res.border * unit : null,
       // 行内 \3c 只改描边色，不影响文字主色。
-      outlineColorOverride: r.outlineColor,
-      spacing: r.spacing != 0 ? r.spacing : 0,
+      outlineColorOverride: res.outlineColor,
+      spacing: res.spacing != 0 ? res.spacing : 0,
       styleOverride: style,
     );
     final decorations = <TextDecoration>[
@@ -254,7 +278,13 @@ class SubtitleOverlay extends StatelessWidget {
     ];
     final bold = style.bold || r.bold;
     final italic = style.italic || r.italic;
-    final color = r.color != 0 ? Color(r.color) : Color(style.color);
+    var color = res.color != 0 ? Color(res.color) : Color(style.color);
+    if (r.karaokeKind != 0) {
+      color = _karaokeColor(color, style, res.karaoke, r.karaokeKind);
+    }
+    if (res.alpha < 1.0) {
+      color = color.withValues(alpha: color.a * res.alpha);
+    }
     return TextStyle(
       fontSize: base.fontSize,
       height: base.height,
@@ -272,6 +302,94 @@ class SubtitleOverlay extends StatelessWidget {
       color: outline ? null : color,
       foreground: outline ? base.foreground : null,
     );
+  }
+
+  /// 这条行里第一个带 `\clip` 的 run 的裁剪矩形（脚本坐标），没有就是 null。
+  ///
+  /// `\t(...\clip(...))` 的动画会改这个矩形，所以每帧都要重新解算。
+  List<double>? _clipOf(SubtitleLine line) {
+    for (final run in line.runs) {
+      if (run.drawingScale > 0) continue;
+      final r = SubtitleAnimator.resolve(run, _nowMs);
+      if (!r.clipOn || r.clip.length != 4) continue;
+      return r.clip;
+    }
+    return null;
+  }
+
+  /// 整条 cue 里所有矢量绘图 run。
+  /// 每个绘图 run 所属那一行的样式与位置。
+  ///
+  /// ASS 里 `\p1` 画出来的东西仍然属于某条 Dialogue：`\pos` / `n` /
+  /// 边距都照常作用于它，坐标是「以这一行的锚点为零点」的。把绘图当全域
+  /// 绝对坐标会把它钉在左上角，`\pos` 全然失效。
+  List<({SubtitleSpan run, SubtitleStyle style, SubtitleLine line})>
+      _drawingsWithPlacement() {
+    final out =
+        <({SubtitleSpan run, SubtitleStyle style, SubtitleLine line})>[];
+    for (final line in cue.lines) {
+      final style = _styleOf(line);
+      for (final run in line.runs) {
+        if (run.drawingScale > 0 && run.path.length >= 2) {
+          out.add((run: run, style: style, line: line));
+        }
+      }
+    }
+    return out;
+  }
+
+  /// 这组行里第一个带 `\clip` 的 run 的裁剪矩形（脚本坐标），没有就是 null。
+  List<double>? _clipOfLineGroup(List<SubtitleLine> lines) {
+    for (final line in lines) {
+      final c = _clipOf(line);
+      if (c != null) return c;
+    }
+    return null;
+  }
+
+  /// 把 [child] 裁到脚本坐标 [clip] 对应的那块区域里。
+  ///
+  /// `\clip` 是画面绝对坐标，而 [child] 是摆好位置之后的块，所以这里用
+  /// [ClipPath] 裁「整块画面上的一块」——把裁剪矩形换算成相对块的偏移。
+  Widget _clipWidget(
+    Widget child,
+    List<double> clip,
+    SubtitleStyle style,
+    double videoHeight,
+    Rect video,
+  ) {
+    final prx = style.playResX > 0 ? style.playResX : 1920.0;
+    final pry = style.playResY > 0 ? style.playResY : 1080.0;
+    final videoWidth = videoHeight * prx / pry;
+    final rect = Rect.fromLTRB(
+      clip[0] * videoWidth / prx,
+      clip[1] * videoHeight / pry,
+      clip[2] * videoWidth / prx,
+      clip[3] * videoHeight / pry,
+    );
+    if (rect.width <= 0 || rect.height <= 0) {
+      return const SizedBox.shrink();
+    }
+    // clip 给的是画面坐标，块本身尺寸未知，所以交给 _ClipRelative 在布局后
+    // 用 RenderBox 的全局位置换算。
+    return _ClipRelative(rect: rect, child: child);
+  }
+
+  /// 卡拉 OK 的逐字填色。
+  ///
+  /// libass 的规则（`.tools/tmp/libass/k_color.py` 实测过）：没唱到的字用
+  /// `SecondaryColour`，唱过之后渐变到 `PrimaryColour`；`\ko` 则是反过来
+  /// 让唱过的字淡出。头一段是 SecondaryColour，不是「半透明的原色」 ——
+  /// 上面这条差别在真实素材里一眼就能看出来。
+  Color _karaokeColor(Color base, SubtitleStyle style, double fill, int kind) {
+    final sung = Color(style.color);
+    final unsung = Color(style.secondaryColor);
+    if (kind == 3) {
+      // \ko: once the syllable has been sung it fades out instead of filling.
+      return base.withValues(alpha: base.a * (1.0 - 0.85 * fill));
+    }
+    final target = unsung == sung ? sung : unsung;
+    return Color.lerp(target, sung, fill) ?? sung;
   }
 
   /// 把一个 TextSpan 包成一层带描边/阴影/方框的 Widget。
@@ -329,8 +447,7 @@ class SubtitleOverlay extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: _crossAxisOf(align),
       children: [
-        for (final line in lines)
-          _lineBlock(context, videoHeight, line, align),
+        for (final line in lines) _lineBlock(context, videoHeight, line, align),
       ],
     );
   }
@@ -353,6 +470,10 @@ class SubtitleOverlay extends StatelessWidget {
       children.add(TextSpan(text: line.text, style: base));
     } else {
       for (final run in line.runs) {
+        // \p 画出来的图形没有文字，走 CustomPaint；它和文字共享同一条行的
+        // 对齐与位置，所以两边都放进同一个 Stack。
+        // \p 的图形是画面绝对坐标，交给 build 里的整幅画布处理。
+        if (run.drawingScale > 0 && run.path.length >= 2) continue;
         children.add(
           TextSpan(
             text: run.text,
@@ -400,6 +521,8 @@ class SubtitleOverlay extends StatelessWidget {
         ? layers.single
         : Stack(alignment: Alignment.center, children: layers);
     text = _decorateText(text, unit, style);
+    // \clip 的坐标是画面绝对坐标，必须等这一块摆到画面上之后再裁（见 _placed），
+    // 在 _lineBlock 里裁会被父容器的坐标系带偏。
 
     // \fscx / \fscy 与 \frz：整块文字一起变换（ASS 是逐字形缩放，这里按整块
     // 近似，差异只在多行混合缩放的极端情况下可见）。
@@ -508,7 +631,11 @@ class SubtitleOverlay extends StatelessWidget {
       final res = p.playResY > 0 ? p.playResY : 1080;
       final u = videoHeight / res;
 
-      final block = _paragraph(context, videoHeight, lines, align);
+      final clip = _clipOfLineGroup(lines);
+      Widget block = _paragraph(context, videoHeight, lines, align);
+      if (clip != null) {
+        block = _clipWidget(block, clip, style, videoHeight, video);
+      }
 
       if (p.posX >= 0 && p.posY >= 0) {
         final anchor = _anchorFor(align);
@@ -575,7 +702,18 @@ class SubtitleOverlay extends StatelessWidget {
                 top: video.top,
                 width: video.width,
                 height: video.height,
-                child: Stack(children: _placed(context, videoHeight, video)),
+                child: Stack(children: [
+                  ..._placed(context, videoHeight, video),
+                  if (_drawingsWithPlacement().isNotEmpty)
+                    Positioned.fill(
+                      child: CustomPaint(
+                        painter: _DrawingsPainter(
+                          items: _drawingsWithPlacement(),
+                          nowMs: _nowMs,
+                        ),
+                      ),
+                    ),
+                ]),
               ),
             ],
           );
@@ -627,4 +765,138 @@ class _Placement {
   final double playResY;
 
   String get key => '$align|$posX|$posY|$marginL|$marginR|$marginV|$playResY';
+}
+
+/// 把子节点裁到「画面坐标系里的一个矩形」。
+///
+/// 子节点的位置由 `_placed` 决定（可能是 `Positioned` + 对齐），布局阶段拿不到
+/// 它在画面里的绝对位置，所以这里用 `Stack` + `Positioned` 的已知偏移在
+/// 布局后由 [RenderClipRelative] 换算：先在 `paint` 里取块的全局矩形的父级
+/// 坐标系，再把 `rect` 转成局部坐标。
+class _ClipRelative extends SingleChildRenderObjectWidget {
+  const _ClipRelative({required this.rect, required Widget child})
+      : super(child: child);
+
+  final Rect rect;
+
+  @override
+  _RenderClipRelative createRenderObject(BuildContext context) =>
+      _RenderClipRelative(rect);
+
+  @override
+  void updateRenderObject(
+      BuildContext context, _RenderClipRelative renderObject) {
+    renderObject.rect = rect;
+  }
+}
+
+class _RenderClipRelative extends RenderProxyBox {
+  _RenderClipRelative(this._rect);
+
+  Rect _rect;
+
+  set rect(Rect value) {
+    if (value == _rect) return;
+    _rect = value;
+    markNeedsPaint();
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    if (child == null) return;
+    // 这一块在画面坐标系里的起点 = offset（父级已把块摆好）。
+    final local = _rect.shift(-offset);
+    context.pushClipRect(needsCompositing, offset, local,
+        (inner, innerOffset) => super.paint(inner, innerOffset));
+  }
+}
+
+/// 一条 cue 里所有 `{\p1}...{\p0}` 画出来的图形。
+///
+/// 绘图不参与文字排版（没有字宽、没有折行），但它仍然属于某条 Dialogue：
+/// `\pos` / `\an` / 边距决定它的原点，坐标本身是脚本单位。所以它单独画在
+/// 画面矩形这一层，而不是塞进某一行文字的 Widget 树里。
+class _DrawingsPainter extends CustomPainter {
+  _DrawingsPainter({required this.items, required this.nowMs});
+
+  final List<({SubtitleSpan run, SubtitleStyle style, SubtitleLine line})>
+      items;
+  final double nowMs;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final item in items) {
+      final style = item.style;
+      final run = item.run;
+      final prx = style.playResX > 0 ? style.playResX : 1920.0;
+      final pry = style.playResY > 0 ? style.playResY : 1080.0;
+      final res = SubtitleAnimator.resolve(run, nowMs);
+      // `\p<n>` 的坐标单位是 `2^(n-1)` 个脚本像素：`\p1` 原样，每加一档
+      // 坐标值减半（libass 实测 `\p2` 画出的宽度正好是 `\p1` 的一半）。
+      final k = math.pow(2, 1 - run.drawingScale).toDouble();
+      final sx = size.width / prx * k;
+      final sy = size.height / pry * k;
+
+      // 先在脚本坐标里把图形摆到它该在的位置，再一次性换算成像素。
+      final origin = _origin(item.line, style, prx, pry);
+      final path = Path();
+      var started = false;
+      var sub = -1;
+      for (final pt in run.path) {
+        final x = (origin.dx + pt.x / k) * sx;
+        final y = (origin.dy + pt.y / k) * sy;
+        if (pt.sub != sub) {
+          if (started) path.close();
+          sub = pt.sub;
+          path.moveTo(x, y);
+          started = true;
+        } else if (started) {
+          path.lineTo(x, y);
+        }
+      }
+      if (!started) continue;
+      path.close();
+
+      var color = res.color != 0 ? Color(res.color) : Color(style.color);
+      if (res.alpha < 1.0) {
+        color = color.withValues(alpha: color.a * res.alpha);
+      }
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.fill,
+      );
+    }
+  }
+
+  /// 绘图坐标系的原点（脚本单位）。
+  ///
+  /// `\pos` 给定的是「这一行的对齐点」的坐标；没有 `\pos` 时按 `\an` 与
+  /// 边距从画面边缘推算。`\an7`（左上）是最常见的写法，此时原点就等于
+  /// `\pos`，与 libass 一致。
+  static Offset _origin(
+      SubtitleLine line, SubtitleStyle style, double prx, double pry) {
+    final align = (line.align ?? style.align).clamp(1, 9);
+    final horizontal = (align - 1) % 3; // 0 左 1 中 2 右
+    final vertical = (align - 1) ~/ 3; // 0 下 1 中 2 上
+    final posX = line.posX ?? style.posX;
+    final posY = line.posY ?? style.posY;
+    final marginL = line.marginL ?? style.marginL;
+    final marginR = line.marginR ?? style.marginR;
+    final marginV = line.marginV ?? style.marginV;
+    final x = posX >= 0
+        ? posX * prx
+        : (horizontal == 0
+            ? marginL
+            : (horizontal == 2 ? prx - marginR : prx / 2));
+    final y = posY >= 0
+        ? posY * pry
+        : (vertical == 2 ? marginV : (vertical == 0 ? pry - marginV : pry / 2));
+    return Offset(x, y);
+  }
+
+  @override
+  bool shouldRepaint(_DrawingsPainter oldDelegate) =>
+      oldDelegate.nowMs != nowMs || oldDelegate.items != items;
 }

@@ -42,6 +42,19 @@ typedef struct AssCtx {
 static int sub_compile_text(const char *in, LpSubCue *cue, const AssCtx *ctx);
 static int track_add_cue_full(LpSubtitleTrack *t, LpSubCue *src);
 
+/* A cue may be nothing but a `\p1` vector drawing: no glyphs at all.  Such a
+ * cue is legitimate (wipe masks, logos, borders) and must survive the
+ * "is there anything to show" test in both the parse and the packet path. */
+static int has_drawing_runs(const LpSubCue *cue)
+{
+    for (int i = 0; i < cue->nb_runs; i++) {
+        if (cue->runs[i].nb_path > 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 
 /* -------------------------------------------------------- graphics overlay --- */
 
@@ -67,6 +80,8 @@ static void cue_free(LpSubCue *c)
     c->text = NULL;
     for (int i = 0; i < c->nb_runs; i++) {
         free(c->runs[i].text);
+        free(c->runs[i].anims);
+        free(c->runs[i].path);
     }
     free(c->runs);
     c->runs = NULL;
@@ -362,6 +377,9 @@ static void style_default(LpSubStyle *s)
     memset(s, 0, sizeof(*s));
     snprintf(s->name, sizeof(s->name), "Default");
     s->color = 0xFFFFFFFF;
+    /* SecondaryColour is what a karaoke syllable wears *before* it is sung;
+     * plain white is the safe default when the style line omits it. */
+    s->secondary_color = 0xFFFFFFFF;
     s->outline_color = 0xFF000000;
     s->back_color = 0xFF000000;
     s->outline_width = 1;
@@ -379,6 +397,7 @@ static void style_default(LpSubStyle *s)
     s->pos_y = -1.0;
     s->font_scale = 0.05;
     s->play_res_y = 1080.0;
+    s->play_res_x = 1920.0;
     snprintf(s->font_name, sizeof(s->font_name), "sans-serif");
 }
 
@@ -401,8 +420,17 @@ static LpSubStyle *track_style(LpSubtitleTrack *t, int idx)
  * *src.  A graphics cue (bitmaps only) is valid without any text. */
 static int track_add_cue_full(LpSubtitleTrack *t, LpSubCue *src)
 {
+    /* 只有 \p1 矢量绘图、没有文字的 Dialogue 也是有效字幕（wipe、图形
+     * 遮罩、无字的卷首版式全靠它）。判据里必须带上绘图 run，否则整条
+     * 被丢掉，用户只能看到一片空白。 */
     int has_text = src->text && *src->text;
-    if (!has_text && src->nb_bitmaps == 0) {
+    int has_drawing = 0;
+    for (int i = 0; i < src->nb_runs && !has_drawing; i++) {
+        if (src->runs[i].nb_path > 0) {
+            has_drawing = 1;
+        }
+    }
+    if (!has_text && !has_drawing && src->nb_bitmaps == 0) {
         return -1;
     }
     if (src->end_us <= src->start_us) {
@@ -661,6 +689,26 @@ typedef struct SubRunState {
     int border;        /* script units, -1 = inherit */
     int shadow;        /* script units, -1 = inherit */
     char font_name[64]; /* empty = inherit the cue style */
+    double alpha;       /* 0..1, 1 = opaque */
+    /* Karaoke: \k/\kf/\ko accrue durations as the line is walked, so every
+     * run knows which slice of the cue it is sung on. */
+    double karaoke_cursor_ms;
+    double karaoke_pending_ms;
+    int karaoke_pending_kind;
+    /* \t animations collected on the current run. */
+    LpSubAnim *anims;
+    int nb_anims;
+    int cap_anims;
+    /* \clip rectangle in script units. */
+    int clip_on;
+    int clip_inverse;
+    double clip_x1, clip_y1, clip_x2, clip_y2;
+    /* \p<n> drawing state. */
+    int drawing_scale;
+    LpSubPathPoint *path;
+    int nb_path;
+    int cap_path;
+    int path_sub;      /* current subpath index for \p drawings */
 } SubRunState;
 
 typedef struct SubRich {
@@ -681,6 +729,8 @@ static void sub_rich_init(SubRich *b, LpSubCue *cue)
      * absent {\bord} cannot be confused with an explicit {\bord0}. */
     b->st.border = -1;
     b->st.shadow = -1;
+    b->st.alpha = 1.0;
+    b->st.clip_x1 = b->st.clip_y1 = b->st.clip_x2 = b->st.clip_y2 = 0.0;
     lp_str_init(&b->plain);
 }
 
@@ -689,10 +739,37 @@ static void sub_rich_free(SubRich *b)
     lp_str_free(&b->plain);
     for (int i = 0; i < b->nb; i++) {
         free(b->runs[i].text);
+        free(b->runs[i].anims);
+        free(b->runs[i].path);
     }
     free(b->runs);
+    free(b->st.anims);
+    free(b->st.path);
+    b->st.anims = NULL;
+    b->st.path = NULL;
+    b->st.nb_anims = b->st.cap_anims = 0;
+    b->st.nb_path = b->st.cap_path = 0;
     b->runs = NULL;
     b->nb = b->cap = 0;
+}
+
+/* Two runs can only be merged when every rendered property matches; missing a
+ * field here silently collapses two differently styled spans into one. */
+static int run_state_matches(const LpSubRun *r, const SubRunState *st)
+{
+    return r->flags == st->flags && r->color == st->color &&
+           r->outline_color == st->outline_color &&
+           r->back_color == st->back_color &&
+           r->font_scale == st->font_scale && r->scale_x == st->scale_x &&
+           r->scale_y == st->scale_y && r->spacing == st->spacing &&
+           r->angle == st->angle && r->border == st->border &&
+           r->shadow == st->shadow && r->alpha == st->alpha &&
+           r->karaoke_kind == st->karaoke_pending_kind &&
+           r->clip_on == st->clip_on && r->clip_inverse == st->clip_inverse &&
+           r->clip_x1 == st->clip_x1 && r->clip_y1 == st->clip_y1 &&
+           r->clip_x2 == st->clip_x2 && r->clip_y2 == st->clip_y2 &&
+           r->drawing_scale == st->drawing_scale &&
+           !strcmp(r->font_name, st->font_name);
 }
 
 static int sub_rich_append(SubRich *b, const char *text, size_t len)
@@ -709,11 +786,11 @@ static int sub_rich_append(SubRich *b, const char *text, size_t len)
     lp_str_append(&b->plain, "%.*s", (int)len, text);
     if (b->nb > 0) {
         LpSubRun *last = &b->runs[b->nb - 1];
-        if (last->flags == b->st.flags && last->color == b->st.color &&
-            last->outline_color == b->st.outline_color &&
-            last->back_color == b->st.back_color &&
-            last->font_scale == b->st.font_scale &&
-            !strcmp(last->font_name, b->st.font_name)) {
+        /* A pending karaoke duration means the next glyphs are the ones that
+         * have to be timed, so they need a run of their own: merging them into
+         * the previous syllable dropped every \k after the first. */
+        if (run_state_matches(last, &b->st) && last->nb_anims == 0 &&
+            b->st.karaoke_pending_kind == 0) {
             size_t old = strlen(last->text);
             char *grown = realloc(last->text, old + len + 1);
             if (!grown) {
@@ -753,7 +830,49 @@ static int sub_rich_append(SubRich *b, const char *text, size_t len)
     r->angle = b->st.angle;
     r->border = b->st.border;
     r->shadow = b->st.shadow;
+    r->alpha = b->st.alpha;
+    r->clip_on = b->st.clip_on;
+    r->clip_inverse = b->st.clip_inverse;
+    r->clip_x1 = b->st.clip_x1;
+    r->clip_y1 = b->st.clip_y1;
+    r->clip_x2 = b->st.clip_x2;
+    r->clip_y2 = b->st.clip_y2;
+    r->drawing_scale = b->st.drawing_scale;
     snprintf(r->font_name, sizeof(r->font_name), "%s", b->st.font_name);
+    /* Karaoke: the duration collected before this run applies to the glyphs
+     * that start here.  \k fills per syllable, \ko fades out afterwards. */
+    if (b->st.karaoke_pending_kind) {
+        r->karaoke_kind = b->st.karaoke_pending_kind;
+        r->karaoke_start_ms = b->st.karaoke_cursor_ms;
+        b->st.karaoke_cursor_ms += b->st.karaoke_pending_ms;
+        r->karaoke_end_ms = b->st.karaoke_cursor_ms;
+        b->st.karaoke_pending_kind = 0;
+        b->st.karaoke_pending_ms = 0;
+    }
+    /* A run inherits the animations that were in force when its text started.
+     * Copying (rather than sharing) keeps freeing trivial. */
+    if (b->st.nb_anims > 0) {
+        r->anims = malloc((size_t)b->st.nb_anims * sizeof(LpSubAnim));
+        if (!r->anims) {
+            free(r->text);
+            r->text = NULL;
+            return -1;
+        }
+        memcpy(r->anims, b->st.anims, (size_t)b->st.nb_anims * sizeof(LpSubAnim));
+        r->nb_anims = b->st.nb_anims;
+    }
+    if (b->st.nb_path > 0) {
+        r->path = malloc((size_t)b->st.nb_path * sizeof(LpSubPathPoint));
+        if (!r->path) {
+            free(r->text);
+            free(r->anims);
+            r->text = NULL;
+            r->anims = NULL;
+            return -1;
+        }
+        memcpy(r->path, b->st.path, (size_t)b->st.nb_path * sizeof(LpSubPathPoint));
+        r->nb_path = b->st.nb_path;
+    }
     b->nb++;
     return 0;
 }
@@ -788,7 +907,185 @@ static int tag_has_arg(const char *p)
     return isdigit((unsigned char)*p) || *p == '-' || *p == '+' || *p == '.';
 }
 
+/* --- \t animations ------------------------------------------------------ */
+
+/* Appends one animation to the state.  \t repeats accumulate: each one runs on
+ * its own window and the last finished value wins, which is close enough to
+ * libass for the reveal effects scripts actually use. */
+static int anim_add(SubRunState *st, const LpSubAnim *a)
+{
+    if (st->nb_anims == st->cap_anims) {
+        int cap = st->cap_anims ? st->cap_anims * 2 : 4;
+        LpSubAnim *grown = realloc(st->anims, (size_t)cap * sizeof(LpSubAnim));
+        if (!grown) {
+            return -1;
+        }
+        st->anims = grown;
+        st->cap_anims = cap;
+    }
+    st->anims[st->nb_anims++] = *a;
+    return 0;
+}
+
+/* Parses the "t1,t2,accel" prefix of \t.  Any part can be omitted:
+ * \t(tags) means "animate over the whole cue", \t(t1,tags) starts at t1. */
+static void anim_window(const char **pp, LpSubAnim *a, double cue_len_ms)
+{
+    const char *p = *pp;
+    a->t1_ms = 0.0;
+    a->t2_ms = cue_len_ms > 0 ? cue_len_ms : 0.0;
+    a->accel = 0.0;
+    if (isdigit((unsigned char)*p) || *p == '-' || *p == '+') {
+        double v = atof(p);
+        while (*p && *p != ',' && *p != ')') {
+            p++;
+        }
+        a->t1_ms = v;
+    }
+    if (*p == ',') {
+        p++;
+        if (isdigit((unsigned char)*p) || *p == '-' || *p == '+') {
+            double v = atof(p);
+            while (*p && *p != ',' && *p != ')') {
+                p++;
+            }
+            a->t2_ms = v;
+        }
+        if (*p == ',') {
+            p++;
+            if (isdigit((unsigned char)*p) || *p == '-' || *p == '+') {
+                a->accel = atof(p);
+                while (*p && *p != '(' && *p != '\\' && *p != '}' && *p != ')') {
+                    p++;
+                }
+            }
+        }
+    }
+    *pp = p;
+}
+
+/* --- \p vector drawings ------------------------------------------------- */
+
+/* Part of a `\p<n>` path.  `m` starts a new subpath, `l` adds a line, `b`
+ * adds a cubic spline end point (the two control points matter for the curve
+ * but the renderer flattens using the end point only, so they are stored as
+ * the preceding nodes and the contour keeps its shape). */
+enum { PATH_MOVE = 0, PATH_LINE = 1, PATH_CURVE = 2 };
+
+static int path_push(SubRunState *st, int kind, double x, double y)
+{
+    if (st->nb_path > 0) {
+        LpSubPathPoint *last = &st->path[st->nb_path - 1];
+        if (kind != PATH_MOVE && last->x == x && last->y == y) {
+            return 0; /* zero-length segment, would only add noise */
+        }
+    }
+    if (kind == PATH_MOVE) {
+        st->path_sub++;
+    }
+    if (st->nb_path == st->cap_path) {
+        int cap = st->cap_path ? st->cap_path * 2 : 16;
+        LpSubPathPoint *grown =
+            realloc(st->path, (size_t)cap * sizeof(LpSubPathPoint));
+        if (!grown) {
+            return -1;
+        }
+        st->path = grown;
+        st->cap_path = cap;
+    }
+    LpSubPathPoint *pt = &st->path[st->nb_path];
+    pt->sub = st->path_sub;
+    pt->x = x;
+    pt->y = y;
+    st->nb_path++;
+    return 0;
+}
+
+/* Reads the numeric arguments of a drawing command until the next command
+ * letter.  ASS drawings are space separated, but "100 -1 l 200 13" and
+ * "100,-1" both occur in the wild. */
+static int path_numbers(const char **pp, double *out, int max)
+{
+    const char *p = *pp;
+    int n = 0;
+    while (n < max) {
+        while (*p == ' ' || *p == ',' || *p == '\t' || *p == '\r' || *p == '\n') {
+            p++;
+        }
+        if (!(isdigit((unsigned char)*p) || *p == '-' || *p == '+' || *p == '.')) {
+            break;
+        }
+        out[n++] = atof(p);
+        while (isdigit((unsigned char)*p) || *p == '-' || *p == '+' || *p == '.' ||
+               *p == 'e' || *p == 'E') {
+            p++;
+        }
+    }
+    *pp = p;
+    return n;
+}
+
+/* Walks one drawing chunk ("m 200 -1 l 200 13 b 14 12 14 6 14 6").  Curves are
+ * flattened to their end point: the renderer draws polylines, and at the size
+ * ASS titles are used the missing control points are not visible. */
+static int path_consume(SubRunState *st, const char *s)
+{
+    const char *p = s;
+    while (*p) {
+        while (*p == ' ' || *p == ',' || *p == '\t' || *p == '\r' || *p == '\n') {
+            p++;
+        }
+        if (!*p) {
+            break;
+        }
+        char cmd = *p;
+        if (cmd == 'm' || cmd == 'n' || cmd == 'l' || cmd == 'b' || cmd == 's' ||
+            cmd == 'p' || cmd == 'c') {
+            p++;
+        } else if (isdigit((unsigned char)*p) || *p == '-' || *p == '+' || *p == '.') {
+            cmd = 'l'; /* implicit lineto after the closing point of a subpath */
+        } else {
+            p++;
+            continue;
+        }
+        double v[8];
+        int want = (cmd == 'b') ? 6 : (cmd == 's' ? 4 : 2);
+        for (;;) {
+            int n = path_numbers(&p, v, want);
+            if (n < want) {
+                break;
+            }
+            if (cmd == 'm' || cmd == 'n') {
+                if (path_push(st, PATH_MOVE, v[0], v[1]) != 0) {
+                    return -1;
+                }
+                /* Extra pairs after `m` are implicit lineto commands. */
+                cmd = 'l';
+                want = 2;
+            } else if (cmd == 'b') {
+                if (path_push(st, PATH_CURVE, v[4], v[5]) != 0) {
+                    return -1;
+                }
+            } else if (cmd == 's') {
+                if (path_push(st, PATH_CURVE, v[2], v[3]) != 0) {
+                    return -1;
+                }
+            } else if (cmd == 'l') {
+                if (path_push(st, PATH_LINE, v[0], v[1]) != 0) {
+                    return -1;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+    return 0;
+}
+
 /* {\b1\i1\c&H0000FF&\fs48\an8\pos(960,80)} -> run state / cue overrides. */
+static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b);
+static int sub_rich_flush_drawing(SubRich *b);
+
 static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
 {
     const char *p = tags;
@@ -868,6 +1165,33 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
             }
             break;
         case 'c': {
+            /* \clip(x1,y1,x2,y2) and \clip(m 100 0 l 200 0 ...) share the
+             * leading letter with \c, so it has to be checked first. */
+            if (!strncmp(p, "lip", 3)) {
+                p += 3;
+                if (*p == '(') {
+                    p++;
+                    double v[4];
+                    int n = path_numbers(&p, v, 4);
+                    if (n >= 4) {
+                        b->st.clip_on = 1;
+                        b->st.clip_x1 = v[0];
+                        b->st.clip_y1 = v[1];
+                        b->st.clip_x2 = v[2];
+                        b->st.clip_y2 = v[3];
+                    }
+                    /* A vector clip (``\clip(1,m 0 0 l ...)'') is not a
+                     * rectangle; skipping it is better than clipping the
+                     * whole line away. */
+                    while (*p && *p != ')' && *p != '\\' && *p != '}') {
+                        p++;
+                    }
+                    if (*p == ')') {
+                        p++;
+                    }
+                }
+                break;
+            }
             const char *start = p;
             while (*p && *p != '\\' && *p != '}') {
                 p++;
@@ -882,10 +1206,11 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
             /* ASS 的四个通道各有归属：\1c 主色、\2c 次色、\3c 描边、
              * \4c 背景（\3c 最常用，写成 {\3c&H...&} 是给描边上色的标准
              * 做法，不能被当成主色）。 */
+            /* An empty value means "no change"; a parsed colour is always
+             * taken literally.  \1c&HFFFFFF& really is white — treating it
+             * as "inherit" silently dropped the most common karaoke and
+             * fade-to-white animation there is. */
             uint32_t parsed = n ? ass_color(color) : 0;
-            if (parsed == 0xFFFFFFFF) {
-                parsed = 0; /* \c&HFFFFFF& is the default: inherit */
-            }
             switch (channel) {
             case 2:
                 /* \2c is the "secondary colour" used by karaoke fills; the
@@ -968,12 +1293,195 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
                         b->cue->align_override = a;
                     }
                 }
+            } else if (!strncmp(p, "lpha", 4) || channel == 1) {
+                /* \alpha&H80& and \1a&H80& both mean "text opacity"; ASS
+                 * stores the inverse of alpha, so FF (transparent) -> 0.0
+                 * and 00 (opaque) -> 1.0.  \2a/\3a/\4a target the other
+                 * slots, which the Flutter renderer does not paint. */
+                if (!strncmp(p, "lpha", 4)) {
+                    p += 4;
+                }
+                const char *start = p;
+                while (*p && *p != '\\' && *p != '}') {
+                    p++;
+                }
+                char buf[32];
+                size_t n = (size_t)(p - start);
+                if (n >= sizeof(buf)) {
+                    n = sizeof(buf) - 1;
+                }
+                memcpy(buf, start, n);
+                buf[n] = '\0';
+                if (n > 0) {
+                    unsigned long raw = 0;
+                    const char *d = buf;
+                    if (*d == '&') {
+                        d++;
+                        if (*d == 'H' || *d == 'h') {
+                            d++;
+                        }
+                        raw = strtoul(d, NULL, 16);
+                    } else {
+                        raw = strtoul(d, NULL, 10);
+                    }
+                    /* \alpha&H80& carries a single bytes worth of alpha, not
+                     * the high byte of a colour: taking (raw >> 24) made every
+                     * two-digit value look fully opaque, which is why fade-ins
+                     * never appeared.  An eight-digit value is a whole colour
+                     * and does put the alpha in the top byte. */
+                    unsigned aa = raw > 0xFFul ? (unsigned)((raw >> 24) & 0xFFu)
+                                               : (unsigned)(raw & 0xFFu);
+                    b->st.alpha = 1.0 - (double)aa / 255.0;
+                }
             } else {
                 while (*p && *p != '\\' && *p != '}') {
                     p++;
                 }
             }
             break;
+        case 'k':
+            /* \k<cs> plain karaoke, \kf sweep, \ko outline fade, \K = \kf.
+             * The number is centiseconds and applies to the glyphs that
+             * follow, so it is only parked in the state until the next run
+             * is appended. */
+            {
+                int kind = 1;
+                if (*p == 'f' || *p == 'F') {
+                    kind = 2;
+                    p++;
+                } else if (*p == 'o' || *p == 'O') {
+                    kind = 3;
+                    p++;
+                }
+                if (tag_number(&p, &num) == 0 && num >= 0) {
+                    b->st.karaoke_pending_kind = kind;
+                    b->st.karaoke_pending_ms = num * 10.0; /* cs -> ms */
+                }
+            }
+            break;
+        case 'K':
+            if (tag_number(&p, &num) == 0 && num >= 0) {
+                b->st.karaoke_pending_kind = 2;
+                b->st.karaoke_pending_ms = num * 10.0;
+            }
+            break;
+        case 't': {
+            /* \t(<tags>) / \t(<t1>,<tags>) / \t(<t1>,<t2>,<accel>,<tags>)
+             *
+             * The inner tags are parsed against a copy of the current state
+             * and only the fields that actually changed become animated. That
+             * keeps \t(\1c&HFFFFFF&) from also freezing the font size, which
+             * is what would happen if the whole state were snapshotted. */
+            const char *inner = NULL;
+            if (*p == '(') {
+                p++;
+                LpSubAnim a;
+                memset(&a, 0, sizeof(a));
+                anim_window(&p, &a, b->cue ? (double)(b->cue->end_us - b->cue->start_us) / 1000.0 : 0.0);
+                while (*p == ',' || *p == ' ') {
+                    p++;
+                }
+                if (*p != ')' && *p != '\0') {
+                    const char *start = p;
+                    int depth = 1;
+                    while (*p) {
+                        if (*p == '(') {
+                            depth++;
+                        } else if (*p == ')') {
+                            depth--;
+                            if (depth == 0) {
+                                break;
+                            }
+                        }
+                        p++;
+                    }
+                    inner = start;
+                    size_t n = (size_t)(p - start);
+                    char *tags = malloc(n + 3);
+                    if (tags) {
+                        tags[0] = '{';
+                        memcpy(tags + 1, inner, n);
+                        tags[n + 1] = '}';
+                        tags[n + 2] = '\0';
+                        SubRunState tmp = b->st;
+                        tmp.anims = NULL;
+                        tmp.nb_anims = tmp.cap_anims = 0;
+                        tmp.path = NULL;
+                        tmp.nb_path = tmp.cap_path = 0;
+                        tmp.path_sub = b->st.path_sub;
+                        tmp.karaoke_pending_kind = 0;
+                        tmp.karaoke_pending_ms = 0.0;
+                        SubRich shim;
+                        memset(&shim, 0, sizeof(shim));
+                        shim.cue = b->cue;
+                        shim.st = tmp;
+                        shim.st.border = -1;
+                        shim.st.shadow = -1;
+                        apply_override(tags, ctx, &shim);
+                        SubRunState *r = &shim.st;
+                        if (r->color != tmp.color) {
+                            a.fields |= LP_SUB_ANIM_COLOR;
+                            a.color = r->color;
+                        }
+                        if (r->scale_x != tmp.scale_x) {
+                            a.fields |= LP_SUB_ANIM_SCALE_X;
+                            a.scale_x = r->scale_x;
+                        }
+                        if (r->scale_y != tmp.scale_y) {
+                            a.fields |= LP_SUB_ANIM_SCALE_Y;
+                            a.scale_y = r->scale_y;
+                        }
+                        if (r->font_scale != tmp.font_scale) {
+                            a.fields |= LP_SUB_ANIM_FONT;
+                            a.font_scale = r->font_scale;
+                        }
+                        if (r->angle != tmp.angle) {
+                            a.fields |= LP_SUB_ANIM_ANGLE;
+                            a.angle = r->angle;
+                        }
+                        if (r->spacing != tmp.spacing) {
+                            a.fields |= LP_SUB_ANIM_SPACING;
+                            a.spacing = r->spacing;
+                        }
+                        if (r->border != tmp.border) {
+                            a.fields |= LP_SUB_ANIM_BORDER;
+                            a.border = r->border;
+                        }
+                        if (r->shadow != tmp.shadow) {
+                            a.fields |= LP_SUB_ANIM_SHADOW;
+                            a.shadow = r->shadow;
+                        }
+                        if (r->alpha != tmp.alpha) {
+                            a.fields |= LP_SUB_ANIM_ALPHA;
+                            a.alpha = r->alpha;
+                        }
+                        if (r->clip_on && (!tmp.clip_on ||
+                                           r->clip_x2 != tmp.clip_x2 ||
+                                           r->clip_x1 != tmp.clip_x1)) {
+                            a.fields |= LP_SUB_ANIM_CLIP;
+                            a.clip_on = r->clip_on;
+                            a.clip_x1 = r->clip_x1;
+                            a.clip_y1 = r->clip_y1;
+                            a.clip_x2 = r->clip_x2;
+                            a.clip_y2 = r->clip_y2;
+                        }
+                        if (a.fields) {
+                            anim_add(&b->st, &a);
+                        }
+                        free(tags);
+                    }
+                    if (*p == ')') {
+                        p++;
+                    }
+                }
+            } else {
+                /* \t without parentheses is malformed; skip to the next tag. */
+                while (*p && *p != '\\' && *p != '}') {
+                    p++;
+                }
+            }
+            break;
+        }
         case 'p':
             if (!strncmp(p, "os(", 3)) {
                 /* \pos(x,y) in script resolution units. */
@@ -995,7 +1503,27 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
                 break;
             }
             if (tag_number(&p, &num) == 0) {
-                b->drawing = num != 0;
+                int scale = (int)num;
+                if (scale > 0) {
+                    /* Entering drawing mode.  The exponent says how many
+                     * script units one drawing pixel is worth, so the shape
+                     * has to be scaled on screen by 2^scale relative to the
+                     * text coordinate system. */
+                    if (!b->drawing) {
+                        b->st.nb_path = 0;
+                        b->st.path_sub = -1;
+                    }
+                    b->drawing = 1;
+                    b->st.drawing_scale = scale;
+                } else {
+                    if (b->st.nb_path > 0) {
+                        sub_rich_flush_drawing(b);
+                    }
+                    b->drawing = 0;
+                    /* \p0 ends the shape; the scale has to go with it or the
+                     * text that follows inherits "drawing" and is dropped. */
+                    b->st.drawing_scale = 0;
+                }
             }
             break;
         case 'r': {
@@ -1022,7 +1550,14 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
             b->st.angle = 0;
             b->st.border = -1;
             b->st.shadow = -1;
+            b->st.alpha = 1.0;
             b->st.font_name[0] = '\0';
+            b->st.clip_on = 0;
+            b->st.nb_path = 0;
+            b->st.path_sub = -1;
+            b->st.drawing_scale = 0;
+            b->st.karaoke_pending_kind = 0;
+            b->st.karaoke_pending_ms = 0.0;
             b->cue->align_override = 0;
             (void)name; /* named style switching is left to the cue style */
             break;
@@ -1053,6 +1588,68 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
     }
 }
 
+
+/* A finished vector drawing becomes a drawable run of its own: the renderer
+ * needs the point list, the fill colour and the scale, not the command text. */
+static int sub_rich_flush_drawing(SubRich *b)
+{
+    if (b->st.nb_path < 2) {
+        b->st.nb_path = 0;
+        b->st.path_sub = -1;
+        return 0;
+    }
+    if (b->nb == b->cap) {
+        int cap = b->cap ? b->cap * 2 : 8;
+        LpSubRun *grown = realloc(b->runs, (size_t)cap * sizeof(LpSubRun));
+        if (!grown) {
+            return -1;
+        }
+        b->runs = grown;
+        b->cap = cap;
+    }
+    LpSubRun *r = &b->runs[b->nb];
+    memset(r, 0, sizeof(*r));
+    r->text = strdup("");
+    if (!r->text) {
+        return -1;
+    }
+    r->flags = b->st.flags;
+    r->color = b->st.color ? b->st.color : 0xFFFFFFFF;
+    r->outline_color = b->st.outline_color;
+    r->back_color = b->st.back_color;
+    r->font_scale = b->st.font_scale;
+    r->scale_x = b->st.scale_x;
+    r->scale_y = b->st.scale_y;
+    r->angle = b->st.angle;
+    r->border = b->st.border;
+    r->shadow = b->st.shadow;
+    r->alpha = b->st.alpha;
+    r->drawing_scale = b->st.drawing_scale;
+    snprintf(r->font_name, sizeof(r->font_name), "%s", b->st.font_name);
+    r->clip_on = b->st.clip_on;
+    r->clip_inverse = b->st.clip_inverse;
+    r->clip_x1 = b->st.clip_x1;
+    r->clip_y1 = b->st.clip_y1;
+    r->clip_x2 = b->st.clip_x2;
+    r->clip_y2 = b->st.clip_y2;
+    if (b->st.nb_anims > 0) {
+        r->anims = malloc((size_t)b->st.nb_anims * sizeof(LpSubAnim));
+        if (!r->anims) {
+            free(r->text);
+            r->text = NULL;
+            return -1;
+        }
+        memcpy(r->anims, b->st.anims, (size_t)b->st.nb_anims * sizeof(LpSubAnim));
+        r->nb_anims = b->st.nb_anims;
+    }
+    r->path = b->st.path;
+    r->nb_path = b->st.nb_path;
+    b->st.path = NULL;
+    b->st.nb_path = b->st.cap_path = 0;
+    b->st.path_sub = -1;
+    b->nb++;
+    return 0;
+}
 
 /* Compiles one dialogue body into cue->text plus (when the line actually
  * changes style mid-sentence) cue->runs.  Returns 0, or -1 on OOM. */
@@ -1137,7 +1734,13 @@ static int sub_compile_text(const char *in, LpSubCue *cue, const AssCtx *ctx)
             p++;
         }
         if (p > start) {
-            if (!b.drawing && sub_rich_append(&b, start, (size_t)(p - start)) != 0) {
+            if (b.drawing) {
+                /* Inside {\p1} the body is a shape description, not text. */
+                if (path_consume(&b.st, start) != 0) {
+                    rc = -1;
+                    break;
+                }
+            } else if (sub_rich_append(&b, start, (size_t)(p - start)) != 0) {
                 rc = -1;
                 break;
             }
@@ -1175,7 +1778,12 @@ static int sub_compile_text(const char *in, LpSubCue *cue, const AssCtx *ctx)
         for (int i = 0; i < b.nb; i++) {
             if (b.runs[i].flags || b.runs[i].color || b.runs[i].outline_color ||
                 b.runs[i].back_color || b.runs[i].font_scale != 0 ||
-                b.runs[i].font_name[0]) {
+                b.runs[i].font_name[0] || b.runs[i].scale_x != 0.0 ||
+                b.runs[i].scale_y != 0.0 || b.runs[i].spacing != 0.0 ||
+                b.runs[i].angle != 0.0 || b.runs[i].border >= 0 ||
+                b.runs[i].shadow >= 0 || b.runs[i].alpha != 1.0 ||
+                b.runs[i].karaoke_kind || b.runs[i].nb_anims > 0 ||
+                b.runs[i].nb_path > 0 || b.runs[i].clip_on) {
                 styled = 1;
                 break;
             }
@@ -1207,15 +1815,61 @@ static int merge_cue_into(SubRich *dst, LpSubCue *src)
     }
     if (src->nb_runs > 0 && src->runs) {
         for (int i = 0; i < src->nb_runs; i++) {
-            dst->st.flags = src->runs[i].flags;
-            dst->st.color = src->runs[i].color;
-            dst->st.outline_color = src->runs[i].outline_color;
-            dst->st.back_color = src->runs[i].back_color;
-            dst->st.font_scale = src->runs[i].font_scale;
+            LpSubRun *run = &src->runs[i];
+            dst->st.flags = run->flags;
+            dst->st.color = run->color;
+            dst->st.outline_color = run->outline_color;
+            dst->st.back_color = run->back_color;
+            dst->st.font_scale = run->font_scale;
+            dst->st.scale_x = run->scale_x;
+            dst->st.scale_y = run->scale_y;
+            dst->st.spacing = run->spacing;
+            dst->st.angle = run->angle;
+            dst->st.border = run->border;
+            dst->st.shadow = run->shadow;
+            dst->st.alpha = run->alpha;
+            dst->st.clip_on = run->clip_on;
+            dst->st.clip_inverse = run->clip_inverse;
+            dst->st.clip_x1 = run->clip_x1;
+            dst->st.clip_y1 = run->clip_y1;
+            dst->st.clip_x2 = run->clip_x2;
+            dst->st.clip_y2 = run->clip_y2;
+            dst->st.drawing_scale = run->drawing_scale;
             snprintf(dst->st.font_name, sizeof(dst->st.font_name), "%s",
-                     src->runs[i].font_name);
-            if (sub_rich_append(dst, src->runs[i].text, strlen(src->runs[i].text)) != 0) {
+                     run->font_name);
+            /* The karaoke cursor and the animation list are positional: the
+             * merge helper must not inherit them, or run i+1 would restart
+             * where run i ended.  sub_rich_append re-copies the animation
+             * list from dst->st.anims, so keep that in sync below. */
+            dst->st.nb_anims = 0;
+            dst->st.nb_path = 0;
+            if (sub_rich_append(dst, run->text, strlen(run->text)) != 0) {
                 return -1;
+            }
+            /* Now graft the source run's payload onto the run we just built. */
+            LpSubRun *made = &dst->runs[dst->nb - 1];
+            if (run->nb_anims > 0) {
+                free(made->anims);
+                made->anims = malloc((size_t)run->nb_anims * sizeof(LpSubAnim));
+                if (!made->anims) {
+                    made->nb_anims = 0;
+                    return -1;
+                }
+                memcpy(made->anims, run->anims, (size_t)run->nb_anims * sizeof(LpSubAnim));
+                made->nb_anims = run->nb_anims;
+            }
+            made->karaoke_kind = run->karaoke_kind;
+            made->karaoke_start_ms = run->karaoke_start_ms;
+            made->karaoke_end_ms = run->karaoke_end_ms;
+            if (run->nb_path > 0) {
+                free(made->path);
+                made->path = malloc((size_t)run->nb_path * sizeof(LpSubPathPoint));
+                if (!made->path) {
+                    made->nb_path = 0;
+                    return -1;
+                }
+                memcpy(made->path, run->path, (size_t)run->nb_path * sizeof(LpSubPathPoint));
+                made->nb_path = run->nb_path;
             }
         }
     } else if (src->text) {
@@ -1224,6 +1878,17 @@ static int merge_cue_into(SubRich *dst, LpSubCue *src)
         dst->st.outline_color = 0;
         dst->st.back_color = 0;
         dst->st.font_scale = 0;
+        dst->st.scale_x = 0;
+        dst->st.scale_y = 0;
+        dst->st.spacing = 0;
+        dst->st.angle = 0;
+        dst->st.border = -1;
+        dst->st.shadow = -1;
+        dst->st.alpha = 1.0;
+        dst->st.clip_on = 0;
+        dst->st.drawing_scale = 0;
+        dst->st.nb_anims = 0;
+        dst->st.nb_path = 0;
         dst->st.font_name[0] = '\0';
         if (sub_rich_append(dst, src->text, strlen(src->text)) != 0) {
             return -1;
@@ -1234,6 +1899,17 @@ static int merge_cue_into(SubRich *dst, LpSubCue *src)
     dst->st.outline_color = 0;
     dst->st.back_color = 0;
     dst->st.font_scale = 0;
+    dst->st.scale_x = 0;
+    dst->st.scale_y = 0;
+    dst->st.spacing = 0;
+    dst->st.angle = 0;
+    dst->st.border = -1;
+    dst->st.shadow = -1;
+    dst->st.alpha = 1.0;
+    dst->st.clip_on = 0;
+    dst->st.drawing_scale = 0;
+    dst->st.nb_anims = 0;
+    dst->st.nb_path = 0;
     dst->st.font_name[0] = '\0';
     return 0;
 }
@@ -1431,7 +2107,7 @@ static int parse_ass(const char *text, LpSubtitleTrack *t, char *err, size_t err
     }
     /* Style format map. */
     int f_name = -1, f_font = -1, f_size = -1, f_color = -1, f_bold = -1, f_italic = -1;
-    int f_outline = -1, f_outcolor = -1, f_align = -1;
+    int f_outline = -1, f_outcolor = -1, f_align = -1, f_seccolor = -1;
     int f_backcolor = -1, f_shadow = -1, f_border = -1, f_spacing = -1;
     int f_scalex = -1, f_scaley = -1, f_angle = -1;
     int f_ml = -1, f_mr = -1, f_mv = -1;
@@ -1473,6 +2149,7 @@ static int parse_ass(const char *text, LpSubtitleTrack *t, char *err, size_t err
                 else if (!strcmp(fields[i], "Fontname")) f_font = i;
                 else if (!strcmp(fields[i], "Fontsize")) f_size = i;
                 else if (!strcmp(fields[i], "PrimaryColour")) f_color = i;
+                else if (!strcmp(fields[i], "SecondaryColour")) f_seccolor = i;
                 else if (!strcmp(fields[i], "BackColour")) f_backcolor = i;
                 else if (!strcmp(fields[i], "Bold")) f_bold = i;
                 else if (!strcmp(fields[i], "Italic")) f_italic = i;
@@ -1513,7 +2190,11 @@ static int parse_ass(const char *text, LpSubtitleTrack *t, char *err, size_t err
                 s->font_scale = atof(fields[f_size]) / play_h;
             }
             s->play_res_y = play_h;
+            s->play_res_x = play_w;
             if (f_color >= 0) s->color = ass_color(fields[f_color]);
+            if (f_seccolor >= 0) {
+                s->secondary_color = ass_color(fields[f_seccolor]);
+            }
             if (f_outcolor >= 0) s->outline_color = ass_color(fields[f_outcolor]);
             if (f_backcolor >= 0) s->back_color = ass_color(fields[f_backcolor]);
             if (f_bold >= 0) s->bold = atoi(fields[f_bold]) != 0;
@@ -2021,7 +2702,7 @@ void lp_subtitle_feed_packet(LpPlayer *p, int stream_index, AVPacket *pkt)
             merged.nb = merged.cap = 0;
         }
         int has_text = cue.text && *cue.text;
-        if (has_text || cue.nb_bitmaps > 0) {
+        if (has_text || cue.nb_bitmaps > 0 || has_drawing_runs(&cue)) {
             if (track_add_cue_full(t, &cue) == 0) {
                 keep = 1;
             }
@@ -2076,6 +2757,8 @@ static void append_style_json(LpStr *s, const LpSubStyle *st)
     lp_str_append(s, "\"color\":%u,\"outline_color\":%u,\"back_color\":%u,",
                   (unsigned)st->color, (unsigned)st->outline_color,
                   (unsigned)st->back_color);
+    /* Karaoke needs the "not yet sung" colour as well as the primary one. */
+    lp_str_append(s, "\"secondary_color\":%u,", (unsigned)st->secondary_color);
     lp_str_append(s, "\"outline\":%d,\"shadow\":%d,\"border_style\":%d,",
                   st->outline_width, st->shadow, st->border_style);
     lp_str_append(s, "\"spacing\":%.4f,\"scale_x\":%.4f,\"scale_y\":%.4f,\"angle\":%.4f,",
@@ -2084,20 +2767,23 @@ static void append_style_json(LpStr *s, const LpSubStyle *st)
                   st->margin_l, st->margin_r, st->margin_v);
     lp_str_append(s, "\"align\":%d,\"font_scale\":%.6f,\"play_res_y\":%.2f,",
                   st->align, st->font_scale, st->play_res_y);
+    /* \clip and \p coordinates are in script units on both axes; the width
+     * cannot be derived from the height when the script is not 16:9. */
+    lp_str_append(s, "\"play_res_x\":%.2f,", st->play_res_x);
     lp_str_append(s, "\"pos_x\":%.4f,\"pos_y\":%.4f,", st->pos_x, st->pos_y);
     lp_str_append(s, "\"font\":");
     lp_str_append_json_str(s, st->font_name);
 }
 
 static void emit_subtitle(LpPlayer *p, const char *text, int64_t start_us, int64_t end_us,
-                          const LpSubStyle *st, const char *runs_json)
+                          int64_t now_cue_us, const LpSubStyle *st, const char *runs_json)
 {
     LpStr s;
     lp_str_init(&s);
     lp_str_append(&s, "{\"text\":");
     lp_str_append_json_str(&s, text);
-    lp_str_append(&s, ",\"start\":%lld,\"end\":%lld,\"style\":{", (long long)start_us,
-                  (long long)end_us);
+    lp_str_append(&s, ",\"start\":%lld,\"end\":%lld,\"now\":%lld,\"style\":{",
+                  (long long)start_us, (long long)end_us, (long long)now_cue_us);
     append_style_json(&s, st);
     lp_str_append(&s, "}");
     if (runs_json && *runs_json) {
@@ -2192,6 +2878,76 @@ static void append_runs_json(LpStr *out, LpSubtitleTrack *t, const int *idx, int
                     lp_str_append(out, ",\"font\":");
                     lp_str_append_json_str(out, r->font_name);
                 }
+                if (r->alpha != 1.0) {
+                    lp_str_append(out, ",\"alpha\":%.4f", r->alpha);
+                }
+                if (r->karaoke_kind) {
+                    lp_str_append(out,
+                                  ",\"karaoke\":%d,\"karaoke_start\":%.2f,\"karaoke_end\":%.2f",
+                                  r->karaoke_kind, r->karaoke_start_ms,
+                                  r->karaoke_end_ms);
+                }
+                if (r->clip_on) {
+                    lp_str_append(out,
+                                  ",\"clip\":[%.2f,%.2f,%.2f,%.2f],\"clip_inverse\":%s",
+                                  r->clip_x1, r->clip_y1, r->clip_x2, r->clip_y2,
+                                  r->clip_inverse ? "true" : "false");
+                }
+                if (r->nb_anims > 0) {
+                    lp_str_append(out, ",\"anims\":[");
+                    for (int a = 0; a < r->nb_anims; a++) {
+                        LpSubAnim *an = &r->anims[a];
+                        if (a > 0) {
+                            lp_str_append(out, ",");
+                        }
+                        lp_str_append(out, "{\"t1\":%.2f,\"t2\":%.2f,\"accel\":%.2f,\"f\":%u",
+                                      an->t1_ms, an->t2_ms, an->accel,
+                                      (unsigned)an->fields);
+                        if (an->fields & LP_SUB_ANIM_COLOR) {
+                            lp_str_append(out, ",\"color\":%u", (unsigned)an->color);
+                        }
+                        if (an->fields & LP_SUB_ANIM_SCALE_X) {
+                            lp_str_append(out, ",\"scale_x\":%.4f", an->scale_x);
+                        }
+                        if (an->fields & LP_SUB_ANIM_SCALE_Y) {
+                            lp_str_append(out, ",\"scale_y\":%.4f", an->scale_y);
+                        }
+                        if (an->fields & LP_SUB_ANIM_FONT) {
+                            lp_str_append(out, ",\"scale\":%.6f", an->font_scale);
+                        }
+                        if (an->fields & LP_SUB_ANIM_ANGLE) {
+                            lp_str_append(out, ",\"angle\":%.4f", an->angle);
+                        }
+                        if (an->fields & LP_SUB_ANIM_SPACING) {
+                            lp_str_append(out, ",\"spacing\":%.4f", an->spacing);
+                        }
+                        if (an->fields & LP_SUB_ANIM_BORDER) {
+                            lp_str_append(out, ",\"border\":%d", an->border);
+                        }
+                        if (an->fields & LP_SUB_ANIM_SHADOW) {
+                            lp_str_append(out, ",\"shadow\":%d", an->shadow);
+                        }
+                        if (an->fields & LP_SUB_ANIM_ALPHA) {
+                            lp_str_append(out, ",\"alpha\":%.4f", an->alpha);
+                        }
+                        if (an->fields & LP_SUB_ANIM_CLIP) {
+                            lp_str_append(out,
+                                          ",\"clip\":[%.2f,%.2f,%.2f,%.2f]",
+                                          an->clip_x1, an->clip_y1, an->clip_x2,
+                                          an->clip_y2);
+                        }
+                        lp_str_append(out, "}");
+                    }
+                    lp_str_append(out, "]");
+                }
+                if (r->nb_path > 0) {
+                    lp_str_append(out, ",\"draw\":%d,\"path\":[", r->drawing_scale);
+                    for (int q = 0; q < r->nb_path; q++) {
+                        lp_str_append(out, "%s[%d,%.2f,%.2f]", q ? "," : "",
+                                      r->path[q].sub, r->path[q].x, r->path[q].y);
+                    }
+                    lp_str_append(out, "]");
+                }
                 lp_str_append(out, "}");
             }
             lp_str_append(out, "]");
@@ -2211,7 +2967,7 @@ void lp_subtitle_tick(LpPlayer *p, int64_t now_us)
                 overlay_reset(&p->subs.overlay);
             }
             pthread_mutex_unlock(&p->subs.mutex);
-            emit_subtitle(p, "", 0, 0, &(LpSubStyle){0}, NULL);
+            emit_subtitle(p, "", 0, 0, 0, &(LpSubStyle){0}, NULL);
             return;
         }
         if (p->subs.overlay.nb > 0) {
@@ -2243,7 +2999,7 @@ void lp_subtitle_tick(LpPlayer *p, int64_t now_us)
         if (was_dirty) {
             /* Switching to a graphics track must clear whatever text the
              * previous track left on screen. */
-            emit_subtitle(p, "", 0, 0, &(LpSubStyle){0}, NULL);
+            emit_subtitle(p, "", 0, 0, 0, &(LpSubStyle){0}, NULL);
         }
         return;
     }
@@ -2290,12 +3046,33 @@ void lp_subtitle_tick(LpPlayer *p, int64_t now_us)
     if (nb_hits > 0) {
         append_runs_json(&runs, t, hits, nb_hits);
     }
-    int changed = (found != t->current_cue) || p->subs.dirty;
+    /* \t and \k are time driven: the renderer needs the cue-relative clock and
+     * a fresh event on every tick while such a cue is on screen.  Repainting
+     * 50 times a second for a static line would be waste, so the animated flag
+     * is collected while the runs are serialised. */
+    int animated = 0;
+    for (int k = 0; k < nb_hits && !animated; k++) {
+        LpSubCue *c = &t->cues[hits[k]];
+        for (int i = 0; i < c->nb_runs; i++) {
+            if (c->runs[i].nb_anims > 0 || c->runs[i].karaoke_kind) {
+                animated = 1;
+                break;
+            }
+        }
+    }
+    int changed = (found != t->current_cue) || p->subs.dirty || animated;
+    int64_t cue_now_us = 0;
+    if (found >= 0) {
+        cue_now_us = t_now - t->cues[found].start_us;
+        if (cue_now_us < 0) {
+            cue_now_us = 0;
+        }
+    }
     t->current_cue = found;
     pthread_mutex_unlock(&p->subs.mutex);
 
     if (changed) {
-        emit_subtitle(p, text.p ? text.p : "", start_us, end_us, &style,
+        emit_subtitle(p, text.p ? text.p : "", start_us, end_us, cue_now_us, &style,
                       runs.p ? runs.p : NULL);
         pthread_mutex_lock(&p->subs.mutex);
         p->subs.dirty = 0;
@@ -2365,5 +3142,73 @@ int lp_sub_test_parse_runs(const char *dialogue_text, int run_index,
     if (color) *color = c;
     if (outline_color) *outline_color = o;
     if (back_color) *back_color = k;
+    return 0;
+}
+
+/* 测试入口：编一段 ASS 行，把第 run_index 个 run 的时间类特性（动画条数、
+ * 首条动画的窗口与字段、卡拉 OK 区间、\clip 矩形、矢量点列）抄出来。仅供
+ * native/tests/lp_subanim_test.c 使用。 */
+int lp_sub_test_parse_anim(const char *dialogue_text, int run_index,
+                           int64_t cue_dur_us, LpSubTestAnim *out)
+{
+    if (!out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    /* A line whose only tags leave it fully opaque produces no styled run at
+     * all, and "no run" means "plain text with the default look" -- fully
+     * opaque.  Report that instead of the zeroed struct. */
+    out->alpha = 1.0;
+    LpSubStyle base;
+    style_default(&base);
+    LpSubCue cue;
+    memset(&cue, 0, sizeof(cue));
+    cue.end_us = cue_dur_us > 0 ? cue_dur_us : 1000000;
+    AssCtx ctx;
+    ctx.play_w = 384.0;
+    ctx.play_h = 288.0;
+    ctx.base = &base;
+    int rc = sub_compile_text(dialogue_text, &cue, &ctx);
+    if (rc != 0) {
+        cue_free(&cue);
+        return -1;
+    }
+    out->nb_runs = cue.nb_runs;
+    if (run_index >= 0 && run_index < cue.nb_runs) {
+        LpSubRun *r = &cue.runs[run_index];
+        out->nb_anims = r->nb_anims;
+        if (r->nb_anims > 0 && r->anims) {
+            out->anim_t1 = r->anims[0].t1_ms;
+            out->anim_t2 = r->anims[0].t2_ms;
+            out->anim_accel = r->anims[0].accel;
+            out->anim_fields = r->anims[0].fields;
+            out->anim_color = r->anims[0].color;
+            out->anim_scale_x = r->anims[0].scale_x;
+            out->anim_scale_y = r->anims[0].scale_y;
+            out->anim_alpha = r->anims[0].alpha;
+            out->anim_clip_on = r->anims[0].clip_on;
+            out->anim_clip_x1 = r->anims[0].clip_x1;
+            out->anim_clip_x2 = r->anims[0].clip_x2;
+        }
+        out->karaoke_kind = r->karaoke_kind;
+        out->karaoke_start_ms = r->karaoke_start_ms;
+        out->karaoke_end_ms = r->karaoke_end_ms;
+        out->alpha = r->alpha;
+        out->clip_on = r->clip_on;
+        out->clip_x1 = r->clip_x1;
+        out->clip_y1 = r->clip_y1;
+        out->clip_x2 = r->clip_x2;
+        out->clip_y2 = r->clip_y2;
+        out->drawing_scale = r->drawing_scale;
+        out->nb_path = r->nb_path;
+        if (r->nb_path > 0 && r->path) {
+            out->path_x0 = r->path[0].x;
+            out->path_y0 = r->path[0].y;
+            out->path_last_x = r->path[r->nb_path - 1].x;
+            out->path_last_y = r->path[r->nb_path - 1].y;
+            out->nb_subpaths = r->path[r->nb_path - 1].sub + 1;
+        }
+    }
+    cue_free(&cue);
     return 0;
 }

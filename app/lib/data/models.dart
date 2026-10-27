@@ -528,6 +528,7 @@ class SubtitleStyle {
   final bool underline;
   final bool strikeout;
   final int color; // 0xAARRGGBB
+  final int secondaryColor; // 卡拉 OK 未唱部分的颜色
   final int outlineColor;
   final int backColor; // BorderStyle 3/4 的方框底色
   final int outline;
@@ -543,6 +544,7 @@ class SubtitleStyle {
   final int align; // ASS 1..9
   final double fontScale;
   final double playResY; // 脚本分辨率高度，margin/描边按它折算成像素
+  final double playResX; // 脚本分辨率宽度，\clip 与 \p 的 x 坐标按它折算
   final double posX;
   final double posY;
   final String font;
@@ -554,6 +556,7 @@ class SubtitleStyle {
     this.strikeout = false,
     this.color = 0xFFFFFFFF,
     this.outlineColor = 0xFF000000,
+    this.secondaryColor = 0xFFFFFFFF,
     this.backColor = 0xFF000000,
     this.outline = 1,
     this.shadow = 0,
@@ -568,6 +571,7 @@ class SubtitleStyle {
     this.align = 2,
     this.fontScale = 0.05,
     this.playResY = 1080,
+    this.playResX = 1920,
     this.posX = -1,
     this.posY = -1,
     this.font = 'sans-serif',
@@ -580,6 +584,7 @@ class SubtitleStyle {
         strikeout: j['strikeout'] == true,
         color: (j['color'] as num?)?.toInt() ?? 0xFFFFFFFF,
         outlineColor: (j['outline_color'] as num?)?.toInt() ?? 0xFF000000,
+        secondaryColor: (j['secondary_color'] as num?)?.toInt() ?? 0xFFFFFFFF,
         backColor: (j['back_color'] as num?)?.toInt() ?? 0xFF000000,
         outline: (j['outline'] as num?)?.toInt() ?? 1,
         shadow: (j['shadow'] as num?)?.toInt() ?? 0,
@@ -594,6 +599,7 @@ class SubtitleStyle {
         align: (j['align'] as num?)?.toInt() ?? 2,
         fontScale: (j['font_scale'] as num?)?.toDouble() ?? 0.05,
         playResY: (j['play_res_y'] as num?)?.toDouble() ?? 1080,
+        playResX: (j['play_res_x'] as num?)?.toDouble() ?? 1920,
         posX: (j['pos_x'] as num?)?.toDouble() ?? -1,
         posY: (j['pos_y'] as num?)?.toDouble() ?? -1,
         font: j['font'] as String? ?? 'sans-serif',
@@ -626,6 +632,31 @@ class SubtitleSpan {
   final int shadow; // 脚本单位，-1 = 继承
   final String font; // '' = inherit from the cue style
 
+  /// 整段文字的不透明度，1.0 = 不变。`\alpha` / `\1a` 给的是透明度，
+  /// 内核已经换算成透明度反转后的值。
+  final double alpha;
+
+  /// 卡拉 OK：`kind` 1 = `\k` 逐字填色、2 = `\kf`、3 = `\ko` 逐字淡出。
+  /// 起止时间是**这条 Dialogue 内的相对毫秒**。
+  final int karaokeKind;
+  final double karaokeStart;
+  final double karaokeEnd;
+
+  /// `\t(...)` 动画。播放时要按当前时刻求值，所以整条留到渲染层算。
+  final List<SubtitleAnim> anims;
+
+  /// `\clip(x1,y1,x2,y2)`，脚本坐标。
+  final List<double> clip;
+  final bool clipInverse;
+
+  /// `\clip` 是否生效（`	` 的动画里可以打开/关掉裁剪）。
+  bool get clipOn => clip.length == 4;
+
+  /// `\p<n>` 矢量绘图：`drawingScale` 是 `\p` 的指数，`path` 是折线点列，
+  /// 每个点自带子路径编号（`m` 开启一条新子路径）。
+  final int drawingScale;
+  final List<SubtitlePathPoint> path;
+
   const SubtitleSpan({
     required this.text,
     this.bold = false,
@@ -643,6 +674,15 @@ class SubtitleSpan {
     this.border = -1,
     this.shadow = -1,
     this.font = '',
+    this.alpha = 1.0,
+    this.karaokeKind = 0,
+    this.karaokeStart = 0,
+    this.karaokeEnd = 0,
+    this.anims = const [],
+    this.clip = const [],
+    this.clipInverse = false,
+    this.drawingScale = 0,
+    this.path = const [],
   });
 
   factory SubtitleSpan.fromJson(Map<String, dynamic> j) => SubtitleSpan(
@@ -662,6 +702,117 @@ class SubtitleSpan {
         border: (j['border'] as num?)?.toInt() ?? -1,
         shadow: (j['shadow'] as num?)?.toInt() ?? -1,
         font: j['font'] as String? ?? '',
+        alpha: (j['alpha'] as num?)?.toDouble() ?? 1.0,
+        karaokeKind: (j['karaoke'] as num?)?.toInt() ?? 0,
+        karaokeStart: (j['karaoke_start'] as num?)?.toDouble() ?? 0,
+        karaokeEnd: (j['karaoke_end'] as num?)?.toDouble() ?? 0,
+        anims: j['anims'] is List
+            ? (j['anims'] as List)
+                .whereType<Map<String, dynamic>>()
+                .map(SubtitleAnim.fromJson)
+                .toList(growable: false)
+            : const [],
+        clip: j['clip'] is List
+            ? (j['clip'] as List)
+                .whereType<num>()
+                .map((e) => e.toDouble())
+                .toList(growable: false)
+            : const [],
+        clipInverse: j['clip_inverse'] == true,
+        drawingScale: (j['draw'] as num?)?.toInt() ?? 0,
+        path: j['path'] is List
+            ? (j['path'] as List)
+                .whereType<List<dynamic>>()
+                .map(SubtitlePathPoint.fromJson)
+                .toList(growable: false)
+            : const [],
+      );
+}
+
+/// 矢量绘图的一个顶点。`sub` 是同一条 `m` 里的子路径编号，用来断开折线。
+class SubtitlePathPoint {
+  final int sub;
+  final double x;
+  final double y;
+
+  const SubtitlePathPoint(
+      {required this.sub, required this.x, required this.y});
+
+  factory SubtitlePathPoint.fromJson(List<dynamic> j) => SubtitlePathPoint(
+        sub: (j.isNotEmpty ? j[0] as num : 0).toInt(),
+        x: (j.length > 1 ? j[1] as num : 0).toDouble(),
+        y: (j.length > 2 ? j[2] as num : 0).toDouble(),
+      );
+}
+
+/// 一个 `\t(t1,t2,accel,tags)` 动画。字段用位掩码标出「这次动画改了什么」，
+/// 没标到的字段沿用 run 自己的值。
+class SubtitleAnim {
+  const SubtitleAnim({
+    this.t1 = 0,
+    this.t2 = 0,
+    this.accel = 0,
+    this.fields = 0,
+    this.color = 0,
+    this.scaleX = 0,
+    this.scaleY = 0,
+    this.scale = 0,
+    this.angle = 0,
+    this.spacing = 0,
+    this.border = -1,
+    this.shadow = -1,
+    this.alpha = 1.0,
+    this.clip = const [],
+  });
+
+  final double t1;
+  final double t2;
+  final double accel;
+  final int fields;
+  final int color;
+  final double scaleX;
+  final double scaleY;
+  final double scale;
+  final double angle;
+  final double spacing;
+  final int border;
+  final int shadow;
+  final double alpha;
+  final List<double> clip;
+
+  static const int fieldColor = 0x1;
+  static const int fieldScaleX = 0x2;
+  static const int fieldScaleY = 0x4;
+  static const int fieldFont = 0x8;
+  static const int fieldAngle = 0x10;
+  static const int fieldSpacing = 0x20;
+  static const int fieldBorder = 0x40;
+  static const int fieldShadow = 0x80;
+  static const int fieldAlpha = 0x100;
+  static const int fieldClip = 0x200;
+
+  bool has(int bit) => (fields & bit) != 0;
+
+  factory SubtitleAnim.fromJson(Map<String, dynamic> j) => SubtitleAnim(
+        t1: (j['t1'] as num?)?.toDouble() ?? 0,
+        t2: (j['t2'] as num?)?.toDouble() ?? 0,
+        accel: (j['accel'] as num?)?.toDouble() ?? 0,
+        fields: (j['f'] as num?)?.toInt() ?? 0,
+        color: (j['color'] as num?)?.toInt() ?? 0,
+        scaleX: (j['scale_x'] as num?)?.toDouble() ?? 0,
+        scaleY: (j['scale_y'] as num?)?.toDouble() ?? 0,
+        scale: (j['scale'] as num?)?.toDouble() ?? 0,
+        angle: (j['angle'] as num?)?.toDouble() ?? 0,
+        spacing: (j['spacing'] as num?)?.toDouble() ?? 0,
+        border: (j['border'] as num?)?.toInt() ?? -1,
+        shadow: (j['shadow'] as num?)?.toInt() ?? -1,
+        alpha: (j['alpha'] as num?)?.toDouble() ?? 1.0,
+        clip: j['clip'] is List
+            ? (j['clip'] as List)
+                .whereType<num>()
+                .map((e) => e.toDouble())
+                .toList(growable: false)
+            : const [],
       );
 }
 
@@ -711,9 +862,8 @@ class SubtitleLine {
               .map(SubtitleSpan.fromJson)
               .toList(growable: false)
           : const [],
-      style: style is Map<String, dynamic>
-          ? SubtitleStyle.fromJson(style)
-          : null,
+      style:
+          style is Map<String, dynamic> ? SubtitleStyle.fromJson(style) : null,
       align: (j['align'] as num?)?.toInt(),
       marginL: (j['margin_l'] as num?)?.toDouble(),
       marginR: (j['margin_r'] as num?)?.toDouble(),
@@ -742,7 +892,14 @@ class SubtitleLine {
             r.angle != 0 ||
             r.border >= 0 ||
             r.shadow >= 0 ||
-            r.font.isNotEmpty,
+            r.font.isNotEmpty ||
+            // 高级特性同样算「这一行有内联样式」：只带 lpha / \clip /
+            // \p 或卡拉 OK 的行，整行退回纯文本就把这些效果全丢了。
+            r.alpha < 1.0 ||
+            r.karaokeKind != 0 ||
+            r.anims.isNotEmpty ||
+            r.clipOn ||
+            r.drawingScale > 0,
       );
 
   /// 这一行是否自己指定了位置/对齐（否则跟 cue 走）。
@@ -761,12 +918,17 @@ class SubtitleCue {
   final SubtitleStyle style;
   final List<SubtitleLine> lines;
 
+  /// 这条 Dialogue 里已经播过去的微秒数（内核随事件下发）。`\t` 动画和
+  /// `\k` 卡拉 OK 都要靠它求值；0 表示「刚开始」。
+  final int nowUs;
+
   const SubtitleCue({
     required this.text,
     required this.startUs,
     required this.endUs,
     required this.style,
     this.lines = const [],
+    this.nowUs = 0,
   });
 
   static const empty = SubtitleCue(
@@ -790,8 +952,20 @@ class SubtitleCue {
               .map(SubtitleLine.fromJson)
               .toList(growable: false)
           : const [],
+      nowUs: (j['now'] as num?)?.toInt() ?? 0,
     );
   }
+
+  /// 同一时刻再生成一份，只换 `nowUs`。播放器每个 POSITION 周期都要重算
+  /// 动画，复用解析好的 lines 比重新 fromJson 便宜得多。
+  SubtitleCue at(int nowUs) => SubtitleCue(
+        text: text,
+        startUs: startUs,
+        endUs: endUs,
+        style: style,
+        lines: lines,
+        nowUs: nowUs,
+      );
 
   bool get isEmpty => text.trim().isEmpty;
 }

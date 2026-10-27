@@ -126,8 +126,15 @@ Windows 上线程原语由 `platform/desktop/win32_pthread.h` 提供（SRWLOCK/C
   ASS 行，复用 ASS 解析器提取起止时间与文本。
 * 外挂字幕：`lp_subtitle_add_file` 通过 `LpIo` **直接读 SMB 上的文件**，不落地临时文件。
   编码识别顺序：UTF-8 BOM → UTF-16 BOM → 合法 UTF-8 → GB18030（iconv）→ 原样标记告警。
-* 渲染在 Flutter：内核只发 `{text,start,end,style}`，UI 用 `Text` + 阴影描边绘制，
-  任意分辨率清晰、跟随系统字号，且不额外占一张纹理。图形字幕（PGS/VobSub）当前跳过。
+* 渲染在 Flutter：内核只发 `{text,start,end,style,runs,now}`，UI 用 `Text` + 阴影描边绘制，
+  任意分辨率清晰、跟随系统字号，且不额外占一张纹理。图形字幕（PGS/VobSub）由内核在
+  CPU 上混合进画面。
+* 富文本与特效都在内核解析、宿主解算：每个 run 带自己的字体/颜色/描边/字号/缩放的
+  同时，还带 `anims`（`\t` 的窗口与目标字段）、`clip`（`\clip` 矩形）、`path`（`\p`
+  路径点列）与卡拉 OK 时间片。事件里的 `now` 是「这条字幕已经过去多久」，宿主据此
+  在 `app/lib/data/subtitle_anim.dart` 里插值出当前帧的样子；带特效的字幕由 tick
+  线程每 20 ms 重发一次。
+* 只有矢量图形、没有文字的 Dialogue 也算有效字幕（wipe 揭示、无字版式）。
 
 ## 9. 失败降级
 

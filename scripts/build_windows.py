@@ -298,6 +298,13 @@ def main() -> int:
                       "subcolour test"):
         return 1
 
+    # \t 动画、\clip 裁剪、\p 矢量绘图、\k 卡拉 OK：这四类标签以前全被
+    # default 分支整体跳过，用户看到的就是「不渲染」。用例覆盖窗口解析、嵌套
+    # 标签不外泄、多子路径、卡拉 OK 累计时长。
+    if not build_test("lp_subanim_test.exe", native / "tests" / "lp_subanim_test.c",
+                      "subtitle animation test"):
+        return 1
+
     # Loads lanplayer.dll at runtime and drives the texture path, exactly like
     # the Flutter Windows plugin does.  It also compiles the plugin's own
     # BGRA->RGBA header, so a regression in that conversion fails here instead

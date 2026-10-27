@@ -216,6 +216,7 @@ REQUIRED = [
     "docs/images/ipad-player.png",
     "docs/images/desktop-subtitle-fonts.jpg",
     "docs/images/desktop-subtitle-sheet.jpg",
+    "docs/images/desktop-ass-advanced.png",
 ]
 
 def check_texture_colors() -> None:
@@ -1761,6 +1762,141 @@ def check_subtitle_fonts() -> None:
                  "and \\pos per dialogue, BorderStyle 3 boxes")
 
 
+def check_subtitle_advanced() -> None:
+    r"""Guard the four ASS features that used to be parsed and then dropped.
+
+    	 animations, \clip clipping, \p vector drawings and \k karaoke were all
+    recognised by the tag scanner and then thrown away, so a file that leans on
+    them looked like plain centred text.  Each feature needs a link from the
+    core's parser all the way to the painter; every link can regress on its own.
+    """
+    core = ROOT / "native" / "src" / "core" / "subtitle.c"
+    header = ROOT / "native" / "src" / "player_internal.h"
+    test = ROOT / "native" / "tests" / "lp_subanim_test.c"
+    if not test.exists():
+        problems.append(
+            "native/tests/lp_subanim_test.c is missing; nothing keeps the "
+            "ASS advanced tags from being dropped again")
+    if header.exists():
+        ht = header.read_text(encoding="utf-8")
+        for token, why in (
+            ("LP_SUB_ANIM_COLOR", "the animation field mask"),
+            ("typedef struct LpSubAnim", "the animation record"),
+            ("typedef struct LpSubPathPoint", "the drawing point list"),
+            ("int karaoke_kind;", "the karaoke slice"),
+            ("double karaoke_start_ms;", "the karaoke slice start"),
+            ("int clip_on;", "the clip rectangle"),
+        ):
+            if token not in ht:
+                problems.append(
+                    f"player_internal.h lost {token} ({why}); a subtitle "
+                    f"using it would silently fall back to plain text")
+    if core.exists():
+        ct = core.read_text(encoding="utf-8")
+        for token, why in (
+            ("anim_window", "the animation window parser"),
+            ("path_consume", "the drawing path command parser"),
+            ("sub_rich_flush_drawing", "turning a drawn path into a run"),
+            ("case 'k':", "the karaoke tag"),
+            ("case 't':", "the animation tag"),
+            ("karaoke_pending_kind", "handing a karaoke slice to the next run"),
+            (',\\"anims\\":[', "emitting animations to the host"),
+            (',\\"path\\":[', "emitting a drawing path to the host"),
+        ):
+            if token not in ct:
+                problems.append(
+                    f"native/src/core/subtitle.c lost {token} ({why})")
+        # alpha 的字节序：单字节的 `&H80&` 曾经被当成 32 位整色右移读取，
+        # 结果恒 0，所有淡入都是全不透明。
+        if "raw > 0xFFul" not in ct:
+            problems.append(
+                "native/src/core/subtitle.c: the alpha reader no longer "
+                "special-cases one-byte values; every fade-in would stay "
+                "fully opaque")
+        # 纯白是最常见的动画目标色（卡拉 OK 唱到的字变成白色）。曾经把
+        # `\c&HFFFFFF&` 归一成「继承」，于是白色动画完全不生效。
+        if "parsed == 0xFFFFFFFF" in ct:
+            problems.append(
+                "native/src/core/subtitle.c: a pure white colour is being "
+                "folded into 'inherit' again; colour animations to white "
+                "would do nothing")
+        # `\p0` 之后必须把 drawing scale 清掉，否则后面的文本 run 继承
+        # 绘图状态，整行被当成图形吞掉。
+        if "b->st.drawing_scale = 0;" not in ct:
+            problems.append(
+                "native/src/core/subtitle.c: the end of a drawing no longer "
+                "resets drawing_scale; the text after it would disappear")
+        # 只有 `\p1` 图形、没有文字的 Dialogue 也是有效字幕（wipe 揭示、
+        # 无字版式）。若判据只看文本，这类行会整条消失。
+        if "has_drawing_runs" not in ct:
+            problems.append(
+                "native/src/core/subtitle.c: nothing checks for drawing-only "
+                "cues any more; a line whose text is empty would be dropped")
+        # 卡拉 OK 的「还没唱到」用的是 SecondaryColour，不是半透明的主色。
+        if "secondary_color" not in ct:
+            problems.append(
+                "native/src/core/subtitle.c: SecondaryColour is no longer "
+                "parsed; karaoke syllables would all start at the wrong "
+                "colour")
+
+    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    anim = ROOT / "app" / "lib" / "data" / "subtitle_anim.dart"
+    overlay = ROOT / "app" / "lib" / "ui" / "widgets" / "subtitle_overlay.dart"
+    if not anim.exists():
+        problems.append(
+            "app/lib/data/subtitle_anim.dart is missing; animations and "
+            "karaoke have no evaluator")
+    else:
+        at = anim.read_text(encoding="utf-8")
+        for token, why in (
+            ("static double progress(", "the animation progress curve"),
+            ("static ResolvedSpan resolve(", "applying animations to a run"),
+            ("static double karaokeFill(", "the karaoke fill amount"),
+            ("1.0 / accel", "the ASS acceleration exponent"),
+        ):
+            if token not in at:
+                problems.append(
+                    f"app/lib/data/subtitle_anim.dart lost {token} ({why})")
+    if models.exists():
+        mt = models.read_text(encoding="utf-8")
+        for token, why in (
+            ("class SubtitleAnim", "the animation model"),
+            ("class SubtitlePathPoint", "the drawing model"),
+            ("final int nowUs;", "the cue-relative clock the animations need"),
+            ("bool get clipOn", "the clip rectangle accessor"),
+            ("final int secondaryColor;", "the karaoke pre-sung colour"),
+        ):
+            if token not in mt:
+                problems.append(f"data/models.dart lost {token} ({why})")
+        # 只带高级特性的行也必须算「有内联样式」，否则整行退回纯文本，
+        # alpha / clip / 绘图 / 卡拉 OK 全部失效。
+        styled = mt.split("bool get styled", 1)[-1].split(";", 20)
+        styled_txt = "".join(styled[:20])
+        for token in ("r.alpha < 1.0", "r.karaokeKind != 0",
+                      "r.anims.isNotEmpty", "r.clipOn", "r.drawingScale > 0"):
+            if token not in styled_txt:
+                problems.append(
+                    f"data/models.dart: SubtitleLine.styled ignores {token}; "
+                    f"a line that only carries an advanced feature would "
+                    f"lose it")
+    if overlay.exists():
+        ot = overlay.read_text(encoding="utf-8")
+        for token, why in (
+            ("_karaokeColor(", "the karaoke colour ramp"),
+            ("class _DrawingsPainter", "the vector drawing painter"),
+            ("class _ClipRelative", "the clip rectangle"),
+            ("SubtitleAnimator.resolve(", "the per-frame animation lookup"),
+            ("style.secondaryColor", "the karaoke pre-sung colour"),
+            ("_drawingsWithPlacement(", "drawings following their line anchor"),
+        ):
+            if token not in ot:
+                problems.append(
+                    f"subtitle_overlay.dart lost {token} ({why})")
+
+    notes.append("subtitle advanced: animations, clip rectangles, vector "
+                 "drawings and karaoke are parsed, shipped and painted")
+
+
 def check_subtitle_sheet_selection() -> None:
     """Guard that picking a subtitle actually shows as picked.
 
@@ -2674,6 +2810,7 @@ def main() -> int:
     check_track_selection()
     check_subtitle_fonts()
     check_subtitle_sheet_selection()
+    check_subtitle_advanced()
     check_android_playback()
     check_playback_profiles()
     check_apple_wiring()

@@ -22,7 +22,8 @@
 | 限制 | 影响 | 计划 |
 |------|------|------|
 | ~~图形字幕（PGS / VobSub / DVB）跳过~~ | 已实现：`SUBTITLE_BITMAP` 矩形解码成 RGBA，按解码参考网格缩放到画面后由渲染器直通混合进视频帧（Windows GDI/waveOut、macOS BGRA 纹理两条路都接）。`anime-07.mkv` 的 6 条 `dvd_subtitle` 轨有画面，媒体信息里带 `"bitmap":true` | 完成（v0.1 追加）。仍不支持的：`\p` 矢量绘图里的动态特效、BD-J 交互 |
-| ~~ASS 富文本不渲染~~ | 已实现：`{\b1} {\i1} {\u1} {\s1} {\c&H..&} {\fs..} {\an..} {\pos(..)} {\r}` 解析成有序 run，Dart 侧逐个 `TextSpan` 渲染，一行里可以混排颜色/粗斜体/字号 | 完成（v0.1 追加）。仍不支持的：卡拉 OK `\k`、`\t` 动画、`\clip`、矢量绘图 `\p`（按 ASS 规范丢弃） |
+| ~~ASS 富文本不渲染~~ | 已实现：`{\b1} {\i1} {\u1} {\s1} {\c&H..&} {\fs..} {\an..} {\pos(..)} {\r}` 解析成有序 run，Dart 侧逐个 `TextSpan` 渲染，一行里可以混排颜色/粗斜体/字号 | 完成（v0.1 追加） |
+| ~~`\t` 动画 / `\clip` / 矢量绘图 `\p` / 卡拉 OK `\k` 不渲染~~ | 已实现：内核把每个 run 的动画窗口（`t1`/`t2`/`accel` 与目标字段）、裁剪矩形、路径点列、卡拉 OK 时间片一路带到宿主，`\t` 由 `app/lib/data/subtitle_anim.dart` 按播放时刻插值，`\k` 用 SecondaryColour→PrimaryColour 过渡，`\clip` 用 `ClipRect`，`\p` 用 `CustomPainter` 描路径。只有图形没有文字的 Dialogue 也不再被丢弃 | 完成（v0.2 追加）。仍不支持的：`\t` 里的 `\fade`、`\clip` 之外的形状动画、`\move`（按静态 `\pos` 处理） |
 | ~~共享名要手填~~ | 已放弃：只填服务器地址就列出共享名的功能已移除（SRVSVC 在 Windows 家庭版常被关掉，而列出共享反而不如让用户直接填「属性 → 共享」里那个名字可靠）。现在只填主机 + 账号密码时，客户端连 `IPC$` 校验登录、只报「账号密码对不对」，共享名仍需自己填 | 有意不做 |
 | Windows 桌面端 | **已构建并运行**：CMake + MSVC 编出 Release 版 `lanplayer.exe`，Flutter UI 渲染、SMB 浏览、视频纹理与外挂字幕都正常（见 `docs/images/desktop-*.png`）；一条命令 `scripts\build_windows_desktop.py`。官方 `flutter build windows` 也已跑通（`scripts\patch_flutter_tools.py` 注入 VS 2026 的 generator） | GPU 直出纹理与 WASAPI 已完成 |
 | macOS 视频输出未接桌面纹理 | **已接并已在真机跑通**：`app/macos/Runner/MainFlutterWindow.swift` 注册 `lanplayer/video` 通道，`PlayerTexture` 从内核拉 `CVPixelBuffer` 交给 Flutter 引擎（BGRA，图形字幕已叠加）；VideoToolbox 硬解、AudioQueue 输出、外挂/内嵌字幕、SMB 浏览与进度保存全部通过。iPad 模拟器与实体设备同样跑通 | 完成 |

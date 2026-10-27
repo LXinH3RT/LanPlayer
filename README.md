@@ -26,7 +26,7 @@ LanPlayer 只做一件事：**把共享里的文件当成本地文件播**——
 | **容器 / 编码** | 由 FFmpeg 决定：MKV / MP4 / AVI / MOV / TS / FLV / WebM 等，H.264 / HEVC / VP9 / AV1 等 |
 | **硬解** | Windows D3D11VA、macOS / iOS VideoToolbox、Android MediaCodec，失败自动回退软件解码 |
 | **音频** | Windows WASAPI、Apple AudioQueue、Android AAudio；AAC / MP3 / FLAC / Vorbis / Opus 等 |
-| **字幕** | 内嵌轨 + 外挂 SRT / ASS / SSA / VTT；ASS 富文本（颜色、描边、字号、字体、定位）；PGS / VobSub / DVB 图形字幕 |
+| **字幕** | 内嵌轨 + 外挂 SRT / ASS / SSA / VTT；ASS 富文本（颜色、描边、字号、字体、定位、动画、裁剪、矢量绘图、卡拉 OK）；PGS / VobSub / DVB 图形字幕 |
 | **选轨** | 音轨与字幕各自成面板，可列出文件内全部轨道并切换；按首选 / 次选语言自动挑默认轨 |
 | **播放控制** | 播放暂停、±10 秒、进度拖拽、0.5x–2.0x 变速不变调、音量 0–100（增益到 200%）、点一下静音、全屏 |
 | **连播** | 当前目录按 `SxxEzz` / 第 N 集 识别顺序自动接下一集 |
@@ -47,6 +47,10 @@ LanPlayer 只做一件事：**把共享里的文件当成本地文件播**——
 ASS 字幕里的 `Fontname` 与行内 `\fn` 都会真正生效，同一条字幕里可以混排两种字体：
 
 ![字幕字体](docs/images/desktop-subtitle-fonts.jpg)
+
+进阶标签也照常渲染：`\t` 颜色动画、`\clip` 裁剪、`\p` 矢量绘图、`\k` 逐字染色：
+
+![ASS 高级特性](docs/images/desktop-ass-advanced.png)
 
 移动端是同一套界面（纹理 + 字幕气泡）：
 
@@ -186,7 +190,7 @@ Windows 桌面端解码与出画都在 GPU 上：D3D11VA 解出的帧经视频�
 | 视频 + 音频播放 | ✅ H.264 软解、AAC → float 立体声、位置推进正确 |
 | 硬解 | ✅ D3D11VA（与软件参考均值差 ≤0.2 级）、VideoToolbox、MediaCodec 均真机跑通 |
 | 10-bit 片源 | ✅ 宽色深 H.264 / HEVC 在硬解不稳的平台自动改走软件解码，不再出现「有进度没画面」 |
-| 字幕 | ✅ 内嵌 + 外挂 SRT/ASS/VTT + 非 UTF-8 按代码页回退 + ASS 富文本（含行内 `\fn`）+ 图形字幕 |
+| 字幕 | ✅ 内嵌 + 外挂 SRT/ASS/VTT + 非 UTF-8 按代码页回退 + ASS 富文本（含行内 `\fn`、`\t`、`\clip`、`\p`、`\k`）+ 图形字幕 |
 | SMB 浏览 / 凭据校验 / 局域网扫描 | ✅ 只读、共享名自填、不做枚举 |
 | 列表缩略图 | ✅ 只解第一帧、`LPT2` 头落盘缓存、只对视频行请求 |
 | 含 FLV 的文件夹不再卡死 | ✅ 修掉内核三处缺陷 + 一处并发过载 |
@@ -200,7 +204,7 @@ Windows 桌面端解码与出画都在 GPU 上：D3D11VA 解出的帧经视频�
 
 ## 已知限制
 
-* ASS 的 `\t` 动画、`\clip`、矢量绘图 `\p`、卡拉 OK `\k` 不渲染（其余行内标签都支持）。
+* ASS 的 `\t` 动画按线性或 `accel` 曲线插值；`\t` 里的 `\fade` 与 `\clip` 之外的形状动画还不支持，`\move` 仍按 `\pos` 静态定位。
 * 不枚举服务器共享名，共享名需手填。
 * 不支持 AC3 / DTS 直通到功放；HDR 只解码直出，不做 tone mapping。
 * 同时只播一个视频（播放页单例）。
