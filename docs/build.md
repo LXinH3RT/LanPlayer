@@ -421,6 +421,95 @@ mount_smbfs "//share:pass@192.168.1.10/%E5%A4%9A%E5%AA%92%E4%BD%93%E6%96%87%E4%B
 
 `pod install` 顺序不要搞反：**先 `build_apple_deps.py` 产出静态库，再 `flutter pub get`，最后 `flutter build macos`**。`flutter build` 内部会自动跑 `pod install`；单独手跑 `pod install` 必须先 `flutter pub get` 过，否则报 `Flutter/Flutter-generated.xcconfig must exist`。
 
+### 4.9 在 macOS 上跑验证
+
+日常 Windows 改动不需要动 Mac；要在 Mac 上补验时按下面四条走。
+
+**一、C 内核测试。** `build_apple_deps.py` 会连 FFmpeg 一起重编，几分钟起步；只改 C 代码时用 CMake 直接编，快得多：
+
+```bash
+cmake -S native -B /tmp/lpnative -DCMAKE_BUILD_TYPE=Release \
+  -DLP_FFMPEG_ROOT="$PWD/native/third_party/ffmpeg/apple/macosx" \
+  -DLP_SMB2_ROOT="$PWD/native/third_party/libsmb2/apple/macosx"
+cmake --build /tmp/lpnative -j8
+```
+
+`native/CMakeLists.txt` 只注册了 `lp_smoke_test` 一个测试目标，`lp_subanim_test` / `lp_subcolor_test` / `lp_submatch_test` 用 clang 手工链：
+
+```bash
+INC="$PWD/native/third_party/ffmpeg/apple/macosx/include"
+FR="$PWD/native/third_party/ffmpeg/apple/macosx/lib"
+SMB="$PWD/native/third_party/libsmb2/apple/macosx/lib"
+FRAMEWORKS="-framework VideoToolbox -framework CoreVideo -framework CoreMedia \
+  -framework CoreFoundation -framework AudioToolbox -framework Security -framework CoreServices"
+clang -O2 -g0 -std=gnu11 -I native/include -I native/src -I "$INC" \
+  native/tests/lp_subanim_test.c /tmp/lpnative/liblanplayer.a \
+  "$FR"/*.a "$SMB"/*.a -lz -lbz2 -lm -liconv $FRAMEWORKS -o /tmp/lpnative/lp_subanim_test
+```
+
+两个容易漏的参数：`-I` 必须指到 `apple/macosx/include`（否则 `player_internal.h` 找不到 FFmpeg 头），`libsmb2.a` 在 `apple/macosx/lib/` 而不是 `apple/macosx/` 根下。
+
+**二、Flutter 测试。** 需要引擎产物 `flutter_tester`。`flutter precache --macos` 不一定补它，缺的时候按 `bin/cache/artifacts/engine/<platform>.json` 里的 `engineRevision` 手动取：
+
+```bash
+REV=...   # flutter --version 里 engineRevision 那串，或 bin/cache/.../version.json
+curl -C - -o /tmp/artifacts.zip \
+  "https://storage.googleapis.com/flutter_infra_release/flutter/$REV/darwin-x64/artifacts.zip"
+unzip -q -o /tmp/artifacts.zip -d /tmp/artifacts
+cp -R /tmp/artifacts/* ~/development/flutter/bin/cache/artifacts/engine/darwin-x64/
+```
+
+**三、界面截图。** SSH 会话里 `screencapture` 一律报 `could not create image from display`（`launchctl managername` 是 `Background`），哪怕屏幕没锁、`/dev/console` 是登录用户也一样。要看画面就把脚本写成 `.command` 交给 Aqua 会话执行：
+
+```bash
+# /tmp/shot.command
+#!/bin/bash
+~/LanPlayer/app/build/macos/Build/Products/Release/lanplayer.app/Contents/MacOS/lanplayer &
+sleep 7
+osascript -e 'tell application "System Events" to set frontmost of first process whose name is "lanplayer" to true'
+osascript -e 'tell application "Terminal" to set visible of every window to false'
+/usr/sbin/screencapture -x /tmp/home.png
+```
+
+```bash
+chmod +x /tmp/shot.command && open -a Terminal /tmp/shot.command
+```
+
+`open -a` 把脚本拉进图形会话后 `screencapture` 就正常；两句 `osascript` 负责把播放器前置、把终端窗藏起来，否则截到的是终端。
+
+**四、沙盒里的路径。** release 版带 `com.apple.security.app-sandbox`，`/tmp` 下的素材读不到（`Operation not permitted`）。要喂测试素材就放进容器：
+
+```bash
+cp adv.mkv ~/Library/Containers/dev.lanplayer.lanplayer/Data/tmp/
+LANPLAYER_OPEN="$HOME/Library/Containers/dev.lanplayer.lanplayer/Data/tmp/adv.mkv" \
+  ~/LanPlayer/app/build/macos/Build/Products/Release/lanplayer.app/Contents/MacOS/lanplayer
+```
+
+`LANPLAYER_STATE_DIR` / `LANPLAYER_BROWSE` / `LANPLAYER_UI` 是编译期 `--dart-define`，换值要重编；`LANPLAYER_OPEN` 是运行期环境变量，直接传即可。
+
+### 4.10 装了 MITM 类工具时怎么拉仓库
+
+装了会做中间人的工具（SteamTools 之类）之后，GitHub 的几个域名（网页、API、静态资源各一个）会被它劫持到 `127.0.0.1`，由本地端口转发出去，证书换成一枚自签 CA。表现很容易被误读成「网断了」，实际要分三层看：
+
+```bash
+scutil --proxy                      # 有没有系统代理（被劫持时可能一条都没有）
+dscacheutil -q host -a name github.com   # 解析成了哪个地址
+nc -z -G 8 github.com 443           # 端口通不通
+curl -sS -o /dev/null -w '%{http_code} %{time_total}\n' https://github.com
+echo | openssl s_client -connect github.com:443 2>/dev/null | openssl x509 -noout -issuer
+```
+
+判读：
+
+| 观测 | 含义 | 处理 |
+| --- | --- | --- |
+| 解析到 `127.0.0.1` 但 `curl` 返回 200 | 本地转发正常工作 | 不用管，照常 `git`/`curl` |
+| `issuer` 是自签 CA（不是 DigiCert/Let's Encrypt）且 `Verify return code: 0` | 该 CA 已进系统钥匙串并被信任 | 不用管；OpenSSL/Git 用的是系统信任链 |
+| `curl` 通但 `git` 报 `Error in the HTTP2 framing layer` | 中间人把 HTTP/2 打断了 | `git -c http.version=HTTP/1.1 ...`，或直接把 `http.version=HTTP/1.1` 写进配置 |
+| `Verify return code` 非 0 | CA 没被信任 | 把该 CA 导入系统钥匙串并设为信任，或对该仓库临时 `-c http.sslVerify=false` |
+
+真要用 `-c http.sslVerify=false` 时，只对单条命令加，不要写进全局配置。JVM 系（Gradle）不读系统钥匙串，它的根证书要单独导入 `$JAVA_HOME/lib/security/cacerts`（见 3.x 里 Android 那节）。
+
 ## 5. Flutter Windows 桌面端
 桌面端三块：Flutter 的 runner（`app/windows/`）、我方插件（`packages/lanplayer_video/`）、带 Win32 输出适配的 `lanplayer.dll`。**推荐一条命令：**
 
