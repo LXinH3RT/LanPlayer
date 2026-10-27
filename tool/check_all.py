@@ -2378,8 +2378,35 @@ def check_apple_wiring() -> None:
             problems.append(f"packages/lanplayer_core/{name}/lanplayer_core.podspec: "
                             f"{key} = {m.group(1)} is below {floor}")
 
+    # iOS only plays sound while the ring/silent switch is on silent if the
+    # audio session is left at its default `ambient` category: the system
+    # mutes the app, and backgrounding stops it outright. Setting `.playback`
+    # once at launch is what makes the iPad actually audible — the missing
+    # call was reported as "no sound on iPad while the picture plays".
+    delegate = APP / "ios" / "Runner" / "AppDelegate.swift"
+    if delegate.exists():
+        swift = delegate.read_text(encoding="utf-8")
+        for needle, why in (
+            ("import AVFoundation", "AppDelegate no longer imports AVFoundation, "
+                                    "so it cannot touch the audio session"),
+            ("AVAudioSession.sharedInstance()", "AppDelegate no longer reaches "
+                                                "AVAudioSession; iOS then keeps the "
+                                                "ambient category and silences playback"),
+            (".playback", "the audio session no longer asks for the .playback "
+                          "category; the ring/silent switch would mute the app"),
+            ("setActive(true)", "the audio session is never activated, so audio "
+                                "stays silent after a phone call or backgrounding"),
+        ):
+            if needle not in swift:
+                problems.append(f"app/ios/Runner/AppDelegate.swift: {why}")
+        if "configureAudioSession()" not in swift.split("func application(", 1)[-1] \
+                .split("func configureAudioSession")[0]:
+            problems.append("app/ios/Runner/AppDelegate.swift: didFinishLaunching "
+                            "must call configureAudioSession() before the engine runs")
+
     if not any(p.startswith(("app/ios/Podfile", "app/macos/Podfile",
-                             "app/macos/Runner.xcodeproj")) for p in problems):
+                             "app/macos/Runner.xcodeproj", "app/ios/Runner/AppDelegate"))
+               for p in problems):
         notes.append(f"apple wiring: podspecs link liblanplayer.a, Podfiles declare "
                      f"iOS {min_ios or '?'} / macOS {min_macos or '?'}")
 

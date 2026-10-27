@@ -1,3 +1,4 @@
+import AVFoundation
 import Flutter
 import UIKit
 import CoreVideo
@@ -25,10 +26,34 @@ import CoreVideo
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    configureAudioSession()
     // 先把引擎跑起来，插件注册才有 registrar 可用（否则 registrarForPlugin:
     // 返回 nil，Swift 插件里对不可选参数做类型检查会直接段错误）。
     engine.run()
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  /// 把音频会话切到「播放」类别。
+  ///
+  /// iOS 默认类别是 `ambient`：侧边静音开关拨到静音时整机不出声、锁屏或切到
+  /// 后台时音频会被停掉 —— 这正是 iPad 上有画面没声音的原因。`playback` 类别
+  /// 让音频走媒体音量、忽略静音开关，配合 Info.plist 的 `UIBackgroundModes:
+  /// audio` 才能在锁屏后继续播。
+  ///
+  /// 反复调用是安全的：`setCategory` 幂等，`setActive` 在已激活时也是空操作。
+  @discardableResult
+  func configureAudioSession() -> Bool {
+    let session = AVAudioSession.sharedInstance()
+    do {
+      try session.setCategory(.playback, mode: .moviePlayback, options: [])
+      try session.setActive(true)
+      return true
+    } catch {
+      // 音频会话配不上时不该拦住播放：画面照常出，只是声音可能受静音开关
+      // 影响。所以这里只记日志。
+      NSLog("LanPlayer audio session failed: \(error.localizedDescription)")
+      return false
+    }
   }
 
   /// 由 SceneDelegate 在 UIWindow 就绪之后调用：注册插件并建立纹理通道。
@@ -127,6 +152,12 @@ import CoreVideo
     win.makeKeyAndVisible()
 
     app.attach(to: controller)
+  }
+
+  /// 来电、闹钟、其它 app 抢过音频之后，系统的「播放」类别会被取消激活；
+  /// 回到前台时再激活一次，否则下次播放会没有声音。
+  func sceneDidBecomeActive(_ scene: UIScene) {
+    (UIApplication.shared.delegate as? AppDelegate)?.configureAudioSession()
   }
 }
 
