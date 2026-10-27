@@ -33,6 +33,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -188,11 +190,13 @@ class VideoTexture {
         buffers_[i].height = static_cast<size_t>(h);
         buffers_[i].release_callback = &VideoTexture::Release;
         buffers_[i].release_context = &slots_[i];
+        ++frames_taken_;
         return &buffers_[i];
       }
     }
     // Both buffers still held by the engine: drop this frame, but do not let a
     // missed release stall the pipeline forever.
+    ++frames_dropped_;
     if (++drops_ > 30) {
       drops_ = 0;
       for (size_t i = 0; i < kSlots; ++i) {
@@ -201,6 +205,12 @@ class VideoTexture {
     }
     return nullptr;
   }
+
+  // 诊断计数：内核交来多少帧、真正上屏多少帧、因为两个缓冲都被引擎占着而
+  // 丢掉多少帧。真机上「画面卡但声音正常」时，这三个数字能立刻分开
+  // 「内核没出帧」和「Flutter 侧来不及取」。
+  unsigned long long frames_taken() const { return frames_taken_; }
+  unsigned long long frames_dropped() const { return frames_dropped_; }
 
  private:
   static constexpr size_t kSlots = 2;
@@ -225,6 +235,8 @@ class VideoTexture {
   Slot slots_[kSlots];
   FlutterDesktopPixelBuffer buffers_[kSlots] = {};
   int drops_ = 0;
+  unsigned long long frames_taken_ = 0;
+  unsigned long long frames_dropped_ = 0;
 };
 
 // ---------------------------------------------------------------- plugin ---
@@ -237,6 +249,9 @@ class LanPlayerVideoPlugin : public flutter::Plugin {
 
   explicit LanPlayerVideoPlugin(flutter::PluginRegistrarWindows* registrar)
       : registrar_(registrar) {
+    // 默认关，只在排查「画面卡」时打开，免得平时往控制台刷无关的行。
+    // 用 Win32 读而不是 getenv：MSVC 把 getenv 标成不安全并在 /WX 下报错。
+    texture_stats_ = GetEnvironmentVariableA("LANPLAYER_TEXTURE_STATS", nullptr, 0) > 0;
     channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
         registrar->messenger(), kChannelName, &flutter::StandardMethodCodec::GetInstance());
     channel_->SetMethodCallHandler(
@@ -518,6 +533,32 @@ class LanPlayerVideoPlugin : public flutter::Plugin {
     }
     // Documented as safe to call from any thread.
     self->registrar_->texture_registrar()->MarkTextureFrameAvailable(id);
+
+    if (!self->texture_stats_) {
+      return;
+    }
+    // 内核每交一帧就到这里，所以用帧数当节拍器：每 5 秒（或每 120 帧，
+    // 取先到的那个）打一行吞吐，用来判断「卡」是内核没出帧还是 Flutter
+    // 侧来不及取。
+    const ULONGLONG now = GetTickCount64();
+    if (now - self->last_report_ms_ < 5000) {
+      return;
+    }
+    self->last_report_ms_ = now;
+    self->ReportTextureStats();
+  }
+
+  // 每 5 秒往 stderr 打一行纹理吞吐：内核交来多少帧、真的上屏多少帧、
+  // 因为两个缓冲都被引擎占着而丢掉多少帧。真机上「画面卡但声音正常」时，
+  // 有这行就能直接分出「内核没出帧」和「Flutter 侧来不及取」。
+  // 只有设了 LANPLAYER_TEXTURE_STATS=1 才打，平时不刷屏。
+  void ReportTextureStats() {
+    auto tex = texture_;
+    if (!tex) {
+      return;
+    }
+    fprintf(stderr, "[lanplayer_video] texture taken=%llu dropped=%llu\n",
+            tex->frames_taken(), tex->frames_dropped());
   }
 
   flutter::PluginRegistrarWindows* registrar_ = nullptr;
@@ -528,6 +569,9 @@ class LanPlayerVideoPlugin : public flutter::Plugin {
   std::atomic<int64_t> texture_id_{-1};
   void* player_ = nullptr;
   bool fullscreen_ = false;
+  // 纹理吞吐诊断：LANPLAYER_TEXTURE_STATS=1 时才每 5 秒打一行。
+  bool texture_stats_ = false;
+  unsigned long long last_report_ms_ = 0;
   LONG_PTR saved_style_ = 0;
   WINDOWPLACEMENT saved_placement_{};
 };

@@ -23,6 +23,9 @@ struct LpAudioSink {
     int channels;
     int paused;
     int started;
+    /* 首帧诊断：确认回调真的跑起来了、且拿到的是非静音数据。之后不再打。 */
+    int reported_first;
+    float peak;
 };
 
 static void aq_callback(void *user, AudioQueueRef queue, AudioQueueBufferRef buffer)
@@ -37,6 +40,22 @@ static void aq_callback(void *user, AudioQueueRef queue, AudioQueueBufferRef buf
         got = 0;
     }
     buffer->mAudioDataByteSize = (UInt32)got * (UInt32)s->channels * (UInt32)sizeof(float);
+    if ((float *)buffer->mAudioData) {
+        const float *pcm = (const float *)buffer->mAudioData;
+        for (int i = 0; i < got * s->channels; i++) {
+            float v = pcm[i] < 0 ? -pcm[i] : pcm[i];
+            if (v > s->peak) {
+                s->peak = v;
+            }
+        }
+    }
+    /* 首帧留一条证据：真机上「有画面没声音」时要能分清是回调根本没跑、
+     * 还是跑起来了但喂进去的全是静音。之后不再打，免得刷屏。 */
+    if (!s->reported_first) {
+        s->reported_first = 1;
+        LP_INFO("audioqueue", "first cb got %d peak %.3f", got, (double)s->peak);
+    }
+    s->peak = 0.0f;
     AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
 }
 
@@ -94,7 +113,17 @@ int lp_audio_sink_start(LpAudioSink *s, int sample_rate, int channels)
         return LP_ERR_IO;
     }
     s->started = 1;
-    LP_INFO("audioqueue", "started %dHz x%d", sample_rate, channels);
+    s->reported_first = 0;
+    s->peak = 0.0f;
+    /* AudioQueue 自己也有一级音量，默认是 1.0，但会话切换类别之后它会被重置成
+     * 系统媒体音量。显式读到并把非零值固定住：真机上「有数据没声音」时，
+     * 这条日志能把「队列音量是 0」和「系统音量是 0」分开。 */
+    Float32 qvol = -1.0f;
+    if (AudioQueueGetParameter(s->queue, kAudioQueueParam_Volume, &qvol) == noErr && qvol <= 0.0f) {
+        AudioQueueSetParameter(s->queue, kAudioQueueParam_Volume, 1.0f);
+        qvol = 1.0f;
+    }
+    LP_INFO("audioqueue", "started %dHz x%d volume %.2f", sample_rate, channels, (double)qvol);
     return LP_OK;
 }
 
@@ -110,6 +139,8 @@ void lp_audio_sink_stop(LpAudioSink *s)
     }
     s->nbuf = 0;
     s->started = 0;
+    s->reported_first = 0;
+    s->peak = 0.0f;
 }
 
 void lp_audio_sink_pause(LpAudioSink *s, int paused)

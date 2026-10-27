@@ -47,6 +47,27 @@ import CoreVideo
     do {
       try session.setCategory(.playback, mode: .moviePlayback, options: [])
       try session.setActive(true)
+      // 留一条证据：没有它，真机上分不清「会话配上了但没声音」和「根本没配上」。
+      // 输出走 syslog，`devicectl ... process launch --console` 能直接看到。
+      let route = session.currentRoute.outputs
+        .map { "\($0.portType.rawValue):\($0.portName)" }
+        .joined(separator: ",")
+      NSLog("LanPlayer audio session active category=\(session.category.rawValue) "
+              + "mode=\(session.mode.rawValue) volume=\(session.outputVolume) "
+              + "route=[\(route)]")
+      // 启动那一刻的 outputVolume 还没刷新，三秒后再读一次并打出来。这条
+      // 日志是给「有画面没声音」准备的：输出走 syslog，
+      // `devicectl ... process launch --console` 能直接看到系统媒体音量是
+      // 多少 —— 音量被人调到接近零时，从这里一眼就能看出来，不必去猜是
+      // 会话没配上、还是解码没出数据。
+      DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+        let again = AVAudioSession.sharedInstance()
+        let outs = again.currentRoute.outputs
+          .map { "\($0.portType.rawValue):\($0.portName)" }
+          .joined(separator: ",")
+        NSLog("LanPlayer audio session recheck volume=\(again.outputVolume) "
+                + "route=[\(outs)] sampleRate=\(again.sampleRate)")
+      }
       return true
     } catch {
       // 音频会话配不上时不该拦住播放：画面照常出，只是声音可能受静音开关

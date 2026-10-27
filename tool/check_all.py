@@ -2404,11 +2404,36 @@ def check_apple_wiring() -> None:
             problems.append("app/ios/Runner/AppDelegate.swift: didFinishLaunching "
                             "must call configureAudioSession() before the engine runs")
 
+    # The audio session alone does not make sound: AudioQueue keeps its own
+    # volume parameter, and switching the session category resets it to the
+    # system media volume. On the iPad that came out as 0 while the queue was
+    # happily consuming PCM, which reads exactly like "the decoder produces
+    # nothing". Pin the floor and the first-frame evidence so a later cleanup
+    # cannot quietly drop them again.
+    sink = ROOT / "native" / "src" / "platform" / "apple" / "coreaudio_sink.c"
+    if sink.exists():
+        sc = sink.read_text(encoding="utf-8")
+        if "kAudioQueueParam_Volume" not in sc:
+            problems.append("native/src/platform/apple/coreaudio_sink.c no longer "
+                            "raises kAudioQueueParam_Volume out of zero; the iPad "
+                            "then plays with a silent queue while decoding fine")
+        if "AudioQueueSetParameter" not in sc:
+            problems.append("native/src/platform/apple/coreaudio_sink.c must call "
+                            "AudioQueueSetParameter to lift the queue volume")
+        if "first cb got" not in sc:
+            problems.append("native/src/platform/apple/coreaudio_sink.c dropped the "
+                            "first-callback log; without it a silent iPad cannot be "
+                            "told apart from a decoder that never ran")
+    else:
+        problems.append("native/src/platform/apple/coreaudio_sink.c missing")
+
     if not any(p.startswith(("app/ios/Podfile", "app/macos/Podfile",
-                             "app/macos/Runner.xcodeproj", "app/ios/Runner/AppDelegate"))
+                             "app/macos/Runner.xcodeproj", "app/ios/Runner/AppDelegate",
+                             "native/src/platform/apple/coreaudio_sink.c"))
                for p in problems):
         notes.append(f"apple wiring: podspecs link liblanplayer.a, Podfiles declare "
                      f"iOS {min_ios or '?'} / macOS {min_macos or '?'}")
+        notes.append("apple audio: playback category + AudioQueue volume floor")
 
 
 def check_local_picker() -> None:
