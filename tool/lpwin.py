@@ -275,6 +275,23 @@ def click(x: int, y: int, double: bool = False) -> None:
             time.sleep(0.12)
 
 
+def press_and_hold(x: int, y: int, hold: float = 0.9) -> None:
+    """按住在 (x, y) 不放 `hold` 秒，触发 Flutter 的 long-press。
+
+    `click()` 只按下 60ms，够不到 500ms 的长按阈值，所以「长按打开面板」
+    这类入口没法用它验证。
+    """
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP = 0x0002, 0x0004
+    move_cursor(x, y)
+    time.sleep(0.12)
+    nudge(x, y)
+    time.sleep(0.12)
+    _user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(hold)
+    _user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(0.1)
+
+
 def wheel(notches: int, x: int, y: int) -> None:
     """滚轮：正数往上、负数往下，一格 = 120（WHEEL_DELTA）。
 

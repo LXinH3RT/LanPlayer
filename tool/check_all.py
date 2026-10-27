@@ -1257,6 +1257,13 @@ def check_player_layout() -> None:
     bottom = text[bottom_start:] if bottom_start > 0 else ""
     if "_pictureKey" not in bottom or "_openPictureSheet" not in bottom:
         problems.append("the picture controls are no longer in the bottom transport row")
+    # 用户按图指定：「画面」这颗按钮单击进/退全屏，长按才打开画面设置。
+    # 两种手势必须挂在同一个 widget 上，拆成两个按钮就回到「多一颗全屏图标」。
+    if "onLongPress: _openPictureSheet" not in bottom:
+        problems.append("the picture sheet lost its entry point; put it on "
+                        "long-press of the 画面 button")
+    if "onTap: _toggleFullscreen" not in bottom:
+        problems.append("tapping 画面 must toggle fullscreen (user asked for it)")
     if "Icons.more_vert" in text:
         problems.append("the top-right 'more' button is back; picture controls should "
                         "live in the bottom row")
@@ -1289,6 +1296,20 @@ def check_player_layout() -> None:
         problems.append("the number next to the volume icon must be "
                         "VolumeSheet.displayOf(...); printing the raw gain shows "
                         "200 at the top of the range")
+    # 用户按图指出「没有音量条」：底栏原来只有图标 + 数字，看不出自己在量程的
+    # 哪个位置。常驻滑杆挂在 _volumeBarKey 上，且必须走显示值 0–100。
+    if "_volumeBarKey" not in bottom:
+        problems.append("the bottom row lost the always-on volume bar (user asked "
+                        "for a visible slider, not just the number)")
+    if "onChanged: _setVolumeFromBar" not in bottom:
+        problems.append("the volume bar does not reach the player; dragging it "
+                        "would be a no-op")
+    if "onChangeEnd: _commitVolume" not in bottom:
+        problems.append("the volume bar must persist the level on release; "
+                        "otherwise a restart forgets it")
+    if "void _setVolumeFromBar(double" not in text:
+        problems.append("_setVolumeFromBar is gone; the bar and the wheel would "
+                        "drift apart on the 0-100/0-2.0 mapping")
     sheet = ROOT / "app" / "lib" / "ui" / "widgets" / "volume_sheet.dart"
     if not sheet.exists():
         problems.append("widgets/volume_sheet.dart missing")
@@ -1357,10 +1378,14 @@ def check_player_layout() -> None:
     if "VideoSurface(" not in text:
         problems.append("player_screen.dart no longer uses VideoSurface; the picture "
                         "scale buttons would stop having any effect")
-    if "_fullscreenKey" not in bottom or "_toggleFullscreen" not in bottom:
-        problems.append("the fullscreen button is no longer in the bottom transport row")
-    if "Icons.fullscreen" not in bottom:
-        problems.append("the fullscreen entry lost its icon")
+    # 全屏不再是独立图标（用户按图指定：那个位置删掉），入口挪到「画面」
+    # 按钮的单击上；这里只钉「还能触发」与「按钮会跟着换图标」。
+    if "_toggleFullscreen" not in bottom:
+        problems.append("the picture button no longer toggles fullscreen; the "
+                        "entry disappeared with the standalone icon")
+    if "Icons.fullscreen_exit" not in bottom:
+        problems.append("the picture button must swap its icon while fullscreen "
+                        "so the state is visible")
 
     # 界面统一用 MiSans：字体族没配好时，中文会落到系统 fallback 上，同一句里
     # 「音轨」「关闭」这类中文和数字来自两套字，看起来像字体坏了（用户报的）。

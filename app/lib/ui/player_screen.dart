@@ -88,7 +88,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   /// 音量按钮本身（数值那一格）。布局探针用它打印真实矩形。
   final GlobalKey _volumeKey = GlobalKey();
-  final GlobalKey _fullscreenKey = GlobalKey();
+
+  /// 底栏那条常驻音量条。用户按图指出「没有音量条」—— 只有图标和数字，
+  /// 看不到自己在量程的哪个位置。
+  final GlobalKey _volumeBarKey = GlobalKey();
   final GlobalKey _subtitleKey = GlobalKey();
   final GlobalKey _audioKey = GlobalKey();
 
@@ -344,6 +347,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _printRect('back', _backKey);
       _printRect('picture', _pictureKey);
       _printRect('volume', _volumeKey);
+      _printRect('volumeBar', _volumeBarKey);
     });
   }
 
@@ -626,6 +630,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ),
     );
     _scheduleHide();
+  }
+
+  /// 底栏常驻音量条拖动时走这里：按显示刻度（0–100）换算回增益写进内核。
+  ///
+  /// 拖动过程中只改内存里的值，落盘留到 [commitVolume]（onChangeEnd）——
+  /// 滑杆一帧一个 onChanged，每帧写一次 json 会把磁盘拖住。
+  /// 与滚轮、键盘上下键走同一套映射，三者对「100」的理解必须一致。
+  void _setVolumeFromBar(double display) {
+    final next = VolumeSheet.volumeOf(display);
+    _player.setVolume(next);
+    _settings.volume = next;
+    _showControls();
+  }
+
+  /// 音量条松手时落盘。与音量面板里的滑杆同一套写法。
+  void _commitVolume(double display) {
+    final next = VolumeSheet.volumeOf(display);
+    SettingsStore.instance.value.volume = next;
+    unawaited(SettingsStore.instance.save());
   }
 
   /// 键盘上下键与手势共用的音量微调，统一按显示值给反馈。
@@ -1215,24 +1238,50 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
               ],
             ),
-            // 画面/声音等设置入口集中在这一行：速度、画面、字幕、音轨，最后是音量。
-            // 用横向滚动兜住窄屏，避免手机上被挤成两行或溢出。
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
+            // 画面/声音等设置入口集中在这一行：速度、画面、字幕、音轨，然后是
+            // 音量图标 + 常驻音量条。
+            //
+            // 用 Wrap 而不是横向滚动：音量条是 Slider，横向拖动与横向滚动的
+            // 手势会打架，滚起来就拖不动。Wrap 让窄屏自动折到第二行，宽屏
+            // 保持一行。
+            Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              child: Wrap(
+                alignment: WrapAlignment.center,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   TextButton.icon(
                     onPressed: _openSpeedSheet,
                     icon: const Icon(Icons.speed, size: 18),
                     label: Text('${_player.speed}x'),
                   ),
-                  TextButton.icon(
-                    key: _pictureKey,
-                    onPressed: _openPictureSheet,
-                    icon: const Icon(Icons.crop_free, size: 18),
-                    label: const Text('画面'),
+                  // 「画面」这颗按钮一肩挑两件事（用户按图指定）：
+                  // 单击进/退全屏，长按才打开画面设置二级界面。
+                  Tooltip(
+                    message: _fullscreen ? '退出全屏（长按画面设置）' : '全屏（长按画面设置）',
+                    child: InkWell(
+                      key: _pictureKey,
+                      onTap: _toggleFullscreen,
+                      onLongPress: _openPictureSheet,
+                      borderRadius: BorderRadius.circular(8),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _fullscreen
+                                  ? Icons.fullscreen_exit
+                                  : Icons.crop_free,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 8),
+                            const Text('画面', style: TextStyle(fontSize: 14)),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
                   TextButton.icon(
                     key: _subtitleKey,
@@ -1247,8 +1296,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     label: const Text('音轨'),
                   ),
                   // 音量：图标 + 数值。点一下是静音/解除静音（用户要求），
-                  // 长按才打开音量面板 —— 面板仍然需要，因为静音之外还得能把
-                  // 音量调小调大，而底栏没地方放一条常驻滑杆。
+                  // 长按打开音量面板 —— 面板里还有档位和静音开关。
                   Tooltip(
                     message: _player.muted
                         ? '已静音，点击恢复'
@@ -1295,14 +1343,29 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                     ),
                   ),
-                  // 全屏。桌面端由插件接管真实窗口，移动端靠 SystemChrome
-                  // 隐藏系统栏；快捷键 F / Esc 走的是同一个方法。
-                  IconButton(
-                    key: _fullscreenKey,
-                    tooltip: _fullscreen ? '退出全屏' : '全屏',
-                    icon: Icon(
-                        _fullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
-                    onPressed: _toggleFullscreen,
+                  // 常驻音量条。用户按图指出「没有音量条」：底栏只有图标和
+                  // 数字，看不出自己在量程的哪个位置。宽度定死，Wrap 才能
+                  // 在窄屏把它整块折下去。
+                  SizedBox(
+                    key: _volumeBarKey,
+                    width: 168,
+                    child: SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        trackHeight: 3,
+                        thumbShape:
+                            const RoundSliderThumbShape(enabledThumbRadius: 6),
+                        overlayShape:
+                            const RoundSliderOverlayShape(overlayRadius: 14),
+                      ),
+                      child: Slider(
+                        value: VolumeSheet.displayOf(_player.volume).toDouble(),
+                        max: VolumeSheet.displayMax.toDouble(),
+                        divisions: 40,
+                        label: '${VolumeSheet.displayOf(_player.volume)}',
+                        onChanged: _setVolumeFromBar,
+                        onChangeEnd: _commitVolume,
+                      ),
+                    ),
                   ),
                 ],
               ),
