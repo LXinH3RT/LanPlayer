@@ -15,6 +15,13 @@
  *   - Two pixel buffers with release callbacks implement the "don't overwrite
  *     a buffer the engine is still reading" contract; if both are busy the
  *     frame is dropped rather than blocking the decoder.
+ *   - On a core that exports lp_win32_gpu_surface() the texture is registered as
+ *     a GpuSurfaceTexture instead: the picture arrives as a shared D3D11 texture
+ *     (BGRA, already the format the engine wants) and ANGLE samples it directly,
+ *     so there is no per-frame memcpy and no channel swizzle.  The pixel-buffer
+ *     path stays as the fallback for older cores and for frames the GPU output
+ *     cannot produce (graphics subtitles force a download, but the core still
+ *     publishes the result as a shared surface).
  */
 #include "include/lanplayer_video/lan_player_video_plugin.h"
 #include "include/lanplayer_video/pixel_swizzle.h"
@@ -63,6 +70,9 @@ using FnInstallFrameCb = int (*)(void*, void (*)(void*), void*);
 using FnCopyFrame = int (*)(uint8_t*, size_t, int*, int*, int*);
 using FnFrameSize = int (*)(int*, int*, int*);
 using FnFrameSerial = int64_t (*)();
+using FnGpuReady = int (*)();
+using FnGpuSurface = void* (*)(int64_t*, int*, int*, int*);
+using FnGpuRelease = void (*)(int);
 
 struct CoreApi {
   HMODULE module = nullptr;
@@ -83,6 +93,11 @@ struct CoreApi {
   FnCopyFrame copy_frame = nullptr;
   FnFrameSize frame_size = nullptr;
   FnFrameSerial frame_serial = nullptr;
+  // Optional: only older cores lack these, in which case the plugin keeps using
+  // the pixel-buffer texture.
+  FnGpuReady gpu_ready = nullptr;
+  FnGpuSurface gpu_surface = nullptr;
+  FnGpuRelease gpu_release = nullptr;
 
   bool Load(std::string* error) {
     if (module) {
@@ -141,6 +156,14 @@ struct CoreApi {
     copy_frame = reinterpret_cast<FnCopyFrame>(get("lp_win32_copy_frame"));
     frame_size = reinterpret_cast<FnFrameSize>(get("lp_win32_frame_size"));
     frame_serial = reinterpret_cast<FnFrameSerial>(get("lp_win32_frame_serial"));
+    gpu_ready = reinterpret_cast<FnGpuReady>(get("lp_win32_gpu_ready"));
+    gpu_surface = reinterpret_cast<FnGpuSurface>(get("lp_win32_gpu_surface"));
+    gpu_release = reinterpret_cast<FnGpuRelease>(get("lp_win32_gpu_release"));
+    if (!gpu_ready || !gpu_surface || !gpu_release) {
+      gpu_ready = nullptr;
+      gpu_surface = nullptr;
+      gpu_release = nullptr;
+    }
     if (!abi || !create || !destroy || !open || !play || !copy_frame || !frame_size ||
         !install_frame_cb) {
       if (error) {
@@ -206,6 +229,35 @@ class VideoTexture {
     return nullptr;
   }
 
+  // Called on the raster thread when the texture is registered as a GPU surface.
+  // Returns a descriptor pointing at the shared D3D11 texture the core just
+  // filled; the engine opens it through ANGLE and calls ReleaseSurface once it is
+  // done holding the handle.
+  const FlutterDesktopGpuSurfaceDescriptor* ObtainDescriptor(size_t /*width*/,
+                                                             size_t /*height*/) {
+    if (!core_ || !core_->gpu_surface) {
+      return nullptr;
+    }
+    int64_t serial = 0;
+    int w = 0, h = 0, slot = -1;
+    void* handle = core_->gpu_surface(&serial, &w, &h, &slot);
+    if (!handle || w <= 0 || h <= 0) {
+      return nullptr;
+    }
+    descriptor_.struct_size = sizeof(FlutterDesktopGpuSurfaceDescriptor);
+    descriptor_.handle = handle;
+    descriptor_.width = static_cast<size_t>(w);
+    descriptor_.height = static_cast<size_t>(h);
+    descriptor_.visible_width = static_cast<size_t>(w);
+    descriptor_.visible_height = static_cast<size_t>(h);
+    descriptor_.format = kFlutterDesktopPixelFormatBGRA8888;
+    descriptor_.release_callback = &VideoTexture::ReleaseSurface;
+    descriptor_.release_context = this;
+    surface_slot_ = slot;
+    ++frames_taken_;
+    return &descriptor_;
+  }
+
   // 诊断计数：内核交来多少帧、真正上屏多少帧、因为两个缓冲都被引擎占着而
   // 丢掉多少帧。真机上「画面卡但声音正常」时，这三个数字能立刻分开
   // 「内核没出帧」和「Flutter 侧来不及取」。
@@ -224,6 +276,14 @@ class VideoTexture {
     static_cast<Slot*>(context)->busy.store(false);
   }
 
+  static void ReleaseSurface(void* context) {
+    auto* self = static_cast<VideoTexture*>(context);
+    int slot = self->surface_slot_.exchange(-1);
+    if (slot >= 0 && self->core_ && self->core_->gpu_release) {
+      self->core_->gpu_release(slot);
+    }
+  }
+
   // The engine reads pixel-buffer textures as RGBA8888; the core hands us BGRA.
   // The conversion (and why it is the fix for the blue-cast picture) lives in
   // pixel_swizzle.h so the standalone test can exercise the same code.
@@ -234,6 +294,8 @@ class VideoTexture {
   CoreApi* core_ = nullptr;
   Slot slots_[kSlots];
   FlutterDesktopPixelBuffer buffers_[kSlots] = {};
+  FlutterDesktopGpuSurfaceDescriptor descriptor_ = {};
+  std::atomic<int> surface_slot_{-1};
   int drops_ = 0;
   unsigned long long frames_taken_ = 0;
   unsigned long long frames_dropped_ = 0;
@@ -484,8 +546,21 @@ class LanPlayerVideoPlugin : public flutter::Plugin {
     DestroyTexture();
     auto texture = std::make_shared<VideoTexture>(&core_);
     texture_ = texture;
-    auto* variant = new flutter::TextureVariant(flutter::PixelBufferTexture(
-        [texture](size_t w, size_t h) { return texture->Copy(w, h); }));
+    // A core with GPU output registers a D3D11 shared surface; anything older
+    // keeps the pixel-buffer texture so the plugin still works with it.
+    flutter::TextureVariant* variant;
+    if (core_.gpu_surface) {
+      variant = new flutter::TextureVariant(flutter::GpuSurfaceTexture(
+          kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle,
+          [texture](size_t w, size_t h) { return texture->ObtainDescriptor(w, h); }));
+      // 注册的是哪一种纹理决定了整条取样链。真机上「画面全黑」时，这一行能
+      // 立刻分开「共享纹理没建起来」和「引擎没打开句柄」。
+      fprintf(stderr, "[lanplayer_video] texture kind: dxgi shared surface\n");
+    } else {
+      variant = new flutter::TextureVariant(flutter::PixelBufferTexture(
+          [texture](size_t w, size_t h) { return texture->Copy(w, h); }));
+      fprintf(stderr, "[lanplayer_video] texture kind: pixel buffer\n");
+    }
     texture_id_.store(registrar_->texture_registrar()->RegisterTexture(variant));
   }
 

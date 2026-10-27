@@ -1,16 +1,20 @@
 /*
  * Windows hardware decoding through D3D11VA.
  *
- * The decoder keeps the picture on the GPU while it is being decoded, then
- * downloads the finished frame to NV12 right before it is shown.  That copy is
- * the price of not tying the GDI back buffer (and the Flutter texture bridge,
- * which shares it) to a D3D11 texture: one readback per presented frame, while
- * the expensive part -- motion compensation and entropy decoding -- still runs
- * in the fixed-function video engine.
+ * The decoded picture stays in a D3D11 texture owned by the decoder's hw frames
+ * context.  On a normal present that texture is handed straight to the GPU
+ * output (d3d11_output.c), which converts NV12 to a shared BGRA surface with the
+ * video processor: no download, no CPU conversion.
  *
- * Only the generic FFmpeg hardware API is used here (av_hwdevice_ctx_create,
- * AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX, av_hwframe_transfer_data), so this
- * file needs no d3d11 headers and the DLL links no extra import library.
+ * The download to system memory is still here as the fallback, because three
+ * cases need real pixels: a hardware decoder that quietly fell back to software
+ * frames, a pixel format the video processor will not convert (P010 exists but
+ * we only claim NV12), and a stream with a graphics subtitle on screen (PGS /
+ * VobSub bitmaps are blended on the CPU buffer).
+ *
+ * The device itself comes from the output module so decoder and converter share
+ * one ID3D11Device -- a VideoProcessor input view cannot reference a texture
+ * from another device.
  */
 #if defined(_WIN32)
 
@@ -33,6 +37,10 @@ struct LpVideoDecoder {
     /* Set once the hwaccel hands us an ordinary system-memory frame, which
      * means libavcodec silently fell back to software for this stream. */
     int sw_fallback;
+    /* Frames that went out on the GPU, and a one-shot note when the first one
+     * had to take the download path instead. */
+    int64_t gpu_presented;
+    int gpu_fallback_warned;
 };
 
 /* The core asks for a pixel format; pick the hardware one if it is offered. */
@@ -134,10 +142,16 @@ int lp_hw_decoder_init(LpVideoDecoder *d, const LpVideoDecoderConfig *cfg, char 
         return LP_ERR_UNSUPPORTED;
     }
 
-    int r = av_hwdevice_ctx_create(&d->device, AV_HWDEVICE_TYPE_D3D11VA, NULL, NULL, 0);
-    if (r < 0) {
-        snprintf(err, errlen, "no D3D11 device (%d)", r);
-        return LP_ERR_UNSUPPORTED;
+    /* Prefer the device the output already owns: a texture from a different
+     * ID3D11Device cannot be fed to our video processor.  When the GPU output is
+     * unavailable (no D3D11 at all) a private device still lets us decode. */
+    int r = lp_gpu_d3d11va_device(&d->device);
+    if (r != LP_OK) {
+        r = av_hwdevice_ctx_create(&d->device, AV_HWDEVICE_TYPE_D3D11VA, NULL, NULL, 0);
+        if (r < 0) {
+            snprintf(err, errlen, "no D3D11 device (%d)", r);
+            return LP_ERR_UNSUPPORTED;
+        }
     }
 
     d->ctx = avcodec_alloc_context3(codec);
@@ -276,8 +290,49 @@ int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f)
         av_frame_unref(hf);
         return LP_OK;
     }
-    /* Hardware -> NV12 in system memory, then the normal render path (which
-     * also blends graphics subtitles and notifies the Flutter texture). */
+    /* Hardware frames: hand the D3D11 texture to the GPU output.  It converts
+     * NV12 into a shared BGRA surface the Flutter host samples directly, so the
+     * picture never round-trips through system memory. */
+    if (hf->format == AV_PIX_FMT_D3D11 && hf->data[0]) {
+        /* data[0] is the ID3D11Texture2D, data[1] carries the array slice as an
+         * intptr_t (see AVD3D11FrameDescriptor in libavutil/hwcontext_d3d11va.h). */
+        unsigned slice = (unsigned)(intptr_t)hf->data[1];
+        /* Hand over the stream's colour space.  The video processor assumes
+         * BT.601 when nobody says otherwise, and a BT.709 stream then comes out
+         * with orange reds - a defect that only shows in the colours, never in
+         * the frame counters. */
+        LpColorInfo color;
+        memset(&color, 0, sizeof(color));
+        switch (hf->colorspace) {
+        case AVCOL_SPC_BT709:
+            color.matrix = 2;
+            break;
+        case AVCOL_SPC_BT470BG:
+        case AVCOL_SPC_SMPTE170M:
+            color.matrix = 1;
+            break;
+        default:
+            color.matrix = 0; /* let the output apply the resolution rule */
+            break;
+        }
+        color.full_range = hf->color_range == AVCOL_RANGE_JPEG;
+        if (lp_render_draw_hw_ex(d->player, hf->data[0], slice, hf->width, hf->height, color) ==
+            LP_OK) {
+            d->gpu_presented++;
+            av_frame_unref(hf);
+            return LP_OK;
+        }
+        if (!d->gpu_fallback_warned) {
+            d->gpu_fallback_warned = 1;
+            LP_INFO("d3d11va", "frame %dx%d (%s) goes through the download path", hf->width,
+                    hf->height,
+                    av_get_pix_fmt_name((enum AVPixelFormat)hf->format)
+                        ? av_get_pix_fmt_name((enum AVPixelFormat)hf->format)
+                        : "?");
+        }
+    }
+    /* Fallback: hardware -> NV12 in system memory, then the normal render path
+     * (which also blends graphics subtitles and notifies the Flutter texture). */
     int r = av_hwframe_transfer_data(d->sw, hf, 0);
     if (r < 0) {
         LP_WARN("d3d11va", "hwframe_transfer_data: %d", r);

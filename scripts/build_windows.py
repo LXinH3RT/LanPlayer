@@ -59,10 +59,12 @@ STUB_SOURCE = "src/platform/stub/stub_platform.c"
 
 # win32_platform.c is the framework adapter (renderer + audio); the D3D11VA
 # decoder is a second translation unit because it is the only one that touches
-# libavcodec's hardware path.
+# libavcodec's hardware path; d3d11_output.c owns the D3D11 device and the
+# shared BGRA surfaces the Flutter host samples without a CPU copy.
 WIN32_SOURCES = [
     "src/platform/win32/win32_platform.c",
     "src/platform/win32/d3d11va_decoder.c",
+    "src/platform/win32/d3d11_output.c",
     "src/app/lp_preview.c",
 ]
 
@@ -233,7 +235,7 @@ def main() -> int:
     win32_objects, bad = compile_objects(zig, native, out, WIN32_SOURCES, includes, defines, ".win32")
     if bad:
         return 1
-    win32_platform_only, win32_hw_only, win32_preview_only = win32_objects
+    win32_platform_only, win32_hw_only, win32_gpu_only, win32_preview_only = win32_objects
 
     ff_libs = sorted(str(p) for p in ffmpeg_lib.glob("lib*.dll.a"))
     if not ff_libs:
@@ -246,12 +248,13 @@ def main() -> int:
     if smb2_lib:
         lib_tail += [str(smb2_lib), "-lws2_32"]
 
-    # The shipped DLL carries the real Windows output adapter (GDI target +
-    # waveOut), so a Flutter desktop host gets video and audio from
+    # The shipped DLL carries the real Windows output adapter (GPU shared
+    # surfaces + WASAPI), so a Flutter desktop host gets video and audio from
     # liblanplayer.dll directly.
     print("   lanplayer.dll (win32 platform)")
-    dll_link = ["cc", *BASE_FLAGS, *core_objects, win32_platform_only, win32_hw_only, *lib_tail,
-                "-luser32", "-lgdi32", "-lwinmm"]
+    dll_link = ["cc", *BASE_FLAGS, *core_objects, win32_platform_only, win32_hw_only, win32_gpu_only,
+                *lib_tail,
+                "-luser32", "-lgdi32", "-lwinmm", "-lole32", "-ld3d11", "-ldxgi"]
     if not zig.run([*dll_link, "-shared", "-o", str(out / "lanplayer.dll")], "lanplayer.dll"):
         return 1
 
@@ -310,6 +313,20 @@ def main() -> int:
                     "-Wl,--subsystem,console"], "lp_win32_texture_test.exe"):
         return 1
 
+    # Opens the shared D3D11 surface the GPU output publishes (same call ANGLE
+    # makes) and compares the middle pixel against the CPU path.  A wrong colour
+    # matrix in VideoProcessorBlt still yields a valid handle and a rising serial,
+    # so only a pixel comparison catches it.
+    print("   lp_win32_gpu_color_test.exe")
+    gpu_obj = out / "lp_win32_gpu_color_test.o"
+    if not zig.run(["cc", *BASE_FLAGS, "-c", str(native / "tests" / "lp_win32_gpu_color_test.c"),
+                    "-o", str(gpu_obj)], "gpu colour test"):
+        return 1
+    if not zig.run(["cc", *BASE_FLAGS, str(gpu_obj), "-o",
+                    str(out / "lp_win32_gpu_color_test.exe"), "-ld3d11", "-ldxgi",
+                    "-Wl,--subsystem,console"], "lp_win32_gpu_color_test.exe"):
+        return 1
+
     # Opens media through hw=auto and asserts the core really picked D3D11VA.
     # The core falls back to software silently (a warning in the log only), so a
     # broken hardware decoder still produces a perfect picture - this is what
@@ -324,8 +341,9 @@ def main() -> int:
         return 1
 
     preview_link = ["cc", *BASE_FLAGS, *core_objects, win32_platform_only, win32_hw_only,
-                    win32_preview_only, *lib_tail,
-                    "-luser32", "-lgdi32", "-lwinmm", "-lcomdlg32", "-lshell32", "-lole32"]
+                    win32_gpu_only, win32_preview_only, *lib_tail,
+                    "-luser32", "-lgdi32", "-lwinmm", "-lcomdlg32", "-lshell32", "-lole32",
+                    "-ld3d11", "-ldxgi"]
     print("   lanplayer_preview.exe (GUI)")
     if not zig.run([*preview_link, "-o", str(out / "lanplayer_preview.exe"), "-Wl,--subsystem,windows"],
                    "lanplayer_preview.exe"):

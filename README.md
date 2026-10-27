@@ -25,7 +25,7 @@ LanPlayer 只做一件事：**把共享里的文件当成本地文件播**——
 | **来源** | SMB 共享（只读）、本机任意盘符下的文件或文件夹 |
 | **容器 / 编码** | 由 FFmpeg 决定：MKV / MP4 / AVI / MOV / TS / FLV / WebM 等，H.264 / HEVC / VP9 / AV1 等 |
 | **硬解** | Windows D3D11VA、macOS / iOS VideoToolbox、Android MediaCodec，失败自动回退软件解码 |
-| **音频** | Windows waveOut、Apple AudioQueue、Android AAudio；AAC / MP3 / FLAC / Vorbis / Opus 等 |
+| **音频** | Windows WASAPI、Apple AudioQueue、Android AAudio；AAC / MP3 / FLAC / Vorbis / Opus 等 |
 | **字幕** | 内嵌轨 + 外挂 SRT / ASS / SSA / VTT；ASS 富文本（颜色、描边、字号、字体、定位）；PGS / VobSub / DVB 图形字幕 |
 | **选轨** | 音轨与字幕各自成面板，可列出文件内全部轨道并切换；按首选 / 次选语言自动挑默认轨 |
 | **播放控制** | 播放暂停、±10 秒、进度拖拽、0.5x–2.0x 变速不变调、音量 0–100（增益到 200%）、点一下静音、全屏 |
@@ -171,11 +171,12 @@ python scripts/run_flutter_tests.py analyze    # = flutter analyze
 | 界面 | ✅ | ✅ | ✅ | ✅ |
 | SMB 浏览 | ✅ | ✅ | ✅ | ✅ |
 | 硬解 | ✅ D3D11VA | ✅ VideoToolbox | ✅ MediaCodec | ✅ VideoToolbox |
-| 音频输出 | ✅ waveOut | ✅ AudioQueue | ✅ AAudio | ✅ AudioQueue |
+| 音频输出 | ✅ WASAPI | ✅ AudioQueue | ✅ AAudio | ✅ AudioQueue |
 | 安装包 | ✅ exe | ✅ dmg | ✅ apk | 需自行签名 |
 
-Windows 桌面端已接 D3D11VA 硬解，但仍是「解码在 GPU、出画回 CPU」，GPU 直出纹理
-与 WASAPI 尚未实现。
+Windows 桌面端解码与出画都在 GPU 上：D3D11VA 解出的帧经视频处理器转成 BGRA，
+写进 D3D11 共享纹理直接交给 Flutter 采样，不再回读系统内存；音频走 WASAPI
+共享模式，设备打不开时自动退回 waveOut。
 
 ## 已验证
 

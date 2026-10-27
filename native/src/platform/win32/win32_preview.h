@@ -2,8 +2,9 @@
  * Windows platform adapter entry points.
  *
  * - The preview player (native/src/app/lp_preview.c) uses blit/save_bmp.
- * - A Flutter desktop host uses copy_frame through its texture bridge, so the
- *   same core feeds a Flutter texture instead of a GDI surface.
+ * - A Flutter desktop host uses the GPU surface below, so the picture reaches
+ *   the engine as a shared D3D11 texture instead of a copied pixel buffer.
+ *   copy_frame stays for hosts that cannot take a GPU surface.
  *
  * Everything exported here is part of lanplayer.dll on Windows.
  */
@@ -51,6 +52,36 @@ LP_EXPORT int lp_win32_blit(HDC dc, int target_w, int target_h, int scale_mode);
 
 /* Saves the latest frame as 32-bit BMP (used by --dump / --selftest). */
 LP_EXPORT int lp_win32_save_bmp(const char *path);
+
+/*
+ * Latest picture as a shared D3D11 texture, or NULL when there is none (before
+ * the first frame, or when the GPU output is unavailable and frames only exist
+ * as pixels).
+ *
+ * The returned pointer is a legacy DXGI share handle for a BGRA texture of
+ * `*width` x `*height`; a Flutter host opens it once and then samples the
+ * texture on every `WM_APP+1`.  `*serial` changes whenever a new frame was
+ * written into that same texture.  `*slot` must be handed back through
+ * lp_win32_gpu_release() once the host is done reading.
+ */
+LP_EXPORT void *lp_win32_gpu_surface(int64_t *serial, int *width, int *height, int *slot);
+
+/* 1 while frames are being published as GPU surfaces rather than pixels. */
+LP_EXPORT int lp_win32_gpu_ready(void);
+
+/* 1 once the latest frame actually went out as a GPU surface.  Distinct from
+ * lp_win32_gpu_ready(): the device may exist while a stream still runs through
+ * the CPU path (software decode of a format the video processor cannot eat). */
+LP_EXPORT int lp_win32_gpu_active(void);
+
+/* Releases the slot taken by lp_win32_gpu_surface().  Safe with a stale index. */
+LP_EXPORT void lp_win32_gpu_release(int slot);
+
+/* Downloads the current GPU surface into `dst` (BGRA, `*stride` bytes per row).
+ * The preview player and any host without GPU surface support use this; call it
+ * with dst = NULL to ask for the required size. */
+LP_EXPORT int lp_win32_gpu_readback(unsigned char *dst, size_t cap, int *width, int *height,
+                                   int *stride);
 #endif
 
 #ifdef __cplusplus

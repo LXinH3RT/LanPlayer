@@ -475,7 +475,7 @@ cmake --build build -j
 ./build/lp_smoke_test /path/to/file.mkv 5   # 软解 5 秒并打印位置
 ```
 
-桌面走 `platform/stub`：无窗口、无声音，但有真实的音频拉取线程，可验证解封装、解码、时钟、字幕时序。Windows 上更完整的是 `scripts/build_windows.py` 产物（`lanplayer.dll` 带 GDI/waveOut，`lanplayer_preview.exe` 是原生界面）。
+桌面走 `platform/stub`：无窗口、无声音，但有真实的音频拉取线程，可验证解封装、解码、时钟、字幕时序。Windows 上更完整的是 `scripts/build_windows.py` 产物（`lanplayer.dll` 带 GDI/WASAPI，`lanplayer_preview.exe` 是原生界面）。
 
 ## 6.5 用 Visual Studio 打开仓库时，CMake 提示要不要启用
 VS「打开文件夹」选中仓库根目录会弹出「检测到 CMakeLists.txt，是否启用 Visual Studio 的 CMake 支持？」——**选「不启用」**。Windows 上真正的内核构建是 `scripts/build_windows.py`（Zig，不走 CMake、不走 MSVC），**没有任何 CMake 目标会产出 `build/win-x64/lanplayer.dll`**。六个 `CMakeLists.txt` 各有主人，除 `native/`（手工 CMake / CI 的 Android、Apple 构建）外都靠 flutter_tools 或 Gradle 传参，VS 里单独配不了：`app/windows/`、`app/windows/flutter/`、`app/windows/runner/`（`flutter build windows` 传 `-DFLUTTER_ROOT=…`）、`packages/lanplayer_video/windows/`（由 `generated_plugins.cmake` include 的插件子目录）、`app/android/app/src/main/cpp/`（Gradle 的 `externalNativeBuild`）。

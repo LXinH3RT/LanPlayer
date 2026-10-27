@@ -178,6 +178,21 @@ static void overlay_update(LpPlayer *p, LpSubtitleTrack *t, int64_t t_now)
 /* Straight-alpha blend of the graphics overlay onto a BGRA picture.  The video
  * frame is letterbox-scaled by the host, so the rects are scaled by the same
  * factor here: they arrive in the decoder's reference grid. */
+/* True when a graphics subtitle is on screen right now.  The GPU output path
+ * cannot blend those (they are CPU bitmaps), so it asks for the download path
+ * instead while this returns non-zero. */
+int lp_render_graphics_sub_active(LpPlayer *p)
+{
+    if (!p || p->subs_inited == 0) {
+        return 0;
+    }
+    int active;
+    pthread_mutex_lock(&p->subs.mutex);
+    active = p->subs.overlay.nb > 0 ? 1 : 0;
+    pthread_mutex_unlock(&p->subs.mutex);
+    return active;
+}
+
 void lp_sub_overlay_blend(LpPlayer *p, uint8_t *bgra, int w, int h, int stride)
 {
     if (!bgra || w <= 0 || h <= 0 || stride < w * 4 || p->subs_inited == 0) {

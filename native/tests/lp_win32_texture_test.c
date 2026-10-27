@@ -33,6 +33,9 @@ typedef int (*fn_copy_frame)(uint8_t *dst, size_t cap, int *w, int *h, int *stri
 typedef int64_t (*fn_serial)(void);
 typedef int (*fn_abi)(void);
 typedef int (*fn_frame_size)(int *w, int *h, int *stride);
+typedef int (*fn_gpu_ready)(void);
+typedef void *(*fn_gpu_surface)(int64_t *serial, int *w, int *h, int *slot);
+typedef void (*fn_gpu_release)(int slot);
 
 static volatile LONG g_frames = 0;
 
@@ -164,6 +167,61 @@ int main(int argc, char **argv)
            (long)g_frames, copied, width, height, stride, (long long)first_serial,
            (long long)last_serial, pos / 1e6);
 
+    /* GPU output: the same frames must also be reachable as a shared D3D11
+     * texture, which is what the Flutter plugin samples instead of copying. */
+    fn_gpu_ready gpu_ready = (fn_gpu_ready)GetProcAddress(lib, "lp_win32_gpu_ready");
+    fn_gpu_surface gpu_surface = (fn_gpu_surface)GetProcAddress(lib, "lp_win32_gpu_surface");
+    fn_gpu_release gpu_release = (fn_gpu_release)GetProcAddress(lib, "lp_win32_gpu_release");
+    int gpu_ok = 1;
+    if (!gpu_ready || !gpu_surface || !gpu_release) {
+        printf("FAIL: GPU surface exports are missing from lanplayer.dll\n");
+        gpu_ok = 0;
+    } else {
+        int surfaces = 0, distinct = 0;
+        int64_t gpu_first = 0, gpu_last = 0;
+        for (int i = 0; i < 100; i++) {
+            Sleep(10);
+            int64_t gs = 0;
+            int gw = 0, gh = 0, slot = -1;
+            void *handle = gpu_surface(&gs, &gw, &gh, &slot);
+            if (handle) {
+                surfaces++;
+                if (!gpu_first) {
+                    gpu_first = gs;
+                }
+                gpu_last = gs;
+                if (surfaces == 1) {
+                    distinct = gw;
+                    printf("gpu_surface=%p %dx%d slot=%d serial=%lld\n", handle, gw, gh, slot,
+                           (long long)gs);
+                }
+                if (slot >= 0) {
+                    gpu_release(slot);
+                }
+            }
+        }
+        printf("gpu_ready=%d gpu_samples=%d gpu_serial=%lld->%lld gpu_w=%d\n",
+               gpu_ready(), surfaces, (long long)gpu_first, (long long)gpu_last, distinct);
+        if (!gpu_ready()) {
+            printf("FAIL: lp_win32_gpu_ready() is 0, the GPU output never initialised\n");
+            gpu_ok = 0;
+        }
+        if (surfaces < 10) {
+            printf("FAIL: only %d GPU surfaces in 1s, expected the frame rate\n", surfaces);
+            gpu_ok = 0;
+        }
+        if (distinct != width) {
+            printf("FAIL: GPU surface width %d does not match the frame width %d\n", distinct,
+                   width);
+            gpu_ok = 0;
+        }
+        if (gpu_last <= gpu_first) {
+            printf("FAIL: GPU serial did not advance (%lld -> %lld)\n", (long long)gpu_first,
+                   (long long)gpu_last);
+            gpu_ok = 0;
+        }
+    }
+
     int colour_ok = 1;
     if (buffer) {
         /* The middle pixel in core order is BGRA; report it the way the BMP
@@ -198,6 +256,9 @@ int main(int argc, char **argv)
     free(buffer);
     destroy(player);
     FreeLibrary(lib);
+    if (!gpu_ok) {
+        return 6;
+    }
 
     int ok = copied >= 1 && width > 0 && height > 0 && (int64_t)g_frames >= 1 &&
              colour_ok;

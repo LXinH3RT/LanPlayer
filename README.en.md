@@ -28,7 +28,7 @@ address, a share name, a user and a password.
 | **Sources** | SMB shares (read-only), any drive file or folder on the local machine |
 | **Containers / codecs** | Whatever FFmpeg supports: MKV / MP4 / AVI / MOV / TS / FLV / WebM, H.264 / HEVC / VP9 / AV1, and more |
 | **Hardware decoding** | D3D11VA on Windows, VideoToolbox on macOS / iOS, MediaCodec on Android, falling back to software automatically |
-| **Audio** | waveOut on Windows, AudioQueue on Apple, AAudio on Android; AAC / MP3 / FLAC / Vorbis / Opus and more |
+| **Audio** | WASAPI on Windows, AudioQueue on Apple, AAudio on Android; AAC / MP3 / FLAC / Vorbis / Opus and more |
 | **Subtitles** | Embedded tracks plus external SRT / ASS / SSA / VTT; ASS styling (colour, outline, size, font, positioning); PGS / VobSub / DVB bitmap subtitles |
 | **Track selection** | Separate audio and subtitle panels listing every track in the file, with default pick by preferred / fallback language |
 | **Playback control** | Play-pause, ±10 s, seek by dragging, 0.5x–2.0x pitch-preserving speed, volume 0–100 (gain to 200 %), click-to-mute, full screen |
@@ -184,11 +184,13 @@ Per-platform pitfalls and the error lookup table are in [docs/build.md](docs/bui
 | UI | ✅ | ✅ | ✅ | ✅ |
 | SMB browsing | ✅ | ✅ | ✅ | ✅ |
 | Hardware decoding | ✅ D3D11VA | ✅ VideoToolbox | ✅ MediaCodec | ✅ VideoToolbox |
-| Audio output | ✅ waveOut | ✅ AudioQueue | ✅ AAudio | ✅ AudioQueue |
+| Audio output | ✅ WASAPI | ✅ AudioQueue | ✅ AAudio | ✅ AudioQueue |
 | Installer | ✅ exe | ✅ dmg | ✅ apk | Sign it yourself |
 
-The Windows desktop build already uses D3D11VA, but it still decodes on the GPU and
-copies frames back to the CPU; zero-copy GPU textures and WASAPI are not implemented yet.
+The Windows desktop build decodes and presents on the GPU: D3D11VA frames are
+converted by the video processor and published as a D3D11 shared texture that
+Flutter samples directly, so no frame is copied back to system memory; audio runs
+on WASAPI shared mode and falls back to waveOut when the device cannot be opened.
 
 ## Verified
 

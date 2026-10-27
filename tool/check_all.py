@@ -2436,6 +2436,125 @@ def check_apple_wiring() -> None:
         notes.append("apple audio: playback category + AudioQueue volume floor")
 
 
+def check_windows_playback_paths() -> None:
+    """Guard the Windows GPU surface output and the WASAPI audio sink.
+
+    Both replaced a working-but-slow path (a CPU download plus sws_scale for
+    the picture, waveOut for the sound), and both break silently when a piece
+    goes missing: a decoder that stops handing over the D3D11 texture still
+    plays, just at CPU speed; a sink that loses its fallback still plays on
+    machines with a working WASAPI device and goes silent on the others.
+    """
+    out = ROOT / "native" / "src" / "platform" / "win32" / "d3d11_output.c"
+    plat = ROOT / "native" / "src" / "platform" / "win32" / "win32_platform.c"
+    dec = ROOT / "native" / "src" / "platform" / "win32" / "d3d11va_decoder.c"
+    plugin = ROOT / "packages" / "lanplayer_video" / "windows" / "lanplayer_video_plugin.cpp"
+    build = ROOT / "scripts" / "build_windows.py"
+
+    if not out.exists():
+        problems.append("native/src/platform/win32/d3d11_output.c is missing; "
+                        "the D3D11 shared surface the Flutter host samples "
+                        "lives there")
+    else:
+        oc = out.read_text(encoding="utf-8")
+        for needle, why in (
+            ("VideoProcessorBlt", "NV12 frames are converted on the GPU with "
+                                  "the video processor, not with sws_scale"),
+            ("DXGI_FORMAT_B8G8R8A8_UNORM", "the shared surface is BGRA, which "
+                                           "the texture bridge reads without a "
+                                           "per-pixel swizzle"),
+            ("CreateTexture2D", "the shared surface still has to be created"),
+            ("IDXGIResource_GetSharedHandle", "the host needs a shareable "
+                                              "handle, not a bare texture"),
+            ("lp_win32_gpu_surface", "the exported surface entry point is what "
+                                     "the plugin calls each frame"),
+        ):
+            if needle not in oc:
+                problems.append(f"native/src/platform/win32/d3d11_output.c no "
+                                f"longer contains {needle!r}: {why}")
+        if "matrix" not in oc or "full_range" not in oc:
+            problems.append("native/src/platform/win32/d3d11_output.c must "
+                            "apply the stream's colour matrix and range; the "
+                            "video processor assumes BT.601 otherwise and "
+                            "BT.709 reds come out orange")
+        if "CreateVideoProcessorInputView" not in oc:
+            problems.append("native/src/platform/win32/d3d11_output.c must build "
+                            "the video processor input view from the decoder "
+                            "texture; without it the GPU has no picture to "
+                            "convert")
+        if "D3D11_RESOURCE_MISC_SHARED" not in oc:
+            problems.append("native/src/platform/win32/d3d11_output.c must create "
+                            "the output texture with D3D11_RESOURCE_MISC_SHARED; "
+                            "otherwise there is no handle for the engine")
+
+    if not dec.exists() or "lp_render_draw_hw_ex" not in dec.read_text(encoding="utf-8"):
+        problems.append("native/src/platform/win32/d3d11va_decoder.c must hand "
+                        "hardware frames to lp_render_draw_hw_ex with the "
+                        "stream colour description; passing NULL drops the "
+                        "matrix and the colours drift")
+
+    pc = plat.read_text(encoding="utf-8") if plat.exists() else ""
+    if "lp_gpu_output_readback" not in pc:
+        problems.append("native/src/platform/win32/win32_platform.c must fall "
+                        "back to a GPU readback in lp_win32_copy_frame; hosts "
+                        "without GPU surface support would get nothing")
+    if "sws_setColorspaceDetails" not in pc:
+        problems.append("native/src/platform/win32/win32_platform.c must tell "
+                        "sws the stream colour space; sws defaults to BT.601 "
+                        "and mis-renders BT.709 clips on the software path")
+    if "kAudioQueueParam_Volume" in pc:
+        pass
+    for needle, why in (
+        ("IMMDeviceEnumerator", "WASAPI enumeration is the point of the sink"),
+        ("IAudioRenderClient", "samples have to be pushed through the render "
+                               "client"),
+        ("AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM", "the mixer format rarely matches "
+                                               "the decoder, so the client has "
+                                               "to convert"),
+        ("waveOutOpen", "waveOut stays as the fallback for machines where "
+                        "WASAPI cannot be opened"),
+    ):
+        if needle not in pc:
+            problems.append(f"native/src/platform/win32/win32_platform.c no "
+                            f"longer contains {needle!r}: {why}")
+    if "wasapi" not in pc:
+        problems.append("native/src/platform/win32/win32_platform.c must report "
+                        "the wasapi backend through lp_audio_sink_name")
+
+    pl = plugin.read_text(encoding="utf-8") if plugin.exists() else ""
+    for needle, why in (
+        ("kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle",
+         "the plugin has to register a GPU surface texture; a pixel buffer "
+         "texture pulls every frame through the CPU"),
+        ("GpuSurfaceTexture", "the texture variant is what selects the GPU "
+                              "path in the embedder"),
+        ("FlutterDesktopPixelFormatBGRA8888", "BGRA is the native order of the "
+                                              "shared surface; declaring RGBA "
+                                              "swaps red and blue"),
+        ("lp_win32_gpu_surface", "the plugin asks the core for the current "
+                                 "surface"),
+    ):
+        if needle not in pl:
+            problems.append(f"packages/lanplayer_video/windows/"
+                            f"lanplayer_video_plugin.cpp no longer contains "
+                            f"{needle!r}: {why}")
+
+    if build.exists():
+        bc = build.read_text(encoding="utf-8")
+        if "d3d11_output.c" not in bc:
+            problems.append("scripts/build_windows.py does not compile "
+                            "src/platform/win32/d3d11_output.c")
+        if '"-lole32"' not in bc:
+            problems.append("scripts/build_windows.py must link ole32; WASAPI "
+                            "does not resolve without it")
+        if '"-ld3d11"' not in bc and "d3d11.lib" not in bc:
+            problems.append("scripts/build_windows.py must link d3d11 for the "
+                            "shared surface output")
+    notes.append("windows paths: d3d11va frames go to a shared BGRA surface "
+                 "through VideoProcessorBlt (colour matrix honoured), audio "
+                 "runs on WASAPI with a waveOut fallback")
+
+
 def check_local_picker() -> None:
     """Guard the local file/folder picker and the wide-character file layer.
 
@@ -2560,6 +2679,7 @@ def main() -> int:
     check_apple_wiring()
     check_hw_decode()
     check_local_picker()
+    check_windows_playback_paths()
 
     for n in notes:
         print(f"· {n}")

@@ -303,10 +303,39 @@ int lp_render_set_window(LpPlayer *p, void *window, int width, int height);
 int lp_render_resize(LpPlayer *p, int width, int height);
 /* Software path: convert + draw the frame (Android EGL / desktop BGRA). */
 int lp_render_draw(LpPlayer *p, AVFrame *frame);
+/* Hardware path (Windows): hand a decoder-owned D3D11 NV12 picture straight to
+ * the shared-texture output, without downloading it.  Returns
+ * LP_ERR_UNSUPPORTED when the GPU path cannot take this frame; the caller then
+ * falls back to the software download. */
+int lp_render_draw_hw(LpPlayer *p, void *d3d_texture, unsigned slice, int width,
+                      int height);
+/* Colour space of the compressed stream, so the GPU conversion picks the same
+ * YCbCr matrix the encoder used.  `matrix` is 0 = unknown, 1 = BT.601, 2 = BT.709;
+ * `full_range` is 1 for JPEG/PC range and 0 for the usual 16-235. */
+typedef struct LpColorInfo {
+    int matrix;
+    int full_range;
+    int bit_depth;
+} LpColorInfo;
+int lp_render_draw_hw_ex(LpPlayer *p, void *d3d_texture, unsigned slice, int width, int height,
+                         LpColorInfo color);
+/* GPU output: tell the video processor which YCbCr matrix the stream uses.
+ * Without it the processor assumes BT.601, which turns BT.709 reds orange. */
+int lp_gpu_output_set_color(int matrix, int full_range);
 /* Apple path: store a retained CVPixelBufferRef and notify the host. */
 int lp_render_publish_pixel_buffer(LpPlayer *p, void *cv_pixel_buffer);
 int lp_render_available(void);
 const char *lp_render_name(void);
+
+/* d3d11_output.c (Windows only): the picture is published as a D3D11 shared
+ * texture so the Flutter texture bridge can sample it without a CPU copy. */
+int lp_gpu_output_init(void);
+int lp_gpu_output_ready(void);
+int lp_gpu_d3d11va_device(AVBufferRef **out);
+int lp_gpu_output_upload(LpPlayer *p, const uint8_t *bgra, int w, int h, int stride);
+int lp_gpu_output_blit(LpPlayer *p, void *d3d_texture, unsigned slice, int w, int h);
+int lp_gpu_output_readback(unsigned char *dst, size_t cap, int *width, int *height, int *stride);
+void lp_gpu_output_close(void);
 
 /* -------------------------------------------------------------- subtitle */
 
@@ -619,6 +648,9 @@ void lp_subtitle_feed_packet(LpPlayer *p, int stream_index, AVPacket *pkt);
 /* Blends the graphics-subtitle overlay onto a converted BGRA picture.  The
  * renderer calls this right after sws_scale, with no other locks held. */
 void lp_sub_overlay_blend(LpPlayer *p, uint8_t *bgra, int w, int h, int stride);
+/* True while a graphics (bitmap) subtitle is on screen.  The GPU output cannot
+ * blend those and falls back to the download path meanwhile. */
+int lp_render_graphics_sub_active(LpPlayer *p);
 
 /* submatch.c — 外挂字幕和视频的配对规则。与 Dart 侧
  * app/lib/data/subtitle_match.dart 同一套判定，改一边必须同步另一边。 */

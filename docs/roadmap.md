@@ -13,7 +13,7 @@
   记忆播放进度（按路径存 `progress.json`，打开时自动续播，列表显示观看百分比）
 * 模块 4：硬解开关（自动回退）、缩放策略、去隔行（yadif）、媒体信息面板（含解码计数）
 * 模块 5：本地文件浏览与播放，复用同一内核
-* 桌面：Windows 原生预览器（GDI + waveOut）+ Flutter 桌面端（CMake/MSVC，纹理输出）
+* 桌面：Windows 原生预览器（GDI + WASAPI）+ Flutter 桌面端（CMake/MSVC，纹理输出）
 * ~~服务端：Windows 共享代理（一键共享 + 生成密码 + 吊销 + 自检）~~ 已移除：
   共享由系统自带的文件共享提供，app 只负责填地址/共享名/账号/密码
 
@@ -24,7 +24,7 @@
 | ~~图形字幕（PGS / VobSub / DVB）跳过~~ | 已实现：`SUBTITLE_BITMAP` 矩形解码成 RGBA，按解码参考网格缩放到画面后由渲染器直通混合进视频帧（Windows GDI/waveOut、macOS BGRA 纹理两条路都接）。`anime-07.mkv` 的 6 条 `dvd_subtitle` 轨有画面，媒体信息里带 `"bitmap":true` | 完成（v0.1 追加）。仍不支持的：`\p` 矢量绘图里的动态特效、BD-J 交互 |
 | ~~ASS 富文本不渲染~~ | 已实现：`{\b1} {\i1} {\u1} {\s1} {\c&H..&} {\fs..} {\an..} {\pos(..)} {\r}` 解析成有序 run，Dart 侧逐个 `TextSpan` 渲染，一行里可以混排颜色/粗斜体/字号 | 完成（v0.1 追加）。仍不支持的：卡拉 OK `\k`、`\t` 动画、`\clip`、矢量绘图 `\p`（按 ASS 规范丢弃） |
 | ~~共享名要手填~~ | 已放弃：只填服务器地址就列出共享名的功能已移除（SRVSVC 在 Windows 家庭版常被关掉，而列出共享反而不如让用户直接填「属性 → 共享」里那个名字可靠）。现在只填主机 + 账号密码时，客户端连 `IPC$` 校验登录、只报「账号密码对不对」，共享名仍需自己填 | 有意不做 |
-| Windows 桌面端 | **已构建并运行**：CMake + MSVC 编出 Release 版 `lanplayer.exe`，Flutter UI 渲染、SMB 浏览、视频纹理与外挂字幕都正常（见 `docs/images/desktop-*.png`）；一条命令 `scripts\build_windows_desktop.py`。官方 `flutter build windows` 也已跑通（`scripts\patch_flutter_tools.py` 注入 VS 2026 的 generator） | 下一步：GPU 直出纹理（D3D11 纹理零拷贝）+ WASAPI |
+| Windows 桌面端 | **已构建并运行**：CMake + MSVC 编出 Release 版 `lanplayer.exe`，Flutter UI 渲染、SMB 浏览、视频纹理与外挂字幕都正常（见 `docs/images/desktop-*.png`）；一条命令 `scripts\build_windows_desktop.py`。官方 `flutter build windows` 也已跑通（`scripts\patch_flutter_tools.py` 注入 VS 2026 的 generator） | GPU 直出纹理与 WASAPI 已完成 |
 | macOS 视频输出未接桌面纹理 | **已接并已在真机跑通**：`app/macos/Runner/MainFlutterWindow.swift` 注册 `lanplayer/video` 通道，`PlayerTexture` 从内核拉 `CVPixelBuffer` 交给 Flutter 引擎（BGRA，图形字幕已叠加）；VideoToolbox 硬解、AudioQueue 输出、外挂/内嵌字幕、SMB 浏览与进度保存全部通过。iPad 模拟器与实体设备同样跑通 | 完成 |
 | 倍速上限 2.0x | 符合需求（0.5–2.0） | 若要更高需串联两级 atempo |
 | 单实例单窗口 | 同时只播一个视频 | 按设计，播放页单例 |
@@ -58,7 +58,7 @@
 
 **v0.3 — 桌面与发现**
 
-* Windows：~~D3D11VA 硬解~~（已完成，`native/src/platform/win32/d3d11va_decoder.c`）+ GPU 直出纹理 + WASAPI；macOS 同步
+* Windows：~~D3D11VA 硬解~~（`native/src/platform/win32/d3d11va_decoder.c`）、~~GPU 直出纹理~~（`native/src/platform/win32/d3d11_output.c`）、~~WASAPI~~（`native/src/platform/win32/win32_platform.c`）均已完成；macOS 同步
 * Apple：~~iOS / macOS 工程接线~~（已完成：`packages/lanplayer_core` 两个 podspec + 两个 Podfile + macOS 纹理通道 + 部署目标对齐 + 每个平台族独立的静态库目录，见 `docs/build.md` 第 4 节）。**macOS 桌面 bundle 与 iPad 都已真机跑通**（VideoToolbox 硬解、AudioQueue、外挂字幕、SMB 浏览）
 * ~~SMB 局域网自动发现~~ 已完成（改成了更可靠的做法）：`app/lib/data/lan_scan.dart`
   并发探测本机所在 /24 的 **SMB 端口**，命中后反查主机名，结果点一下填进「IP 地址」。

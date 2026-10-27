@@ -110,7 +110,7 @@ Flutter 直接消费，无拷贝）。内核解出帧后 `lp_render_publish_pixe
 Swift 切到主线程 `textureFrameAvailable`。
 
 **桌面**：Windows 走我方插件 `packages/lanplayer_video/`，`VideoTexture::Copy()` 把内核的
-BGRA 帧包成 `FlutterDesktopPixelBuffer` 交给引擎（无 GPU 直出，一次 CPU 拷贝 + R↔B 交换）。
+解码得到的 D3D11 纹理经视频处理器转成 BGRA，写进共享纹理后交给引擎 `GpuSurfaceTexture(kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle)` 直接采样；没有 GPU 直出能力的主机（原生预览器）才走 `lp_win32_gpu_readback` 回读。
 画面怎么贴合窗口由 Flutter 这一层的 `app/lib/ui/widgets/video_surface.dart` 决定（视频区
 包一层 `FittedBox`，按 origin 尺寸的盒子做 contain / cover / fill），内核的 `scale_mode`
 在桌面是不被消费的。
