@@ -50,6 +50,25 @@ class VolumeSheet extends StatefulWidget {
     return (v / displayMax * maxVolume).clamp(0.0, maxVolume);
   }
 
+  /// 滚轮一格走多少显示刻度。传统滚轮 delta 是 ±100 量级，一格跨 5 个刻度
+  /// 正好能从 0 到 100 用二十格走完，不至于滚半天没反应、也不至于一碰就满。
+  static const double wheelStep = 5.0;
+
+  /// Flutter 在 Windows 上把一格滚轮报成 `scrollDelta.dy = 60`（实测：滚三格
+  /// 正好走过 9 个显示刻度，每格 3），不是原始消息里的 120。换算以实测值为
+  /// 准，别照抄 Win32 的 120 —— 那样一格会跳两倍。
+  static const double scrollPerNotch = 60.0;
+
+  /// 滚轮增量 → 新增益。
+  ///
+  /// 往上滚（`scrollDelta.dy < 0`）音量变大，这是桌面播放器的通例。触控板给
+  /// 的 delta 是连续的小值，所以按 `dy / scrollPerNotch` 折算成「格」再乘
+  /// [wheelStep]，不是简单地按符号加减一格。
+  static double wheelVolume(double volume, double scrollDelta) {
+    final display = displayOf(volume) + (-scrollDelta / scrollPerNotch) * wheelStep;
+    return volumeOf(display);
+  }
+
   @override
   State<VolumeSheet> createState() => _VolumeSheetState();
 }

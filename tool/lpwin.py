@@ -276,11 +276,17 @@ def click(x: int, y: int, double: bool = False) -> None:
 
 
 def wheel(notches: int, x: int, y: int) -> None:
+    """滚轮：正数往上、负数往下，一格 = 120（WHEEL_DELTA）。
+
+    `mouse_event` 的 dwData 是有符号的 16 位增量，往下滚要传 -120，也就是
+    0xFFFFFF88。这里原来写的是 0xFFFFFB90（= -1136，约等于向上九格半），
+    往下滚一格会被应用成「向下九格」，测试里就表现为音量一下掉到底。
+    """
     MOUSEEVENTF_WHEEL = 0x0800
     move_cursor(x, y)
     time.sleep(0.1)
     for _ in range(abs(notches)):
-        delta = 0xFFFFFB90 if notches < 0 else 0x78  # -120 per notch down
+        delta = 0xFFFFFF88 if notches < 0 else 0x78  # -120 / +120 per notch
         _user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta, 0)
         time.sleep(0.12)
 

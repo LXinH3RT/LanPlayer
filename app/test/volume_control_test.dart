@@ -135,4 +135,38 @@ void main() {
       expect(rec.mutes.last, isFalse);
     });
   });
+
+  /// 滚轮调音量（用户 2026-10-27 要求「鼠标滚轮控制音量」）。
+  ///
+  /// 用户的场景是鼠标停在画面上直接滚，不点任何按钮。这里测的是换算本身：
+  /// 真机上滚轮事件走 `Listener.onPointerSignal`，widget test 里造
+  /// `PointerScrollEvent` 也能验，但先把「一格到底走多少」钉死更关键 ——
+  /// 滚一格跨 5 个显示刻度，从 0 到 100 正好 20 格。
+  group('滚轮调音量', () {
+    test('往上滚变大、往下滚变小', () {
+      expect(VolumeSheet.wheelVolume(1.0, -60), greaterThan(1.0));
+      expect(VolumeSheet.wheelVolume(1.0, 60), lessThan(1.0));
+    });
+
+    test('一格（Windows 报 60）走 5 个显示刻度', () {
+      // 1.0 增益 = 显示 50。这条钉住的是实测值：滚三格走过 9 个刻度时说明
+      // 每格只有 3，正是把一格当成 100 造成的。
+      expect(VolumeSheet.displayOf(VolumeSheet.wheelVolume(1.0, -60)), 55);
+      expect(VolumeSheet.displayOf(VolumeSheet.wheelVolume(1.0, 60)), 45);
+    });
+
+    test('滚到头就停住，不会超量程', () {
+      expect(VolumeSheet.wheelVolume(2.0, -60), 2.0);
+      expect(VolumeSheet.wheelVolume(0.0, 60), 0.0);
+      // 触控板一次给很大的 delta 也要夹住。
+      expect(VolumeSheet.wheelVolume(1.0, -100000), 2.0);
+      expect(VolumeSheet.wheelVolume(1.0, 100000), 0.0);
+    });
+
+    test('触控板的小 delta 按比例折算，不是按次加减一格', () {
+      // 只有 1/3 格 => 显示值约动 2；1/15 格 => 不到 1 个刻度，四舍五入不动。
+      expect(VolumeSheet.displayOf(VolumeSheet.wheelVolume(1.0, -20)), 52);
+      expect(VolumeSheet.displayOf(VolumeSheet.wheelVolume(1.0, -4)), 50);
+    });
+  });
 }

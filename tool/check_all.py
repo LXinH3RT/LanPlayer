@@ -1313,6 +1313,22 @@ def check_player_layout() -> None:
             problems.append("the slider max must be VolumeSheet.displayMax, not "
                             "maxVolume; otherwise the readout goes to 200")
 
+    # 用户 2026-10-27 要求「鼠标滚轮控制音量」。接线在播放页的 Listener 上，
+    # 换算在 VolumeSheet.wheelVolume 里 —— 两边断一头都是「滚了没反应」，
+    # 而这种失效在截图里完全看不出来，只能用静态断言钉住。
+    if "onPointerSignal: _onPointerSignal" not in text:
+        problems.append("player_screen.dart: the wheel no longer reaches the "
+                        "volume; hook onPointerSignal on the surface Listener")
+    if "void _onPointerSignal(PointerSignalEvent" not in text:
+        problems.append("player_screen.dart: _onPointerSignal is gone; the "
+                        "mouse wheel cannot change the volume")
+    if "wheelVolume(" not in text:
+        problems.append("player_screen.dart: the wheel must go through "
+                        "VolumeSheet.wheelVolume so the step size stays in one place")
+    if sheet.exists() and "static double wheelVolume(" not in sc:
+        problems.append("VolumeSheet.wheelVolume is gone; the wheel step and the "
+                        "0-100/0-2.0 mapping would drift apart")
+
     notes.append("player layout: back button pinned top-left, picture controls in the "
                  "bottom row")
 

@@ -378,6 +378,26 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _showControls();
   }
 
+  /// 滚轮调音量：往上滚变大，一格走 [VolumeSheet.wheelStep] 个显示刻度。
+  ///
+  /// 只处理 `PointerScrollEvent`，别的事件原样放过 —— 播放页眼下没有可滚动的
+  /// 内容，但将来在画面上叠列表时这里不会被吞掉。静音状态不自动解除：用户按了
+  /// 静音还在滚，多半是想把音量调回去，突然出声更糟；HUD 里写明当前是静音。
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    if (event.scrollDelta.dy == 0) return;
+    final next = VolumeSheet.wheelVolume(_player.volume, event.scrollDelta.dy);
+    final shown = VolumeSheet.displayOf(next);
+    if (next != _player.volume) {
+      _player.setVolume(next);
+      _settings.volume = next;
+      // 与音量面板一致：写进 SettingsStore，下次开片按这次的音量来。
+      SettingsStore.instance.value.volume = next;
+      unawaited(SettingsStore.instance.save());
+    }
+    _showHud(_player.muted ? '静音（音量 $shown）' : '音量 $shown');
+  }
+
   @override
   void dispose() {
     _hideTimer?.cancel();
@@ -767,6 +787,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
         // 导致鼠标在控制条上移动时计时器不重置、控件中途消失。
         child: Listener(
           onPointerHover: _onPointerHover,
+          // 滚轮调音量（用户 2026-10-27 要求）。挂在整块画面上：播放页里的
+          // 滚轮没有别的含义，压在字幕/画面上都能用。
+          onPointerSignal: _onPointerSignal,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: _toggleControls,
