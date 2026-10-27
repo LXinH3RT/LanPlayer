@@ -618,6 +618,11 @@ void lp_subtitle_feed_packet(LpPlayer *p, int stream_index, AVPacket *pkt);
  * renderer calls this right after sws_scale, with no other locks held. */
 void lp_sub_overlay_blend(LpPlayer *p, uint8_t *bgra, int w, int h, int stride);
 
+/* submatch.c — 外挂字幕和视频的配对规则。与 Dart 侧
+ * app/lib/data/subtitle_match.dart 同一套判定，改一边必须同步另一边。 */
+void lp_sub_match_stem(const char *name, char *out, size_t outlen);
+int lp_sub_match_related(const char *video_stem, const char *sub_stem);
+
 /* source layer (see src/source) */
 typedef struct LpIo LpIo;
 LpIo *lp_io_open(const char *url, const LpSourceOptions *opts, char *err, size_t errlen);

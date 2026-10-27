@@ -46,6 +46,7 @@ CORE_SOURCES = [
     "src/core/video.c",
     "src/core/audio.c",
     "src/core/subtitle.c",
+    "src/core/submatch.c",
     "src/core/thumb.c",
     "src/core/player.c",
     "src/source/url.c",
@@ -280,6 +281,12 @@ def main() -> int:
     if not build_test("lp_thumb_test.exe", native / "tests" / "lp_thumb_test.c", "thumb test"):
         return 1
     if not build_test("lp_junk_test.exe", native / "tests" / "lp_junk_test.c", "junk test"):
+        return 1
+
+    # 外挂字幕的配对规则：同主干、同集数、去掉发布组/语言标签后对得上都算，
+    # 但异集和跨语言片名必须判否。用例取自真实片库，规则退化了这里会先红。
+    if not build_test("lp_submatch_test.exe", native / "tests" / "lp_submatch_test.c",
+                      "submatch test"):
         return 1
 
     # Loads lanplayer.dll at runtime and drives the texture path, exactly like

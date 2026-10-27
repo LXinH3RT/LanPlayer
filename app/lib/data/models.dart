@@ -1,5 +1,7 @@
+import 'subtitle_match.dart';
 import 'track_prefs.dart';
 
+export 'subtitle_match.dart';
 export 'track_prefs.dart';
 
 /// Mirrors LpState in native/include/lanplayer/lp_types.h
@@ -254,25 +256,16 @@ class DirectoryListing {
   ///   `S01E01.mkv` + `S01E01.简体.srt`
   ///   `电影.mkv` + `电影.chs&eng.ass`
   ///
-  /// 判定规则：字幕去掉扩展名后的主干，**等于**视频主干，或者**以
-  /// 「视频主干 + 分隔符」开头**。用「主干 + 分隔符」而不是裸 `startsWith`，
-  /// 是为了不把 `电影2.srt` 错配到 `电影.mkv` 上。
+  /// 判定规则见 `subtitle_match.dart`：主干相同、主干 + 分隔符前缀、集数相同、
+  /// 或去掉发布组/语言标签后仍能对上。单纯的主干前缀不算 —— `电影2.srt`
+  /// 不会错配到 `电影.mkv` 上。
   ///
   /// 同一组里保持原有顺序（通常已按名称排序），方便按语言习惯挑默认项。
   List<MediaEntry> subtitlesFor(MediaEntry video) {
     if (!video.isVideo) return const [];
-    final stem = _stemOf(video.name);
-    if (stem.isEmpty) return const [];
     final out = <MediaEntry>[];
     for (final s in subtitles) {
-      final subStem = _stemOf(s.name);
-      if (subStem == stem) {
-        out.add(s);
-        continue;
-      }
-      if (subStem.length > stem.length &&
-          subStem.startsWith(stem) &&
-          _isSeparator(subStem[stem.length])) {
+      if (subtitleBelongsTo(video.name, s.name)) {
         out.add(s);
       }
     }
@@ -308,21 +301,6 @@ class DirectoryListing {
             e.kind == 'audio' ||
             orphans.any((o) => o.path == e.path))
         .toList();
-  }
-
-  /// 去掉最后一个扩展名并转小写。`movie.zh-CN.srt` → `movie.zh-cn`。
-  static String _stemOf(String name) {
-    final dot = name.lastIndexOf('.');
-    final base = dot > 0 ? name.substring(0, dot) : name;
-    return base.toLowerCase();
-  }
-
-  /// 视频主干与字幕附加部分之间的分隔符。
-  ///
-  /// `movie.zh.srt` 用 `.`；也有 `movie - zh.srt`、`movie_zh.srt` 这类写法。
-  /// 中文字幕常见 `movie.简体.srt`，点号已经覆盖。
-  static bool _isSeparator(String ch) {
-    return ch == '.' || ch == '_' || ch == '-' || ch == ' ' || ch == '(';
   }
 
   factory DirectoryListing.fromJson(Map<String, dynamic> j) {

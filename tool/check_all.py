@@ -89,6 +89,7 @@ REQUIRED = [
     "native/src/core/video.c",
     "native/src/core/audio.c",
     "native/src/core/subtitle.c",
+    "native/src/core/submatch.c",
     "native/src/core/queue.c",
     "native/src/core/audio_ring.c",
     "native/src/core/nal.c",
@@ -512,8 +513,39 @@ def check_thumbnails() -> None:
         if "subtitlesFor" not in mc:
             problems.append("DirectoryListing.subtitlesFor missing; sidecar "
                             "subtitles would not be linked to their video")
+        if "subtitleBelongsTo" not in mc:
+            problems.append("models.dart must group sidecars through "
+                            "data/subtitle_match.dart; the loose rules it used "
+                            "to carry could not pair a tagged release with its "
+                            "own subtitle")
     else:
         problems.append("app/lib/data/models.dart missing")
+    # 配对规则是跨语言产物：列表分组（Dart）和自动挂载（C）必须用同一套判定，
+    # 否则同一个文件在列表里有字幕、点开却没加载。
+    match = ROOT / "app" / "lib" / "data" / "subtitle_match.dart"
+    if not match.exists():
+        problems.append("app/lib/data/subtitle_match.dart missing")
+    else:
+        mt = match.read_text(encoding="utf-8")
+        if "subtitleBelongsTo" not in mt:
+            problems.append("subtitle_match.dart must expose "
+                            "subtitleBelongsTo(videoName, subName)")
+        if "_episodeKey" not in mt:
+            problems.append(
+                "subtitle_match.dart must compare episode numbers; without it a "
+                "whole season's subtitles collapse onto the first episode")
+    cmatch = ROOT / "native" / "src" / "core" / "submatch.c"
+    if not cmatch.exists():
+        problems.append("native/src/core/submatch.c missing; the core would "
+                        "pair sidecars by a bare name prefix again")
+    else:
+        cm = cmatch.read_text(encoding="utf-8")
+        if "lp_sub_match_related" not in cm:
+            problems.append("submatch.c must expose lp_sub_match_related")
+        demux = ROOT / "native" / "src" / "core" / "demux.c"
+        if demux.exists() and "lp_sub_match_related" not in demux.read_text(encoding="utf-8"):
+            problems.append("demux.c must pair sidecars through "
+                            "lp_sub_match_related, not a bare prefix compare")
     # The row itself lives in a shared widget now, because the home screen
     # spreads every source's root out with the very same rows. The guard follows
     # the code: the widget must group subtitles under their video, and both
@@ -601,6 +633,8 @@ def check_thumbnails() -> None:
     notes.append("browser: only video/subtitle/audio rows, subtitles grouped "
                  "under their own video, back and refresh both refetch "
                  "(the back stack only holds a snapshot)")
+    notes.append("subtitle match: same stem, same episode, or release/language "
+                 "tags stripped — and the same rules in Dart and in the core")
     notes.append("source: listing hides OS metadata (.DS_Store/._*/desktop.ini), "
                  "SMB transport is read-only")
 

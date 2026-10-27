@@ -195,7 +195,9 @@ static void auto_load_subtitles(LpPlayer *p)
         /* Directory part removed: "<stem><suffix>.<ext>" */
         stem_of(name, stem, sizeof(stem));
         LP_DEBUG("demux", "subtitle candidate %s (stem \"%s\" vs \"%s\")", path, stem, video_stem);
-        if (strncmp(stem, video_stem, strlen(video_stem)) != 0) {
+        /* 近似匹配：同主干、同集数、或去掉发布组/语言标签后对得上都算。
+         * 规则本身在 submatch.c，和 Dart 侧的列表分组共用同一套判定。 */
+        if (!lp_sub_match_related(video_stem, stem)) {
             continue;
         }
         if (lp_subtitle_add_file(p, path, p->options_json) >= 0) {

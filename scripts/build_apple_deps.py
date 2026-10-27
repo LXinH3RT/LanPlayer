@@ -50,6 +50,7 @@ CORE_SOURCES = [
     "native/src/core/video.c",
     "native/src/core/audio.c",
     "native/src/core/subtitle.c",
+    "native/src/core/submatch.c",
     "native/src/core/thumb.c",
     "native/src/core/player.c",
     "native/src/source/url.c",
