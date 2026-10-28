@@ -155,6 +155,7 @@ REQUIRED = [
     "native/src/platform/win32/d3d11va_decoder.c",
     "packages/lanplayer_video/windows/include/lanplayer_video/pixel_swizzle.h",
     "app/lib/ui/widgets/subtitle_overlay.dart",
+    "app/test/subtitle_clip_test.dart",
     "app/lib/ui/splash_gate.dart",
     "app/test/splash_gate_test.dart",
     "app/assets/branding/splash_logo.png",
@@ -2015,10 +2016,22 @@ def check_subtitle_advanced() -> None:
             ("SubtitleAnimator.resolve(", "the per-frame animation lookup"),
             ("style.secondaryColor", "the karaoke pre-sung colour"),
             ("_drawingsWithPlacement(", "drawings following their line anchor"),
+            # 横向换算必须用画面实际宽度。用 PlayResX / PlayResY 乘高度推出来
+            # 只在脚本分辨率恰好等于视频宽高比时才对，2.39:1 的电影会偏十几个
+            # 百分点，裁剪框整体左移、该藏的字露出来。
+            ("final videoWidth = video.width;",
+             "the clip rectangle has to use the picture width, not a "
+             "PlayResX/PlayResY guess"),
         ):
             if token not in ot:
                 problems.append(
                     f"subtitle_overlay.dart lost {token} ({why})")
+
+    clip_test = ROOT / "app" / "test" / "subtitle_clip_test.dart"
+    if not clip_test.exists():
+        problems.append(
+            "app/test/subtitle_clip_test.dart is missing; the clip rectangle "
+            "would only be checked by eye")
 
     notes.append("subtitle advanced: animations, clip rectangles, vector "
                  "drawings and karaoke are parsed, shipped and painted")

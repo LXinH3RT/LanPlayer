@@ -360,7 +360,11 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
   ) {
     final prx = style.playResX > 0 ? style.playResX : 1920.0;
     final pry = style.playResY > 0 ? style.playResY : 1080.0;
-    final videoWidth = videoHeight * prx / pry;
+    // 横向必须用画面矩形**实际**的宽度，不能拿 `PlayResX / PlayResY` 乘高度
+    // 推出来：脚本分辨率与视频宽高比不一定相等（1280x720 的脚本套 2.39:1 的
+    // 电影就会差出十几个百分点），推出来的宽度一旦偏大，裁剪框整体左移，
+    // 该露出来的字就被切掉了。
+    final videoWidth = video.width;
     final rect = Rect.fromLTRB(
       clip[0] * videoWidth / prx,
       clip[1] * videoHeight / pry,
