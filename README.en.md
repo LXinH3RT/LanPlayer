@@ -35,6 +35,7 @@ address, a share name, a user and a password.
 | **Continuous play** | The current directory is ordered by `SxxEzz` or "episode N" and the next one starts on its own |
 | **Resume** | Reopening a file continues where it stopped; the list shows a progress bar and percentage |
 | **Browsing** | First-frame thumbnails, cached on disk, generated on demand; only videos and subtitles are listed, `.txt` / `.docx` and friends stay hidden, subtitles sit under their video |
+| **Launch** | On mobile a logo animation covers the first frame for about 1.2 s while the store loads run behind it, then the list appears; the desktop opens straight into it |
 | **Also** | LAN scan (concurrent probing of the local subnet), desktop keyboard shortcuts and touch gestures, light/dark following the system |
 
 ## Screens
@@ -56,6 +57,10 @@ The advanced tags render too: `\t` colour animation, `\clip` cropping, `\p` vect
 drawing and `\k` karaoke fill:
 
 ![ASS advanced features](docs/images/desktop-ass-advanced.png)
+
+A logo animation covers the first frame while the store loads run in parallel:
+
+![Splash](docs/images/desktop-splash.png)
 
 On mobile the same UI is used (texture plus subtitle bubbles):
 

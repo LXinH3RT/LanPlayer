@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Modify this file to customize your launch splash screen -->
+<!-- 系统启动画面。Flutter 画出第一帧之前显示这张图，所以它要和
+     lib/ui/splash_gate.dart 的 SplashView 对得上：同一个底色、同一个
+     图标、同一个位置。否则用户会看到「空白 → 突然变成深色」的闪跳。 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@android:color/white" />
+    <item android:drawable="@color/launch_background" />
 
-    <!-- You can insert your own image assets here -->
-    <!-- <item>
+    <item>
         <bitmap
             android:gravity="center"
-            android:src="@mipmap/launch_image" />
-    </item> -->
+            android:src="@mipmap/launch_logo" />
+    </item>
 </layer-list>

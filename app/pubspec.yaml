@@ -31,6 +31,9 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    # 启动动画用的图标：从 AppIcon 去掉白底、按内容裁边后缩到 512 px。
+    - assets/branding/splash_logo.png
   fonts:
     # 界面统一用 MiSans（小米开源，Apache-2.0 的 MiSans 变体）。
     # 系统默认字体族在 Windows 上没有中文字形，中文要落到 fallback 链上，

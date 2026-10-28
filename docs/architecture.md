@@ -22,6 +22,12 @@ Dart UI ──► PlayerController ──► dart:ffi ──► lp_player_*   �
    由内核分配、宿主释放（见 §6）。
 3. **平台层只做“输出”**。解码策略、同步、字幕解析都在跨平台代码里，平台文件只负责
    “把帧送到屏幕 / 把 PCM 送到扬声器”。
+4. **配置读取不挡第一帧**。`main()` 只读 `LANPLAYER_STATE_DIR` 就 `runApp`，四个 store
+   的加载放到 `SplashGate` 背后并行进行：首页从第一帧就挂在栈底，图标动画盖在上面，
+   加载完再淡出（`app/lib/ui/splash_gate.dart`）。移动端默认开启，桌面端默认关闭
+   （窗口已经出现，不需要遮罩），`LANPLAYER_SPLASH=1/0` 可强制。三端的原生启动画面
+   （iOS `LaunchScreen.storyboard`、Android `launch_background.xml` 与 Android 12 的
+   `windowSplashScreen*`）用同一个深色底与同一个图标，避免 Dart 起来之前闪白。
 
 ## 2. 线程
 

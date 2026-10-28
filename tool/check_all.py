@@ -155,6 +155,10 @@ REQUIRED = [
     "native/src/platform/win32/d3d11va_decoder.c",
     "packages/lanplayer_video/windows/include/lanplayer_video/pixel_swizzle.h",
     "app/lib/ui/widgets/subtitle_overlay.dart",
+    "app/lib/ui/splash_gate.dart",
+    "app/test/splash_gate_test.dart",
+    "app/assets/branding/splash_logo.png",
+    "app/android/app/src/main/res/values-v31/styles.xml",
     "app/lib/ui/widgets/video_surface.dart",
     "app/test/video_surface_test.dart",
     "app/assets/fonts/MiSansVF.ttf",
@@ -217,6 +221,7 @@ REQUIRED = [
     "docs/images/desktop-subtitle-fonts.jpg",
     "docs/images/desktop-subtitle-sheet.jpg",
     "docs/images/desktop-ass-advanced.png",
+    "docs/images/desktop-splash.png",
 ]
 
 def check_texture_colors() -> None:
@@ -267,6 +272,128 @@ def check_texture_colors() -> None:
         problems.append("colour probe clip is short again; capturing it becomes a race "
                         "against playback ending")
     notes.append("texture colour order: R<->B swapped once, alpha forced opaque")
+
+def check_splash() -> None:
+    r"""Guard the launch animation and the native splash artwork.
+
+    The point of the splash is that the engine shows *something* before the
+    stores are read. Three things can silently undo it:
+
+      * `main()` awaits the stores again before `runApp`, so the first frame is
+        back to the system splash and the icon never appears;
+      * the gate stops honouring its minimum duration, so on a warm start the
+        icon flashes for one frame - which looks worse than no splash at all;
+      * the native launch screens drift from the Flutter one (white backdrop,
+        placeholder 1x1 image) and the user sees a white flash before the dark
+        icon screen.
+    """
+    gate = ROOT / "app" / "lib" / "ui" / "splash_gate.dart"
+    if not gate.exists():
+        problems.append("app/lib/ui/splash_gate.dart missing; the launch "
+                        "animation was removed")
+    else:
+        gs = gate.read_text(encoding="utf-8")
+        for token, why in (
+            ("class SplashGate", "the launch gate widget"),
+            ("widget.minimum", "the minimum on-screen time"),
+            ("Future<void> _bootOnly", "running init behind the animation"),
+            ("AnimatedOpacity", "fading the icon out"),
+            ("assets/branding/splash_logo.png", "the splash artwork"),
+        ):
+            if token not in gs:
+                problems.append(
+                    "app/lib/ui/splash_gate.dart: missing %r (%s)"
+                    % (token, why))
+
+    main_dart = ROOT / "app" / "lib" / "main.dart"
+    if not main_dart.exists():
+        problems.append("app/lib/main.dart missing")
+    else:
+        ms = main_dart.read_text(encoding="utf-8")
+        # runApp 必须出现在 main() 里、而且要在任何 store.load() 之前，
+        # 否则第一帧仍然是系统那张空白图，图标动画根本不会出现。
+        body_start = ms.find("Future<void> main()")
+        body_end = ms.find("runApp(", body_start + 1) if body_start >= 0 else -1
+        if body_start < 0:
+            problems.append("app/lib/main.dart: no main()")
+        elif body_end < 0:
+            problems.append(
+                "app/lib/main.dart: main() never calls runApp(); nothing "
+                "would be drawn")
+        else:
+            head = ms[body_start:body_end]
+            if ".load()" in head or "_boot()" in head:
+                problems.append(
+                    "app/lib/main.dart: main() awaits the stores before "
+                    "runApp(); the first frame would still be the blank "
+                    "system splash")
+        if "home: SplashGate(" not in ms:
+            problems.append(
+                "app/lib/main.dart: home is not wrapped in SplashGate; "
+                "nothing would mask the load")
+
+    ios = (ROOT / "app" / "ios" / "Runner" / "Base.lproj"
+           / "LaunchScreen.storyboard")
+    if not ios.exists():
+        problems.append("app/ios/Runner/Base.lproj/LaunchScreen.storyboard "
+                        "missing")
+    else:
+        st = ios.read_text(encoding="utf-8")
+        if 'red="1" green="1" blue="1"' in st:
+            problems.append(
+                "LaunchScreen.storyboard still uses a white backdrop; the "
+                "splash screen is dark, so the launch would flash white")
+        if 'image="LaunchImage"' not in st:
+            problems.append(
+                "LaunchScreen.storyboard lost the LaunchImage reference")
+
+    android_bg = (ROOT / "app" / "android" / "app" / "src" / "main" / "res"
+                  / "drawable" / "launch_background.xml")
+    if not android_bg.exists():
+        problems.append("Android launch_background.xml missing")
+    else:
+        bg = android_bg.read_text(encoding="utf-8")
+        if "@android:color/white" in bg:
+            problems.append("Android launch_background.xml is still white; "
+                            "the app is dark, so launch would flash white")
+        if "@mipmap/launch_logo" not in bg:
+            problems.append("Android launch_background.xml no longer draws "
+                            "the launch logo")
+
+    v31 = (ROOT / "app" / "android" / "app" / "src" / "main" / "res"
+           / "values-v31" / "styles.xml")
+    if not v31.exists():
+        problems.append(
+            "app/android/.../values-v31/styles.xml missing; Android 12+ would "
+            "draw its own white splash instead of ours")
+    else:
+        vt = v31.read_text(encoding="utf-8")
+        for token in ("windowSplashScreenBackground",
+                      "windowSplashScreenAnimatedIcon"):
+            if token not in vt:
+                problems.append(
+                    "values-v31/styles.xml: missing %s; Android 12+ would "
+                    "fall back to the default splash" % token)
+
+    for scale in ("", "@2x", "@3x"):
+        p = (ROOT / "app" / "ios" / "Runner" / "Assets.xcassets"
+             / "LaunchImage.imageset" / ("LaunchImage%s.png" % scale))
+        if not p.exists():
+            problems.append("iOS LaunchImage%s.png missing" % scale)
+        elif p.stat().st_size < 400:
+            problems.append(
+                "iOS LaunchImage%s.png is a placeholder (%d bytes); the "
+                "launch screen would show a blank square"
+                % (scale, p.stat().st_size))
+
+    doc_image = ROOT / "docs" / "images" / "desktop-splash.png"
+    if not doc_image.exists():
+        problems.append("docs/images/desktop-splash.png missing; the README "
+                        "screenshot of the launch animation would be broken")
+    notes.append("splash: a logo animation covers the first frame while the "
+                 "stores load, native launch screens share its backdrop")
+
+
 
 def check_required_files() -> None:
     for rel in REQUIRED:
@@ -2816,6 +2943,7 @@ def main() -> int:
     check_apple_wiring()
     check_hw_decode()
     check_local_picker()
+    check_splash()
     check_windows_playback_paths()
 
     for n in notes:

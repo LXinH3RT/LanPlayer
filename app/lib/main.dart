@@ -13,6 +13,7 @@ import 'ui/browser_screen.dart';
 import 'ui/home_screen.dart';
 import 'ui/player_screen.dart';
 import 'ui/server_edit_screen.dart';
+import 'ui/splash_gate.dart';
 import 'ui/theme.dart';
 
 final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
@@ -59,6 +60,16 @@ Future<void> main() async {
   if (pinnedDir != null) {
     AppStorage.directoryOverride = Directory(pinnedDir);
   }
+  // 第一步就把界面挂上去，屏幕立刻有东西（图标动画），不再是系统那张空白
+  // 启动图。store 的读取与首页的目录请求都在 SplashGate 后面同时进行。
+  runApp(const LanPlayerApp(boot: _boot));
+}
+
+/// 启动阶段的后台初始化：定位可写的状态目录，再把四个 store 读进内存。
+///
+/// 失败不抛给上层 —— 拿不到状态目录时宁可当作「没有保存过服务器」，
+/// 也好过因为 `throw StateError` 让整个 app 起不来。
+Future<void> _boot() async {
   try {
     final dir = await AppStorage.directory();
     // ignore: avoid_print
@@ -67,11 +78,6 @@ Future<void> main() async {
   } catch (e) {
     // ignore: avoid_print
     print("LanPlayer storage error: $e");
-    // Losing saved servers is worse than using a less pretty default, so fall
-    // back to the folder the data actually loads from.
-    if (pinnedDir != null) {
-      AppStorage.directoryOverride = Directory(pinnedDir);
-    }
   }
   await ServerStore.instance.load();
   await LocalFolderStore.instance.load();
@@ -80,8 +86,12 @@ Future<void> main() async {
   // ignore: avoid_print
   print("LanPlayer loaded: servers=${ServerStore.instance.servers.length} "
       "folders=${LocalFolderStore.instance.folders.length}");
-  runApp(const LanPlayerApp());
+}
 
+/// store 读完之后的验证钩子：自动打开文件 / 进共享 / 打开添加服务器页。
+///
+/// 这些全部靠环境变量或 `--dart-define` 触发，正常运行时一个都不生效。
+void _runProbes() {
   // Convenience hook for desktop testing (and for the CI screenshot check):
   //   set LANPLAYER_OPEN=D:\video.mkv
   // opens that file in the player right after startup.
@@ -106,6 +116,16 @@ Future<void> main() async {
   if (_probe('LANPLAYER_UI') == 'add-server') {
     WidgetsBinding.instance.addPostFrameCallback((_) => _openAddServer());
   }
+}
+
+/// 启动动画是否启用。
+///
+/// 桌面端关掉：窗口出现的那一刻就能看到列表，动画只会多等一秒。
+/// 也留一个开关，方便截图与测试时决定要不要看到它。
+bool get _splashEnabled {
+  if (_probe('LANPLAYER_SPLASH') == '1') return true;
+  if (_probe('LANPLAYER_SPLASH') == '0') return false;
+  return Platform.isIOS || Platform.isAndroid;
 }
 
 /// 打开「添加服务器」页。`LANPLAYER_AUTOSCAN=1` 时进去后自动扫描一次。
@@ -213,7 +233,10 @@ void _openLocalFile(String target) {
 }
 
 class LanPlayerApp extends StatelessWidget {
-  const LanPlayerApp({super.key});
+  const LanPlayerApp({super.key, this.boot});
+
+  /// 启动阶段的后台初始化；为空时直接从首页开始（widget 测试用）。
+  final Future<void> Function()? boot;
 
   @override
   Widget build(BuildContext context) {
@@ -222,7 +245,12 @@ class LanPlayerApp extends StatelessWidget {
       title: 'LanPlayer',
       debugShowCheckedModeBanner: false,
       theme: LanPlayerTheme.dark(),
-      home: const HomeScreen(),
+      home: SplashGate(
+        boot: boot ?? () async {},
+        enabled: boot != null && _splashEnabled,
+        onReady: _runProbes,
+        builder: (_) => const HomeScreen(),
+      ),
       builder: (context, child) {
         // Subtitles must not be pushed off screen by huge accessibility fonts.
         final scaler =
