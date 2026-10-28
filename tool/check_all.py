@@ -2022,6 +2022,15 @@ def check_subtitle_advanced() -> None:
             ("final videoWidth = video.width;",
              "the clip rectangle has to use the picture width, not a "
              "PlayResX/PlayResY guess"),
+            # 裁剪矩形活在覆盖层坐标系里，块已经被摆进画面矩形，所以偏移里
+            # 必须带上 video.left / video.top。少了这一项，视频上下留黑边时
+            # 裁剪窗整体上移，整行字幕凭空消失（竖屏 iPad 上就是这个现象）。
+            ("video.left + clip[0]",
+             "the clip rectangle has to be offset into the overlay "
+             "coordinates"),
+            ("video.top + clip[1]",
+             "the clip rectangle has to be offset into the overlay "
+             "coordinates"),
         ):
             if token not in ot:
                 problems.append(

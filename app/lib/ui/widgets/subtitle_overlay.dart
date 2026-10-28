@@ -365,11 +365,15 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
     // 电影就会差出十几个百分点），推出来的宽度一旦偏大，裁剪框整体左移，
     // 该露出来的字就被切掉了。
     final videoWidth = video.width;
+    // 矩形要落在**覆盖层**的坐标系里：[_RenderClipRelative] 拿到的是块在这个
+    // 坐标系里的偏移，而块已经被摆到画面矩形里了（偏移里含 `video.left` /
+    // `video.top`）。只按画面内坐标算，一旦视频上下留了黑边，裁剪窗就被整体
+    // 上移几百像素，整行字幕凭空消失 —— 竖屏 iPad 上就是这个现象。
     final rect = Rect.fromLTRB(
-      clip[0] * videoWidth / prx,
-      clip[1] * videoHeight / pry,
-      clip[2] * videoWidth / prx,
-      clip[3] * videoHeight / pry,
+      video.left + clip[0] * videoWidth / prx,
+      video.top + clip[1] * videoHeight / pry,
+      video.left + clip[2] * videoWidth / prx,
+      video.top + clip[3] * videoHeight / pry,
     );
     if (rect.width <= 0 || rect.height <= 0) {
       return const SizedBox.shrink();

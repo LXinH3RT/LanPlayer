@@ -6,19 +6,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:lanplayer/data/models.dart';
 import 'package:lanplayer/ui/widgets/subtitle_overlay.dart';
 
-/// 一条 `\clip(...)` 到底把字画在了哪里。
+/// 一条带 `\clip` 的字幕被画到了哪里。
 ///
-/// 视口被钉成 1280x720 且 `devicePixelRatio` 为 1，所以脚本坐标、逻辑像素与
-/// 截图像素是同一个单位，可以直接拿画出来的包围盒跟脚本里的矩形比。测试用的
-/// 那句话比每个裁剪窗口都宽，四条边都是真的被切掉的。
+/// 视口与 `devicePixelRatio` 都钉死，脚本坐标、逻辑像素和截图像素是同一个
+/// 单位，于是画出来的包围盒可以直接和脚本里的矩形比。
 Future<({int left, int top, int right, int bottom, int count})> _bounds(
   WidgetTester tester,
   SubtitleCue cue, {
+  Size viewport = const Size(1280, 720),
   double aspectRatio = 16 / 9,
 }) async {
-  // 默认测试视口是 800x600，不钉死的话下面的 1280x720 会被悄悄缩掉，脚本
-  // 坐标就不再等于截图像素。
-  tester.view.physicalSize = const Size(1280, 720);
+  tester.view.physicalSize = viewport;
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.reset);
 
@@ -38,8 +36,8 @@ Future<({int left, int top, int right, int bottom, int count})> _bounds(
 
   final boundary =
       key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
-  // `toImage()` 要靠一次真实的事件循环才完成，而 `testWidgets` 默认的假时钟
-  // 永远不会给这一次 —— 不套 `runAsync` 会一直等下去。
+  // `toImage()` 要靠一次真实的事件循环才完成，`testWidgets` 的假时钟永远不给
+  // 这一次 —— 不套 `runAsync` 会一直等下去。
   late ui.Image image;
   await tester.runAsync(() async {
     image = await boundary.toImage();
@@ -135,5 +133,42 @@ void main() {
     // 这个边界会被算到 520 附近，于是 520..700 之间的字全都漏出来。
     expect(clipped.left, greaterThanOrEqualTo(690),
         reason: '裁剪左边界必须落在画面的 700/1280 处，不能被黑边带偏');
+  });
+
+  testWidgets('画面上下有黑边时裁剪框不能被整体挪走', (tester) async {
+    // 竖屏 iPad 的实测现象：视频只占中间一条，上下都是黑边；同一份字幕在
+    // 桌面端（视频贴顶、`video.top == 0`）正常，在 iPad 上整行消失。
+    const portrait = Size(900, 1600);
+    final open =
+        await _bounds(tester, _cueWithClip(const []), viewport: portrait);
+    final clipped = await _bounds(
+      tester,
+      _cueWithClip(const [560, 200, 700, 520]),
+      viewport: portrait,
+    );
+    expect(open.count, greaterThan(100), reason: '不裁剪时这一行看得见');
+    expect(clipped.count, greaterThan(20), reason: '有上下黑边时裁剪窗里的一部分字仍然必须画出来');
+    // 16:9 的画面塞进 900 宽之后高 506.25，脚本 560..700 落在 393..492。
+    expect(clipped.left, greaterThanOrEqualTo(390), reason: '裁掉左边的字');
+    expect(clipped.right, lessThanOrEqualTo(495), reason: '裁掉右边的字');
+  });
+
+  testWidgets('画面左右有黑边时裁剪框跟着画面横向偏移', (tester) async {
+    // 宽扁窗口里放 4:3 的素材：画面居中，左右各留一条黑边。裁剪框若不加上
+    // `video.left`，会整体偏到左边的黑边上，框里的字一个都留不下。
+    const flat = Size(1200, 400);
+    const ratio = 4 / 3;
+    // 1200x400 里 4:3 的画面是 533.3x400，居中后 `video.left == 333.3`。
+    // 脚本 100..400（宽 1280）落在 375..500。
+    final clipped = await _bounds(
+      tester,
+      _cueWithClip(const [100, 0, 400, 720]),
+      viewport: flat,
+      aspectRatio: ratio,
+    );
+    expect(clipped.count, greaterThan(20), reason: '裁剪窗里必须还有字');
+    expect(clipped.left, greaterThanOrEqualTo(370),
+        reason: '裁剪窗要落在画面里的 375px 处，不能停在左边的黑边上');
+    expect(clipped.right, lessThanOrEqualTo(505), reason: '右边界同样要跟着挪');
   });
 }
