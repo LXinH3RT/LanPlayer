@@ -129,7 +129,9 @@ class SplashView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ColoredBox(
+    // Material，而不是 ColoredBox：没有它，Text 拿不到默认文本样式，
+    // Flutter 会退回那个「黄色双下划线」的兜底样式，几行标题下面会挂一道黄线。
+    return Material(
       color: LanPlayerTheme.surface,
       child: Center(
         child: TweenAnimationBuilder<double>(
