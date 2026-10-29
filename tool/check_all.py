@@ -1558,6 +1558,42 @@ def check_player_layout() -> None:
                             f"（monospace/Courier/Consolas）会让这一处字形和"
                             f"其它地方不一致")
 
+    # MiSans 是 Apache License 2.0：再分发时要带着许可证与声明。仓库里放一份
+    # 不够 —— 用户手上只有安装包，所以这两份还得进 assets，随包落到
+    # data/flutter_assets 下。三处都要在：文件本身、pubspec 的 assets 段、
+    # LICENSE 的第三方清单。
+    for name in ("MiSans-LICENSE.txt", "NOTICE.txt"):
+        if f"assets/fonts/{name}" not in ps:
+            problems.append(f"app/pubspec.yaml no longer ships assets/fonts/{name}; "
+                            f"the Apache-2.0 licence and notice would not travel "
+                            f"with the installed app")
+    lic = ROOT / "LICENSE"
+    if not lic.exists():
+        problems.append("LICENSE missing; the third-party notices live there")
+    else:
+        lic_text = lic.read_text(encoding="utf-8")
+        # 光有「MiSans」三个字母不算数：字体文件本身就叫 MiSansVF.ttf，随便
+        # 留一句路径就能蒙过去。要看的是第三方清单里那一条，所以从条目开头
+        # 截一段，要求许可名与许可证文件指针都落在同一段里。
+        at = lic_text.find("MiSans (")
+        if at < 0:
+            problems.append("LICENSE no longer lists MiSans; the bundled UI font "
+                            "is Apache-2.0 and has to be credited")
+        else:
+            # 清单里每一条都是「名字（地址） — 许可证。」，许可名必须在标题行上；
+            # 只在正文后面提一句不够，那种写法读不出这一条到底是什么许可。
+            rest = lic_text[at:]
+            stop = rest.find("\n\n")
+            entry = rest if stop < 0 else rest[:stop]
+            header = entry.split("\n", 1)[0]
+            if "Apache License 2.0" not in header:
+                problems.append("LICENSE mentions MiSans but its entry does not "
+                                "name Apache License 2.0; readers cannot tell the "
+                                "terms")
+            if "MiSans-LICENSE.txt" not in entry:
+                problems.append("LICENSE credits MiSans but does not point at "
+                                "the licence text that ships with the app")
+
     # 「媒体信息」和「解码统计」原本是「画面」面板里的两个入口。用户要求
     # 并成一项：他点开看的其实是同一件事 —— 这帧是什么码流、谁在解、现在
     # 跑得好不好。护栏钉三件事：面板里只剩一行入口；统计数字由面板自己的

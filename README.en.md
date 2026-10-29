@@ -291,4 +291,12 @@ dynamically with its terms observed) and libsmb2 (MIT) are external dependencies
 compiled and distributed by whoever builds the app.
 
 The UI font is [MiSans](https://hyperos.mi.com/font/), redistributed under the
-Apache License 2.0; the licence text ships in `app/assets/fonts/MiSans-LICENSE.txt`.
+Apache License 2.0. The bundled file is the variable font `MiSansVF.ttf`, shipped
+without subsetting or modification. The licence asks for both the licence text
+and the notice to travel with any redistribution, and both live in the repo:
+
+* `app/assets/fonts/MiSans-LICENSE.txt` — the full Apache License 2.0 text
+* `app/assets/fonts/NOTICE.txt` — where the font came from, what it is used for,
+  and that it was not modified
+
+The full third-party list is in [LICENSE](LICENSE).

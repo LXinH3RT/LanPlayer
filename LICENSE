@@ -35,3 +35,9 @@ libsmb2 (https://github.com/sahlberg/libsmb2) — MIT License。
 
 Flutter (https://flutter.dev) — BSD-3-Clause。
   Flutter 运行时（flutter_windows.dll）与引擎按 BSD-3-Clause 分发。
+
+MiSans (https://hyperos.mi.com/font/) — Apache License 2.0。
+  界面默认字体，以可变字体 MiSansVF.ttf 随程序分发，未做子集化或改刻。
+  许可证全文见 app/assets/fonts/MiSans-LICENSE.txt，来源与用途说明见
+  app/assets/fonts/NOTICE.txt。Apache License 2.0 要求再分发时保留许可证
+  与声明文件，二者均随安装包一同分发。
