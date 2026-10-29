@@ -12,6 +12,7 @@ import '../data/progress.dart';
 import '../data/stores.dart';
 import '../player/playlist.dart';
 import '../util/format.dart';
+import 'theme.dart';
 import 'video_texture.dart';
 import 'widgets/media_info_dialog.dart';
 import 'widgets/subtitle_overlay.dart';
@@ -551,7 +552,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     child: Center(
                       child: Text(
                           '${(_subtitleDelay / 1000).toStringAsFixed(1)} s',
-                          style: const TextStyle(fontFamily: 'monospace')),
+                          style: const TextStyle(
+                              fontFamily: LanPlayerTheme.fontFamily,
+                              fontFeatures: [FontFeature.tabularFigures()])),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -1445,7 +1448,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ),
         child: DefaultTextStyle(
           style: const TextStyle(
-              fontSize: 11, fontFamily: 'monospace', color: Colors.greenAccent),
+              fontSize: 11,
+              fontFamily: LanPlayerTheme.fontFamily,
+              fontFeatures: [FontFeature.tabularFigures()],
+              color: Colors.greenAccent),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

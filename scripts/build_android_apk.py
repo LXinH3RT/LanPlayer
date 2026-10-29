@@ -66,8 +66,11 @@ def main() -> int:
                 "flutter may fail to locate the Android SDK")
 
     lp.step(f"building apk {version}")
+    # 「关于」里的版本号：pubspec 是唯一来源，Dart 读不到，只能编译期注入。
     result = lp.run([*flutter_cmd(), "build", "apk", "--release",
-                     "--target-platform", "android-arm64"], cwd=app, env=env, check=False)
+                     "--target-platform", "android-arm64",
+                     f"--dart-define=LANPLAYER_VERSION={version}"],
+                    cwd=app, env=env, check=False)
     if result.returncode != 0:
         raise lp.ScriptError(f"flutter build apk failed with {result.returncode}")
     if not apk.exists():

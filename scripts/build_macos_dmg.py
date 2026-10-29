@@ -49,6 +49,17 @@ def main() -> int:
     if not app.is_dir():
         raise lp.ScriptError("missing app bundle\nrun: cd app && flutter build macos --release")
 
+    # 「关于」里的版本号是 --dart-define=LANPLAYER_VERSION 注进来的。Flutter 不会
+    # 自己把 pubspec 的版本带进 Dart，漏了这个 define「关于」会显示 dev。
+    # 这里在已编好的 App.framework 里找一下那个字符串，能提前发现。
+    baked = [p for p in app.glob("Contents/Frameworks/App.framework/**/App") if p.is_file()]
+    if baked:
+        blob = baked[0].read_bytes()
+        if version.encode("ascii") not in blob:
+            lp.warn(f"the bundle was built without LANPLAYER_VERSION={version}; "
+                    f"设置里的版本会显示 dev（重建：cd app && flutter build macos "
+                    f"--release --dart-define=LANPLAYER_VERSION={version}）")
+
     lp.step("app")
     print(f"  {lp.size_mb(app):.1f} MB  {app}")
     signature = lp.run([CODESIGN, "-dv", str(app)], check=False, capture=True)

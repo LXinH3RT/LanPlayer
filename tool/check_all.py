@@ -223,6 +223,7 @@ REQUIRED = [
     "docs/images/desktop-subtitle-sheet.jpg",
     "docs/images/desktop-ass-advanced.png",
     "docs/images/desktop-splash.png",
+    "docs/images/desktop-about.png",
 ]
 
 def check_texture_colors() -> None:
@@ -391,6 +392,11 @@ def check_splash() -> None:
     if not doc_image.exists():
         problems.append("docs/images/desktop-splash.png missing; the README "
                         "screenshot of the launch animation would be broken")
+
+    about_image = ROOT / "docs" / "images" / "desktop-about.png"
+    if not about_image.exists():
+        problems.append("docs/images/desktop-about.png missing; the README "
+                        "screenshot of the version line would be broken")
     notes.append("splash: a logo animation covers the first frame while the "
                  "stores load, native launch screens share its backdrop")
 
@@ -1536,6 +1542,22 @@ def check_player_layout() -> None:
         problems.append("theme.dart no longer sets fontFamily; the default UI font "
                         "would silently go back to the platform default")
 
+    # 界面字体必须全局统一：漏一处写死的 monospace 就会在设置/统计里冒出
+    # 一套完全不同的字形（用户报的是「音轨」「关闭」字体不一致）。等宽数字
+    # 用 fontFeatures: tabularFigures 表达，字体仍然是 MiSans。
+    for rel in ("app/lib/ui/player_screen.dart",
+                "app/lib/ui/settings_screen.dart",
+                "app/lib/ui/home_screen.dart",
+                "app/lib/ui/browser_screen.dart"):
+        f = ROOT / rel
+        if not f.exists():
+            continue
+        ft = f.read_text(encoding="utf-8")
+        if "monospace" in ft or "Courier" in ft or "'Consolas'" in ft:
+            problems.append(f"{rel}: 界面字体必须统一为 MiSans；写死的等宽字体"
+                            f"（monospace/Courier/Consolas）会让这一处字形和"
+                            f"其它地方不一致")
+
     # 「媒体信息」和「解码统计」原本是「画面」面板里的两个入口。用户要求
     # 并成一项：他点开看的其实是同一件事 —— 这帧是什么码流、谁在解、现在
     # 跑得好不好。护栏钉三件事：面板里只剩一行入口；统计数字由面板自己的
@@ -1665,6 +1687,37 @@ def check_track_selection() -> None:
         for title in ('首选音轨语言', '次选音轨语言', '首选字幕语言', '次选字幕语言'):
             if title not in st:
                 problems.append(f"settings_screen.dart lost the {title} option")
+        # 「关于」里要显示当前版本号。版本号的唯一来源是 app/pubspec.yaml，
+        # 而 Flutter 不会把它带进 Dart，所以构建脚本用 --dart-define 注入；
+        # 界面这一侧只要把 kAppVersion 摆出来。
+        if "kAppVersion" not in st:
+            problems.append("settings_screen.dart no longer shows the app version; "
+                            "用户要求「设置 → 关于」里能看到当前版本号。")
+        ver = ROOT / "app" / "lib" / "data" / "build_info.dart"
+        if not ver.exists():
+            problems.append("app/lib/data/build_info.dart missing (kAppVersion)")
+        elif "'LANPLAYER_VERSION'" not in ver.read_text(encoding="utf-8"):
+            problems.append("build_info.dart lost the LANPLAYER_VERSION define; the "
+                            "关于 page would always read dev")
+    # 构建脚本都得把版本号注进去，否则打出来的包「关于」里是 dev。
+    # macOS 的 `flutter build macos` 是手工一步（build_macos_dmg.py 只打包），
+    # 所以它那侧的护栏是「打完包后去 App.framework 里找版本串」，找不到就警告。
+    for script in ("build_windows_desktop.py", "build_android_apk.py",
+                   "ios_device_install.py"):
+        path = ROOT / "scripts" / script
+        if path.exists() and "LANPLAYER_VERSION=" not in path.read_text(encoding="utf-8"):
+            problems.append(f"scripts/{script} does not pass LANPLAYER_VERSION=; the app "
+                            f"would show a version of dev in 设置 → 关于")
+    mac = ROOT / "scripts" / "build_macos_dmg.py"
+    if mac.exists():
+        mt = mac.read_text(encoding="utf-8")
+        if "App.framework" not in mt or "LANPLAYER_VERSION" not in mt:
+            problems.append("scripts/build_macos_dmg.py no longer checks the bundle for "
+                            "the injected version; a dmg built without the define would "
+                            "ship an app showing dev")
+
+    notes.append("about: 设置 → 关于 shows the version injected at build time, and the "
+                 "UI font is MiSans everywhere except subtitles")
 
     # 4. The core used to announce LP_EVENT_TRACKS with an empty "{}" right after
     #    MEDIA_INFO, and the host parses both with the same code -- so the real

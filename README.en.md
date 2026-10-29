@@ -37,6 +37,7 @@ address, a share name, a user and a password.
 | **Browsing** | First-frame thumbnails, cached on disk, generated on demand; only videos and subtitles are listed, `.txt` / `.docx` and friends stay hidden, subtitles sit under their video |
 | **Launch** | On mobile a logo animation covers the first frame for about 1.2 s while the store loads run behind it, then the list appears; the desktop opens straight into it |
 | **Also** | LAN scan (concurrent probing of the local subnet), desktop keyboard shortcuts and touch gestures, light/dark following the system |
+| **Settings** | Toggles for continuous play and resume, preferred / fallback languages; About shows the current version, core ABI and decoder info |
 
 ## Screens
 
@@ -61,6 +62,10 @@ drawing and `\k` karaoke fill:
 A logo animation covers the first frame while the store loads run in parallel:
 
 ![Splash](docs/images/desktop-splash.png)
+
+Settings → About shows the running version:
+
+![About](docs/images/desktop-about.png)
 
 On mobile the same UI is used (texture plus subtitle bubbles):
 

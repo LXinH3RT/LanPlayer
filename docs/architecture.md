@@ -28,6 +28,11 @@ Dart UI ──► PlayerController ──► dart:ffi ──► lp_player_*   �
    （窗口已经出现，不需要遮罩），`LANPLAYER_SPLASH=1/0` 可强制。三端的原生启动画面
    （iOS `LaunchScreen.storyboard`、Android `launch_background.xml` 与 Android 12 的
    `windowSplashScreen*`）用同一个深色底与同一个图标，避免 Dart 起来之前闪白。
+5. **界面字形只有一个来源**。`LanPlayerTheme.dark()` 设全局 `fontFamily: 'MiSans'`，
+   字体是随包分发的可变字体 `app/assets/fonts/MiSansVF.ttf`。界面代码里不再出现
+   `monospace` / `Courier` / `Consolas` 这类写死的等宽家族——时间码与统计数字要对齐
+   时用 `FontFeature.tabularFigures()`，而不是换字体。字幕例外：字幕的字族来自 ASS
+   的 `Fontname` / `\fn`，属于内容而不是界面。
 
 ## 2. 线程
 

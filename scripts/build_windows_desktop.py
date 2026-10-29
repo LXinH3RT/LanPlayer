@@ -240,10 +240,16 @@ def main() -> int:
             shutil.copytree(artifacts / "cpp_client_wrapper", eph / "cpp_client_wrapper")
 
     version, parts = read_version(app)
-    if args.dart_defines:
-        print(f"\n== dart-define: {' '.join(args.dart_defines)}")
+    # 「关于」里要显示版本号。pubspec 是唯一来源，但 Dart 读不到它，只能用
+    # --dart-define 注入；只取 x.y.z，不带 +build。
+    dart_defines = list(args.dart_defines)
+    short = version.split("+", 1)[0]
+    if not any(d.startswith("LANPLAYER_VERSION=") for d in dart_defines):
+        dart_defines.append(f"LANPLAYER_VERSION={short}")
+    if dart_defines:
+        print(f"\n== dart-define: {' '.join(dart_defines)}")
     print(f"\n== version: {version} (from app/pubspec.yaml)")
-    write_generated_config(eph, fs, app, version, parts, args.dart_defines)
+    write_generated_config(eph, fs, app, version, parts, dart_defines)
 
     build_dir = win_dir / "out" / "build" / f"x64-{re.sub(r'\\s+', '', generator)}"
     if args.clean and build_dir.is_dir():

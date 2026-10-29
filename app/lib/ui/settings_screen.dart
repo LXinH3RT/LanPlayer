@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/bindings.dart';
+import '../data/build_info.dart';
 import '../data/models.dart' show kLanguageOptions;
 import '../data/stores.dart';
 import 'widgets/volume_sheet.dart' show VolumeSheet;
@@ -183,6 +184,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
           const _Section('关于'),
+          const ListTile(
+            title: Text('版本'),
+            subtitle: Text(kAppVersion),
+          ),
           ListTile(
             title: const Text('播放内核 ABI'),
             subtitle: Text(abi == null ? '未能加载原生库' : 'v$abi（期望 v$abiVersion）'),

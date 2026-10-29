@@ -109,7 +109,9 @@ def main() -> int:
         print(f"  {line}")
 
     lp.step("3. build (Release, automatic signing)")
-    build = lp.run([*flutter_cmd(), "build", "ios", "--release"],
+    # 「关于」里的版本号由 --dart-define 注入（pubspec 是唯一来源）。
+    build = lp.run([*flutter_cmd(), "build", "ios", "--release",
+                    f"--dart-define=LANPLAYER_VERSION={lp.pubspec_version()}"],
                    cwd=root / "app", env=env, check=False, capture=True)
     for line in ((build.stdout or "") + (build.stderr or "")).splitlines()[-20:]:
         print(f"  {line}")
