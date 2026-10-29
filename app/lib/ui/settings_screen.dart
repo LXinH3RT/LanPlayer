@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/bindings.dart';
 import '../data/build_info.dart';
 import '../data/models.dart' show kLanguageOptions;
+import '../data/probe.dart';
 import '../data/stores.dart';
 import 'widgets/volume_sheet.dart' show VolumeSheet;
 
@@ -16,10 +17,31 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late final _settings = SettingsStore.instance.value;
+  final _scroll = ScrollController();
 
   Future<void> _persist() async {
     await SettingsStore.instance.save();
     if (mounted) setState(() {});
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // 验证钩子：移动端没有输入注入手段（devicectl 只能截图和启停进程），
+    // 「关于」在列表最底部，没有这个开关就没法在真机上给它留证据。
+    //   LANPLAYER_SETTINGS_SCROLL=end
+    if (probeFlag('LANPLAYER_SETTINGS_SCROLL') == 'end') {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_scroll.hasClients) return;
+        _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
   }
 
   @override
@@ -28,6 +50,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text('设置')),
       body: ListView(
+        controller: _scroll,
         padding: const EdgeInsets.only(bottom: 32),
         children: [
           const _Section('解码'),

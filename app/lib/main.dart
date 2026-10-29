@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'data/folders.dart';
 import 'data/location.dart';
 import 'data/models.dart';
+import 'data/probe.dart';
 import 'data/progress.dart';
 import 'data/repository.dart';
 import 'data/stores.dart';
@@ -13,50 +14,16 @@ import 'ui/browser_screen.dart';
 import 'ui/home_screen.dart';
 import 'ui/player_screen.dart';
 import 'ui/server_edit_screen.dart';
+import 'ui/settings_screen.dart';
 import 'ui/splash_gate.dart';
 import 'ui/theme.dart';
 
 final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 
-/// 读一个验证用的开关。
-///
-/// 桌面端（Windows / macOS）直接从进程环境变量取；iOS / Android 上
-/// `Platform.environment` 永远是空表（app 由系统 launchd 拉起，Dart 拿不到
-/// `environ`），所以再退一步查编译期 `--dart-define`。
-/// 两者都支持，方便同一套脚本在三个平台跑。
-String? _probe(String name) {
-  final fromEnv = Platform.environment[name];
-  if (fromEnv != null && fromEnv.isNotEmpty) return fromEnv;
-  switch (name) {
-    case 'LANPLAYER_OPEN':
-      const v = String.fromEnvironment('LANPLAYER_OPEN');
-      return v.isEmpty ? null : v;
-    case 'LANPLAYER_STATE_DIR':
-      const v = String.fromEnvironment('LANPLAYER_STATE_DIR');
-      return v.isEmpty ? null : v;
-    case 'LANPLAYER_BROWSE':
-      const v = String.fromEnvironment('LANPLAYER_BROWSE');
-      return v.isEmpty ? null : v;
-    case 'LANPLAYER_USER':
-      const v = String.fromEnvironment('LANPLAYER_USER');
-      return v.isEmpty ? null : v;
-    case 'LANPLAYER_PASS':
-      const v = String.fromEnvironment('LANPLAYER_PASS');
-      return v.isEmpty ? null : v;
-    case 'LANPLAYER_UI':
-      const v = String.fromEnvironment('LANPLAYER_UI');
-      return v.isEmpty ? null : v;
-    case 'LANPLAYER_AUTOSCAN':
-      const v = String.fromEnvironment('LANPLAYER_AUTOSCAN');
-      return v.isEmpty ? null : v;
-  }
-  return null;
-}
-
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // 状态目录优先：必须在任何 store 读取之前设好。
-  final pinnedDir = _probe('LANPLAYER_STATE_DIR');
+  final pinnedDir = probeFlag('LANPLAYER_STATE_DIR');
   if (pinnedDir != null) {
     AppStorage.directoryOverride = Directory(pinnedDir);
   }
@@ -95,7 +62,7 @@ void _runProbes() {
   // Convenience hook for desktop testing (and for the CI screenshot check):
   //   set LANPLAYER_OPEN=D:\video.mkv
   // opens that file in the player right after startup.
-  final autoOpen = _probe('LANPLAYER_OPEN');
+  final autoOpen = probeFlag('LANPLAYER_OPEN');
   if (autoOpen != null && autoOpen.isNotEmpty) {
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _openLocalFile(autoOpen));
@@ -104,7 +71,7 @@ void _runProbes() {
   // Same idea for the browser: jumps straight into a share so the desktop
   // build can be verified (and screenshotted) without clicking through the UI.
   //   LANPLAYER_BROWSE=smb://host/share  LANPLAYER_USER=u  LANPLAYER_PASS=p
-  final autoBrowse = _probe('LANPLAYER_BROWSE');
+  final autoBrowse = probeFlag('LANPLAYER_BROWSE');
   if (autoBrowse != null && autoBrowse.isNotEmpty) {
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _openLocation(autoBrowse));
@@ -113,9 +80,29 @@ void _runProbes() {
   // 打开「添加服务器」页，并在需要时自动跑一次局域网扫描 —— 这样桌面端
   // 的扫描界面可以在没有人点鼠标的情况下被验证（截图 / 日志）。
   //   LANPLAYER_UI=add-server  LANPLAYER_AUTOSCAN=1
-  if (_probe('LANPLAYER_UI') == 'add-server') {
+  if (probeFlag('LANPLAYER_UI') == 'add-server') {
     WidgetsBinding.instance.addPostFrameCallback((_) => _openAddServer());
   }
+
+  // 打开设置页 —— 移动端没有输入注入手段（devicectl 只能截图和启停进程），
+  // 「关于」里的版本号只能靠这个开关自己走进去。
+  //   LANPLAYER_UI=settings
+  if (probeFlag('LANPLAYER_UI') == 'settings') {
+    WidgetsBinding.instance.addPostFrameCallback((_) => _openSettings());
+  }
+}
+
+/// 打开设置页。
+Future<void> _openSettings() async {
+  final navigator = appNavigatorKey.currentState;
+  if (navigator == null) {
+    // ignore: avoid_print
+    print('LanPlayer settings skipped: navigator not ready');
+    return;
+  }
+  await navigator.push(MaterialPageRoute<void>(
+    builder: (_) => const SettingsScreen(),
+  ));
 }
 
 /// 启动动画是否启用。
@@ -123,8 +110,8 @@ void _runProbes() {
 /// 桌面端关掉：窗口出现的那一刻就能看到列表，动画只会多等一秒。
 /// 也留一个开关，方便截图与测试时决定要不要看到它。
 bool get _splashEnabled {
-  if (_probe('LANPLAYER_SPLASH') == '1') return true;
-  if (_probe('LANPLAYER_SPLASH') == '0') return false;
+  if (probeFlag('LANPLAYER_SPLASH') == '1') return true;
+  if (probeFlag('LANPLAYER_SPLASH') == '0') return false;
   return Platform.isIOS || Platform.isAndroid;
 }
 
@@ -136,7 +123,7 @@ Future<void> _openAddServer() async {
     print('LanPlayer add-server skipped: navigator not ready');
     return;
   }
-  final autoScan = _probe('LANPLAYER_AUTOSCAN') == '1';
+  final autoScan = probeFlag('LANPLAYER_AUTOSCAN') == '1';
   await navigator.push(MaterialPageRoute<void>(
     builder: (_) => ServerEditScreen(autoScan: autoScan),
   ));
@@ -146,8 +133,8 @@ Future<void> _openLocation(String url) async {
   // ignore: avoid_print
   print('LanPlayer browse requested: $url');
   final options = <String, dynamic>{
-    'user': _probe('LANPLAYER_USER') ?? '',
-    'password': _probe('LANPLAYER_PASS') ?? '',
+    'user': probeFlag('LANPLAYER_USER') ?? '',
+    'password': probeFlag('LANPLAYER_PASS') ?? '',
     'timeout_ms': 15000,
   };
   final repo = MediaRepository();
@@ -217,8 +204,8 @@ void _openLocalFile(String target) {
           label: '网络视频',
           rootUrl: target,
           options: <String, dynamic>{
-            'user': _probe('LANPLAYER_USER') ?? '',
-            'password': _probe('LANPLAYER_PASS') ?? '',
+            'user': probeFlag('LANPLAYER_USER') ?? '',
+            'password': probeFlag('LANPLAYER_PASS') ?? '',
             'timeout_ms': 15000,
           },
         )

@@ -166,6 +166,7 @@ REQUIRED = [
     "app/assets/fonts/MiSans-LICENSE.txt",
     "app/assets/fonts/NOTICE.txt",
     "app/lib/data/models.dart",
+    "app/lib/data/probe.dart",
     "app/lib/data/track_prefs.dart",
     "app/test/track_prefs_test.dart",
     "app/test/settings_track_lang_test.dart",
@@ -1754,6 +1755,23 @@ def check_track_selection() -> None:
 
     notes.append("about: 设置 → 关于 shows the version injected at build time, and the "
                  "UI font is MiSans everywhere except subtitles")
+
+    # 移动端没有输入注入：devicectl 只能截图与启停进程，打不开设置页也滚不动列表。
+    # 「关于」在列表最底部，所以这两个开关是真机取证的唯一途径。
+    probe = ROOT / "app" / "lib" / "data" / "probe.dart"
+    if not probe.exists():
+        problems.append("app/lib/data/probe.dart missing; the verification switches "
+                        "would be copied into every file that needs one")
+    else:
+        pt = probe.read_text(encoding="utf-8")
+        for name in ("'LANPLAYER_UI'", "'LANPLAYER_SETTINGS_SCROLL'"):
+            if name not in pt:
+                problems.append(f"probe.dart lost {name}; the mobile build could no "
+                                f"longer reach that page on a real device")
+    if settings.exists() and "probeFlag(" not in st:
+        problems.append("settings_screen.dart no longer reads the scroll switch; the "
+                        "关于 section sits at the bottom and cannot be reached by "
+                        "devicectl or adb input")
 
     # 4. The core used to announce LP_EVENT_TRACKS with an empty "{}" right after
     #    MEDIA_INFO, and the host parses both with the same code -- so the real
