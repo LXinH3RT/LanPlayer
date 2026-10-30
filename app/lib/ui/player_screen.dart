@@ -12,6 +12,7 @@ import '../data/progress.dart';
 import '../data/stores.dart';
 import '../player/playlist.dart';
 import '../util/format.dart';
+import 'keyboard.dart';
 import 'theme.dart';
 import 'video_texture.dart';
 import 'widgets/media_info_dialog.dart';
@@ -806,6 +807,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       backgroundColor: Colors.black,
       body: Focus(
         autofocus: true,
+        onFocusChange: (hasFocus) {
+          if (!hasFocus) _keys.reset();
+        },
         onKeyEvent: _onKey,
         // 桌面端：鼠标在画面上移动即显示控件，静止 2 秒后自动收起。
         // 用 Listener 而不是 MouseRegion，因为控件行里的按钮自带 MouseRegion
@@ -1010,32 +1014,47 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   /// Desktop keys: the transport tablet/remote convention (space, arrows, F,
   /// Esc).  Returning handled keeps them from leaking to ancestor shortcuts.
+  /// 播放页认的键。与 keyboard.dart 的约定一致：**抬起才执行**。
+  static bool _isPlayerKey(LogicalKeyboardKey key) =>
+      key == LogicalKeyboardKey.space ||
+      key == LogicalKeyboardKey.keyK ||
+      key == LogicalKeyboardKey.arrowLeft ||
+      key == LogicalKeyboardKey.arrowRight ||
+      key == LogicalKeyboardKey.arrowUp ||
+      key == LogicalKeyboardKey.arrowDown ||
+      key == LogicalKeyboardKey.keyM ||
+      key == LogicalKeyboardKey.keyF ||
+      key == LogicalKeyboardKey.escape ||
+      key == LogicalKeyboardKey.bracketLeft ||
+      key == LogicalKeyboardKey.bracketRight ||
+      key == LogicalKeyboardKey.keyS;
+
+  /// 抬起触发状态（长按不生效）。
+  final KeyReleaseTrigger _keys = KeyReleaseTrigger(_isPlayerKey);
+
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-      return KeyEventResult.ignored;
-    }
-    final key = event.logicalKey;
-    final handled = _handleKey(key, event is KeyRepeatEvent);
-    if (handled) {
-      // ignore: avoid_print
-      print('LanPlayer key: ${_keyName(key)}');
-      _showControls();
-    }
-    return handled ? KeyEventResult.handled : KeyEventResult.ignored;
+    return _keys.handle(event, (key) {
+      final handled = _handleKey(key);
+      if (handled) {
+        // ignore: avoid_print
+        print('LanPlayer key: ${_keyName(key)}');
+        _showControls();
+      }
+    });
   }
 
-  bool _handleKey(LogicalKeyboardKey key, bool repeat) {
+  bool _handleKey(LogicalKeyboardKey key) {
     if (key == LogicalKeyboardKey.space || key == LogicalKeyboardKey.keyK) {
       _player.togglePlay();
       _showHud(_player.isPlaying ? '播放' : '暂停');
       return true;
     }
     if (key == LogicalKeyboardKey.arrowLeft) {
-      _seekRelative(repeat ? -5 : -10);
+      _seekRelative(-10);
       return true;
     }
     if (key == LogicalKeyboardKey.arrowRight) {
-      _seekRelative(repeat ? 5 : 10);
+      _seekRelative(10);
       return true;
     }
     if (key == LogicalKeyboardKey.arrowUp) {

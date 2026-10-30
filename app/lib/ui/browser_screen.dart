@@ -51,6 +51,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
   /// 当正在异步加载新目录列表时为 true。
   bool _loading = false;
 
+  /// Backspace 的抬起触发状态。
+  ///
+  /// 必须是实例字段：它记着「这颗键按下了还没抬起」，那是每个页面各自的
+  /// 状态，不能做成全局函数。
+  final BackKeyHandler _backKey = BackKeyHandler();
+
   /// 导航到指定路径，并在替换为新目录内容前可选择性地把当前列表
   /// 压入返回栈中，方便后退浏览。
   Future<void> _navigate(String url, {bool push = true}) async {
@@ -154,7 +160,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
       // 整页包一层 Focus 而不是给 ListView 加：列表本身不接受焦点，
       // 没有这层的话按键事件根本没有节点可冒泡。
       autofocus: true,
-      onKeyEvent: (node, event) => handleBackKey(event, _upOrLeave),
+      // 失焦时清掉「按住中」的记录，否则回来按一次会被当成第一次的抬起。
+      onFocusChange: (hasFocus) {
+        if (!hasFocus) _backKey.reset();
+      },
+      onKeyEvent: (node, event) => _backKey.handle(event, _upOrLeave),
       child: Scaffold(
         appBar: AppBar(
           title: Column(

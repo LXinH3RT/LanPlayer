@@ -528,28 +528,76 @@ def check_lan_scan() -> None:
 
 
 def check_backspace_guard() -> None:
-    """Backspace 退一层：按键判定、两个页面都挂上、对话框能接住。"""
-    # Backspace = 返回上一浏览层级（用户 2026-10-30 要求）。
-    #
-    # 三条护栏分别盯：按键判定只认 backspace、列表页真的挂上了这个处理、
-    # 选择器也走同一个入口。少任何一条，用户按下去就是没反应。
+    """键盘触发时机：全应用统一「抬起才执行」，以及 Backspace 退一层的接线。
+
+    用户 2026-10-30 两次要求叠在一起：
+      1. Backspace 回到上一浏览层级；
+      2. 所有按键都改成抬起后触发，长按或按下不抬起没有任何效果。
+
+    这里的断言就是这两条的静态形态。任何一处退回「按下即触发」或
+    「放行 KeyRepeatEvent」，长按就会被连续执行，深目录里按住两秒直接
+    退到根 —— 而且这种回退肉眼很难发现，必须靠护栏盯住。
+    """
     kb = ROOT / "app/lib/ui/keyboard.dart"
     if not kb.exists():
-        problems.append("app/lib/ui/keyboard.dart missing; Backspace would no "
-                        "longer go back one level")
+        problems.append("app/lib/ui/keyboard.dart missing; keyboard shortcuts "
+                        "would lose their shared release-trigger logic")
+        return
+
+    kc = kb.read_text(encoding="utf-8")
+    # 只看函数体：文件里的文档注释也提到了这颗键，全文搜索会把注释当成
+    # 实现，导致「改成恒 false」这种真回退被抓漏。
+    body = kc.split("bool isBackKey(", 1)
+    body = body[1].split(";", 1)[0] if len(body) > 1 else ""
+    if "LogicalKeyboardKey.backspace" not in body:
+        problems.append("keyboard.dart no longer maps Backspace to the back "
+                        "action")
+
+    # 触发时机：按下只记录、重复吞掉、抬起才 fire。
+    trig = kc.split("class KeyReleaseTrigger", 1)
+    trig = trig[1].split("class BackKeyHandler", 1)[0] if len(trig) > 1 else ""
+    if not trig:
+        problems.append("keyboard.dart lost KeyReleaseTrigger; the app would "
+                        "go back to firing shortcuts on key down")
     else:
-        kc = kb.read_text(encoding="utf-8")
-        # 只看函数体：文件里的文档注释也提到了这颗键，全文搜索会把注释当成
-        # 实现，导致「改成恒 false」这种真回退被抓漏。
-        body = kc.split("bool isBackKey(", 1)
-        body = body[1].split(";", 1)[0] if len(body) > 1 else ""
-        if "LogicalKeyboardKey.backspace" not in body:
-            problems.append("keyboard.dart no longer maps Backspace to the "
-                            "back action")
-        if "is! KeyDownEvent" not in kc:
-            problems.append("keyboard.dart must only act on KeyDownEvent; "
-                            "handling KeyRepeatEvent walks a deep tree back to "
-                            "the root while the key is held")
+        # 按分支切片：光看「有没有提到 KeyDownEvent」是查不出问题的 ——
+        # 在记录键的同时顺手 fire 一下，两段文字都还在，但语义已经反了。
+        down_part = trig.split("event is KeyDownEvent", 1)
+        down_part = (down_part[1].split("if (event is", 1)[0]
+                     if len(down_part) > 1 else "")
+        if not down_part:
+            problems.append("KeyReleaseTrigger must handle KeyDownEvent; the "
+                            "press has to be remembered somewhere")
+        else:
+            if "_held.add(key)" not in down_part:
+                problems.append("KeyReleaseTrigger must record the key on "
+                                "KeyDownEvent")
+            if "fire(" in down_part:
+                problems.append("KeyReleaseTrigger must not fire on "
+                                "KeyDownEvent; shortcuts would run the moment "
+                                "the key goes down and a held key would repeat")
+
+        repeat_part = trig.split("event is KeyRepeatEvent", 1)
+        repeat_part = (repeat_part[1].split("if (event is", 1)[0]
+                       if len(repeat_part) > 1 else "")
+        if not repeat_part:
+            problems.append("KeyReleaseTrigger must swallow KeyRepeatEvent; "
+                            "holding a key would otherwise fire again and "
+                            "again")
+        elif "fire(" in repeat_part:
+            problems.append("KeyReleaseTrigger must not fire on "
+                            "KeyRepeatEvent; holding a key down would repeat "
+                            "the action until it is released")
+        if "event is KeyUpEvent" not in trig:
+            problems.append("KeyReleaseTrigger must fire on KeyUpEvent; that "
+                            "is the whole point of releasing")
+        if "_held.remove(key)" not in trig:
+            problems.append("KeyReleaseTrigger must only fire for keys it saw "
+                            "pressed, otherwise a key held while focus moves "
+                            "fires on release")
+        if "void reset()" not in trig:
+            problems.append("KeyReleaseTrigger must offer reset(); a page that "
+                            "loses focus would keep a stale held key")
 
     for path, why in (
         ("app/lib/ui/browser_screen.dart",
@@ -562,17 +610,40 @@ def check_backspace_guard() -> None:
         f = ROOT / path
         if not f.exists():
             continue
-        body = f.read_text(encoding="utf-8")
-        if "handleBackKey(" not in body:
+        page = f.read_text(encoding="utf-8")
+        if "_backKey.handle(event," not in page:
             problems.append(f"{path}: no Backspace handler; {why}")
+        if "_backKey.reset()" not in page:
+            problems.append(f"{path}: the Backspace handler is never reset on "
+                            "focus loss; a key held while the page loses focus "
+                            "fires when it comes back")
+
     picker = ROOT / "app/lib/ui/folder_picker.dart"
     if picker.exists():
         pc = picker.read_text(encoding="utf-8")
-        head = pc.split("handleBackKey(", 1)[0][-400:]
+        head = pc.split("_backKey.handle(", 1)[0][-400:]
         if "autofocus: true" not in head:
             problems.append("app/lib/ui/folder_picker.dart: the dialog's Focus "
                             "must autofocus, or Backspace never reaches it and "
                             "the key falls through to the page underneath")
+
+    # 播放页：快捷键必须走同一套抬起触发，且不再有 repeat 分支。
+    player = ROOT / "app/lib/ui/player_screen.dart"
+    if player.exists():
+        pl = player.read_text(encoding="utf-8")
+        if "KeyReleaseTrigger(_isPlayerKey)" not in pl:
+            problems.append("player_screen must drive its shortcuts through "
+                            "KeyReleaseTrigger; firing on key down makes a held "
+                            "arrow key seek dozens of times")
+        if "event is KeyRepeatEvent" in pl or "KeyDownEvent" in pl:
+            problems.append("player_screen still inspects KeyDownEvent/"
+                            "KeyRepeatEvent itself; the release-trigger helper "
+                            "should be the only place that decides when a "
+                            "shortcut fires")
+        if "_keys.reset()" not in pl:
+            problems.append("player_screen must reset the key state on focus "
+                            "loss, or the first release after a window switch "
+                            "fires a phantom action")
 
 
 def check_thumbnails() -> None:

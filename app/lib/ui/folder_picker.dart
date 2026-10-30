@@ -69,6 +69,9 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
   bool _loading = false;
   String? _error;
 
+  /// Backspace 的抬起触发状态（长按不生效，见 keyboard.dart）。
+  final BackKeyHandler _backKey = BackKeyHandler();
+
   /// 当前被点中的文件（目录由 [_currentPath] 表达）。
   MediaEntry? _pickedFile;
 
@@ -214,7 +217,10 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
       // 必须 autofocus：对话框里的焦点默认落在滚动视图上，没有这一句
       // Backspace 根本没有节点接，按键会一路冒到背后的页面去。
       autofocus: true,
-      onKeyEvent: (node, event) => handleBackKey(event, _closeOrUp),
+      onFocusChange: (hasFocus) {
+        if (!hasFocus) _backKey.reset();
+      },
+      onKeyEvent: (node, event) => _backKey.handle(event, _closeOrUp),
       child: Dialog(
         insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
         child: SizedBox(

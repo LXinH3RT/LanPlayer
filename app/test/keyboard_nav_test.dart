@@ -77,34 +77,94 @@ void main() {
       }
     });
 
-    test('只有按下才算，抬起与长按重复都不算', () {
+    test('按下不生效，抬起才执行', () {
+      final back = BackKeyHandler();
       var calls = 0;
-      void back() => calls++;
 
       const key = LogicalKeyboardKey.backspace;
       const physical = PhysicalKeyboardKey.backspace;
       const when = Duration.zero;
 
-      const down = KeyDownEvent(
-          physicalKey: physical,
-          logicalKey: key,
-          character: null,
-          timeStamp: when);
+      const down =
+          KeyDownEvent(physicalKey: physical, logicalKey: key, timeStamp: when);
       const up =
           KeyUpEvent(physicalKey: physical, logicalKey: key, timeStamp: when);
-      const repeat = KeyRepeatEvent(
-          physicalKey: physical,
-          logicalKey: key,
-          character: null,
-          timeStamp: when);
 
-      expect(handleBackKey(down, back), KeyEventResult.handled);
-      expect(calls, 1);
+      expect(back.handle(down, () => calls++), KeyEventResult.handled,
+          reason: '按下要被拦下，否则同一颗键会被上层再响应一次');
+      expect(calls, 0, reason: '按下还没松开，不该有动作');
 
-      // up 与 repeat 都忽略 —— 按住不放不该一路退到根
-      expect(handleBackKey(up, back), KeyEventResult.ignored);
-      expect(handleBackKey(repeat, back), KeyEventResult.ignored);
-      expect(calls, 1, reason: '抬起与重复不该再退一层');
+      expect(back.handle(up, () => calls++), KeyEventResult.handled);
+      expect(calls, 1, reason: '抬起才执行一次');
+    });
+
+    test('长按期间的重复事件一律不执行', () {
+      final back = BackKeyHandler();
+      var calls = 0;
+
+      const physical = PhysicalKeyboardKey.backspace;
+      const when = Duration.zero;
+
+      back.handle(
+          const KeyDownEvent(
+              physicalKey: physical,
+              logicalKey: LogicalKeyboardKey.backspace,
+              timeStamp: when),
+          () => calls++);
+      for (var i = 0; i < 5; i++) {
+        back.handle(
+            const KeyRepeatEvent(
+                physicalKey: physical,
+                logicalKey: LogicalKeyboardKey.backspace,
+                timeStamp: when),
+            () => calls++);
+      }
+      expect(calls, 0, reason: '按住不放不该执行任何动作');
+
+      back.handle(
+          const KeyUpEvent(
+              physicalKey: physical,
+              logicalKey: LogicalKeyboardKey.backspace,
+              timeStamp: when),
+          () => calls++);
+      expect(calls, 1, reason: '长按到底也只执行一次');
+    });
+
+    test('没按过就松手不算触发（焦点是按住期间才过来的）', () {
+      final back = BackKeyHandler();
+      var calls = 0;
+
+      expect(
+          back.handle(
+              const KeyUpEvent(
+                  physicalKey: PhysicalKeyboardKey.backspace,
+                  logicalKey: LogicalKeyboardKey.backspace,
+                  timeStamp: Duration.zero),
+              () => calls++),
+          KeyEventResult.handled);
+      expect(calls, 0);
+    });
+
+    test('失焦清掉按住状态，回来那次松手不再触发', () {
+      final back = BackKeyHandler();
+      var calls = 0;
+
+      const physical = PhysicalKeyboardKey.backspace;
+      const when = Duration.zero;
+      back.handle(
+          const KeyDownEvent(
+              physicalKey: physical,
+              logicalKey: LogicalKeyboardKey.backspace,
+              timeStamp: when),
+          () => calls++);
+      back.reset();
+      back.handle(
+          const KeyUpEvent(
+              physicalKey: physical,
+              logicalKey: LogicalKeyboardKey.backspace,
+              timeStamp: when),
+          () => calls++);
+      expect(calls, 0);
     });
   });
 
