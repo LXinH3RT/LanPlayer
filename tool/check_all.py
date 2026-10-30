@@ -3397,6 +3397,65 @@ def check_windows_playback_paths() -> None:
                  "runs on WASAPI with a waveOut fallback")
 
 
+def check_settings_layout() -> None:
+    """Guard the two-pane settings screen.
+
+    The screen used to be one long ListView: on a phone the 关于 section sat
+    seven screens down and `devicectl` has no way to scroll to it. It is now a
+    left rail plus one pane, and both sides take their type from the theme
+    (the user asked for 目录标题与正文统一的字体字号 —— a hand-rolled 12px
+    caption next to 16px rows read like two different products).
+    """
+    screen = ROOT / "app" / "lib" / "ui" / "settings_screen.dart"
+    if not screen.exists():
+        problems.append("app/lib/ui/settings_screen.dart is missing")
+        return
+    st = screen.read_text(encoding="utf-8")
+
+    # 目录与右侧内容必须由同一张表驱动，否则加一格设置就得记得改两处。
+    if "enum SettingsTab" not in st:
+        problems.append("settings_screen.dart lost the SettingsTab enum; the left "
+                        "rail and the right pane would drift apart")
+    # 窄屏不能把目录丢掉，只能换成横条。
+    for needle, why in (
+        ("_TabRail", "the wide layout lost its left navigation rail"),
+        ("_TabStrip", "the narrow layout lost its tab strip; the rail would be "
+                      "unreachable on a phone"),
+        ("LayoutBuilder", "settings_screen.dart no longer adapts to the window "
+                          "width; a 220 rail on a phone eats the whole screen"),
+    ):
+        if needle not in st:
+            problems.append(f"settings_screen.dart: {why}")
+
+    # 字号必须取自主题，不能在页面里另写一套。
+    if "textTheme.titleMedium" not in st:
+        problems.append(
+            "settings_screen.dart no longer takes the rail's type from "
+            "textTheme.titleMedium; the directory titles would go back to a "
+            "hand-rolled size that does not match the rows")
+    if "fontSize: 12," in st and "letterSpacing: 1.2" in st:
+        problems.append("settings_screen.dart is drawing its own small-caption "
+                        "style again; the rail must share the body type")
+
+    # 一次只构建一格：整页 ListView 会让「关于」在手机上下沉好几屏。
+    if "switch (tab)" not in st:
+        problems.append("settings_screen.dart no longer builds one pane at a "
+                        "time; the whole list would be laid out again")
+    # 真机取证开关：移动端没有输入注入，只能靠它直接落到某一格。
+    if "LANPLAYER_SETTINGS_TAB" not in st:
+        problems.append("settings_screen.dart lost the LANPLAYER_SETTINGS_TAB "
+                        "switch; the paged layout cannot be photographed on a "
+                        "device without injecting taps")
+    probe = ROOT / "app" / "lib" / "data" / "probe.dart"
+    if probe.exists() and "LANPLAYER_SETTINGS_TAB" not in probe.read_text(
+            encoding="utf-8"):
+        problems.append("probe.dart lost LANPLAYER_SETTINGS_TAB; the compile-time "
+                        "branch would not exist for iOS/Android builds")
+
+    notes.append("settings layout: a left rail of SettingsTab entries next to "
+                 "one pane, both typed from theme.textTheme.titleMedium")
+
+
 def check_local_picker() -> None:
     """Guard the local file/folder picker and the wide-character file layer.
 
@@ -3524,6 +3583,7 @@ def main() -> int:
     check_playback_profiles()
     check_apple_wiring()
     check_hw_decode()
+    check_settings_layout()
     check_local_picker()
     check_splash()
     check_ui_thread()

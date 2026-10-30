@@ -13,14 +13,15 @@ import 'package:lanplayer/ui/settings_screen.dart';
 void main() {
   /// 设置页从 SettingsStore 单例读配置，所以要先把它置成期望的状态。
   ///
-  /// 还得把测试窗口调高：设置页是个 ListView，语言那几格在「默认倍速」下面，
-  /// 默认 800x600 的测试画布根本build不到它们（懒加载），find 会全部落空。
-  Future<void> pumpSettings(WidgetTester tester, PlaybackSettings s) async {
+  /// 设置页现在是左目录右内容，一次只构建一格。语言那四格分在「音频」与
+  /// 「字幕」两页里，所以断言前得先翻到对应目录 —— 用 initialTab 指定。
+  Future<void> pumpSettings(WidgetTester tester, PlaybackSettings s,
+      {SettingsTab tab = SettingsTab.audio}) async {
     tester.view.physicalSize = const Size(1200, 2400);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     SettingsStore.instance.value = s;
-    await tester.pumpWidget(const MaterialApp(home: SettingsScreen()));
+    await tester.pumpWidget(MaterialApp(home: SettingsScreen(initialTab: tab)));
     await tester.pumpAndSettle();
   }
 
@@ -29,6 +30,10 @@ void main() {
       await pumpSettings(tester, PlaybackSettings());
       expect(find.text('首选音轨语言'), findsOneWidget);
       expect(find.text('次选音轨语言'), findsOneWidget);
+      // 字幕那两格在「字幕」目录里，不在「音频」目录。
+      expect(find.text('首选字幕语言'), findsNothing);
+      await pumpSettings(tester, PlaybackSettings(),
+          tab: SettingsTab.subtitle);
       expect(find.text('首选字幕语言'), findsOneWidget);
       expect(find.text('次选字幕语言'), findsOneWidget);
     });
@@ -37,7 +42,8 @@ void main() {
       // 这正是最容易崩的组合：primary=zh、secondary=auto。
       await pumpSettings(tester, PlaybackSettings());
       expect(tester.takeException(), isNull);
-      expect(find.text('中文'), findsWidgets, reason: '首选字幕默认中文');
+      // 音轨首选默认也是中文，就在当前这一页。
+      expect(find.text('中文'), findsWidgets, reason: '首选音轨默认中文');
     });
   });
 

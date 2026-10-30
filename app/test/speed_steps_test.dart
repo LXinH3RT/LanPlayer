@@ -48,7 +48,8 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     SettingsStore.instance.value = PlaybackSettings(speed: 1.0);
-    await tester.pumpWidget(const MaterialApp(home: SettingsScreen()));
+    await tester.pumpWidget(const MaterialApp(
+      home: SettingsScreen(initialTab: SettingsTab.audio)));
     await tester.pumpAndSettle();
 
     final tile = find.text('默认倍速');

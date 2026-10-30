@@ -10,8 +10,7 @@ import 'package:lanplayer/ui/theme.dart';
 /// 构建脚本用 `--dart-define=LANPLAYER_VERSION=` 注进来。这里锁三件事：
 /// 没注入时落回 dev；注入后在「关于」里能看到这一行；界面字体走 MiSans。
 void main() {
-  /// 设置页是个 ListView，「关于」在最后面，默认 800x600 的画布根本 build
-  /// 不到它（懒加载），find 会全部落空。所以把画布调高再 pump。
+  /// 设置页现在是左目录右内容，一次只构建一格，所以先点「关于」再断言。
   Future<void> pumpSettings(WidgetTester tester) async {
     tester.view.physicalSize = const Size(1200, 2600);
     tester.view.devicePixelRatio = 1.0;
@@ -20,6 +19,8 @@ void main() {
       theme: LanPlayerTheme.dark(),
       home: const SettingsScreen(),
     ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(SettingsTab.about.tabKey));
     await tester.pumpAndSettle();
   }
 
@@ -31,13 +32,6 @@ void main() {
   testWidgets('设置 → 关于 里有版本这一行，值是注入的那个字符串', (tester) async {
     await pumpSettings(tester);
 
-    // 「关于」在页面最底部。设置页已经长到一屏放不下，ListView 又是懒
-    // 构建的，不先滚过去根本不会建出那一格。
-    await tester.scrollUntilVisible(find.text('关于'), 400,
-        scrollable: find.byType(Scrollable).first);
-    await tester.pumpAndSettle();
-
-    expect(find.text('关于'), findsOneWidget);
     expect(find.text('版本'), findsOneWidget);
 
     // 版本号是那一行的 subtitle，值来自编译期 define。

@@ -9,9 +9,46 @@ import 'widgets/number_field.dart';
 import 'widgets/shortcut_section.dart';
 import 'widgets/volume_sheet.dart' show VolumeSheet;
 
+/// 设置页的分类。左侧目录、右侧内容，两侧都由这张表驱动。
+///
+/// 顺序就是用户从「最常动的」到「最少动的」的直觉顺序；「关于」固定压尾。
+enum SettingsTab {
+  decode('解码'),
+  picture('画面'),
+  audio('音频'),
+  subtitle('字幕'),
+  progress('进度'),
+  autoplay('连播'),
+  shortcuts('快捷键'),
+  about('关于');
+
+  const SettingsTab(this.label);
+
+  final String label;
+
+  /// 目录项自己的定位键。测试与真机脚本靠它点，不靠文案 —— 文案里
+  /// 「字幕」同时是快捷键分组名，按文字点到的是哪一个说不清。
+  Key get tabKey => ValueKey('settings-tab-$name');
+
+  /// 目录项与正文标题共用的字号来源。
+  ///
+  /// 用户要求「目录标题和正文采用统一的字体字号」：以前分类标题是 12px
+  /// 加字距的另一套样式，扫一眼就知道它和正文不是一家。现在两侧都取
+  /// 主题里的 `titleMedium` —— Material 给 ListTile 标题用的就是这一项。
+  /// 字体跟着全局的 MiSans 走，页面里不再另写 fontSize。
+  TextStyle? textStyle(BuildContext context) =>
+      Theme.of(context).textTheme.titleMedium;
+}
+
 /// Module 4: the knobs advanced users reach for when a file misbehaves.
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  const SettingsScreen({super.key, this.initialTab});
+
+  /// 打开时落在哪一格。默认是「解码」。
+  ///
+  /// 存在的意义是给测试和验证脚本一个确定的起点：设置页现在是分栏的，
+  /// 一次只构建一格，不指定的话断言得先模拟点一次目录，纯属噪声。
+  final SettingsTab? initialTab;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -21,22 +58,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final _settings = SettingsStore.instance.value;
   final _scroll = ScrollController();
 
-  Future<void> _persist() async {
-    await SettingsStore.instance.save();
-    if (mounted) setState(() {});
-  }
+  /// 当前选中的目录。默认落在第一项，和「打开设置先看到解码」的老习惯一致。
+  late SettingsTab _tab = widget.initialTab ?? SettingsTab.decode;
 
   @override
   void initState() {
     super.initState();
     // 验证钩子：移动端没有输入注入手段（devicectl 只能截图和启停进程），
-    // 「关于」在列表最底部，没有这个开关就没法在真机上给它留证据。
+    // 「关于」在目录最下面，没有这个开关就没法在真机上给它留证据。
     //   LANPLAYER_SETTINGS_SCROLL=end
     if (probeFlag('LANPLAYER_SETTINGS_SCROLL') == 'end') {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!_scroll.hasClients) return;
-        _scroll.jumpTo(_scroll.position.maxScrollExtent);
+        _select(SettingsTab.about, jumpToEnd: true);
       });
+    }
+    // 分栏之后一次只构建一格，真机脚本靠点坐标翻页太脆（窗口一旦失焦，
+    // 后续几次点击就落到别处去了）。这个开关让它直接落在指定那一格：
+    //   LANPLAYER_SETTINGS_TAB=audio|subtitle|shortcuts|about|...
+    final wantTab = probeFlag('LANPLAYER_SETTINGS_TAB');
+    if (wantTab != null) {
+      final hit = SettingsTab.values.firstWhere(
+        (t) => t.name == wantTab,
+        orElse: () => _tab,
+      );
+      _tab = hit;
+    }
+  }
+
+  @override
+  void didUpdateWidget(SettingsScreen old) {
+    super.didUpdateWidget(old);
+    // 同一个 State 被复用、而外面换了 initialTab 时也要跟着翻页。
+    // `late _tab` 只会初始化一次，不在这里同步的话，第二次挂载看到的
+    // 还是上一格。
+    final want = widget.initialTab;
+    if (want != null && want != old.initialTab) {
+      _tab = want;
     }
   }
 
@@ -46,16 +103,76 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
+  void _select(SettingsTab tab, {bool jumpToEnd = false}) {
+    setState(() => _tab = tab);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      // 换目录后从顶上开始看，除非探针明确要求跳到底。
+      final target =
+          jumpToEnd ? _scroll.position.maxScrollExtent : 0.0;
+      _scroll.jumpTo(target);
+    });
+  }
+
+  Future<void> _persist() async {
+    await SettingsStore.instance.save();
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
-    final abi = _safeAbi();
     return Scaffold(
       appBar: AppBar(title: const Text('设置')),
-      body: ListView(
-        controller: _scroll,
-        padding: const EdgeInsets.only(bottom: 32),
-        children: [
-          const _Section('解码'),
+      body: LayoutBuilder(
+        builder: (context, box) {
+          // 窄屏（手机竖屏）放不下 220 的侧栏，改成顶部横滑的目录条：
+          // 目录还在，只是从竖排变横排，不去掉。
+          final wide = box.maxWidth >= 720;
+          final body = _pane(context);
+          if (!wide) {
+            return Column(
+              children: [
+                _TabStrip(current: _tab, onSelect: _select),
+                const Divider(height: 1),
+                Expanded(child: body),
+              ],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(
+                width: 220,
+                child: _TabRail(current: _tab, onSelect: _select),
+              ),
+              const VerticalDivider(width: 1),
+              Expanded(child: body),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// 右侧内容区。只构建当前目录的那几行 —— 以前整页是同一个 ListView，
+  /// 在手机上滚到「关于」要经过七八屏。
+  Widget _pane(BuildContext context) {
+    final abi = _safeAbi();
+    return ListView(
+      // 跟着目录换 key：换目录等于换一页，滚动位置跟着归零。
+      key: ValueKey('settings-pane-${_tab.name}'),
+      controller: _scroll,
+      padding: const EdgeInsets.only(top: 8, bottom: 32),
+      children: [
+        for (final w in _rowsFor(_tab, abi)) w,
+      ],
+    );
+  }
+
+  List<Widget> _rowsFor(SettingsTab tab, int? abi) {
+    switch (tab) {
+      case SettingsTab.decode:
+        return [
           SwitchListTile(
             value: _settings.hardwareDecoding,
             title: const Text('硬件解码'),
@@ -75,7 +192,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _persist();
             },
           ),
-          const _Section('画面'),
+        ];
+
+      case SettingsTab.picture:
+        return [
           for (final (label, hint, mode) in [
             ('适应屏幕', '保持比例，上下或左右留黑边', 0),
             ('铺满裁切', '填满屏幕，超出部分裁掉', 1),
@@ -91,7 +211,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _persist();
               },
             ),
-          const _Section('音频'),
+        ];
+
+      case SettingsTab.audio:
+        return [
           ListTile(
             title: const Text('默认音量'),
             // 和播放页的音量面板用同一套刻度：显示 0–100，内部存 0–2.0 的
@@ -148,7 +271,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _persist();
             },
           ),
-          const _Section('字幕'),
+        ];
+
+      case SettingsTab.subtitle:
+        return [
           ListTile(
             title: const Text('字幕大小'),
             subtitle: Slider(
@@ -196,7 +322,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _persist();
             },
           ),
-          const _Section('进度'),
+        ];
+
+      case SettingsTab.progress:
+        return [
           // 填数而不是滑杆/下拉：步长是 1..10 的整数，直接输比拖滑杆快。
           // 越界与非法输入由 NumberField 夹到 [seekStepMin, seekStepMax]，
           // 模型层 fromJson 里还有一道 clamp，手改 settings.json 也绕不过。
@@ -216,7 +345,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               },
             ),
           ),
-          const _Section('连播'),
+        ];
+
+      case SettingsTab.autoplay:
+        return [
           SwitchListTile(
             value: _settings.autoNext,
             title: const Text('当前目录自动连播'),
@@ -236,10 +368,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _persist();
             },
           ),
-          const _Section('快捷键'),
-          // 键盘绑定 + 鼠标手势都列在这里。手势是固定的（画面上的单击/双击
-          // /长按由 GestureDetector 的位置判定决定），所以只展示不给改 ——
-          // 用户要求「所有快捷键都在设置里列出来」，也包括这些。
+        ];
+
+      case SettingsTab.shortcuts:
+        // 键盘绑定 + 鼠标手势都列在这里。手势是固定的（画面上的单击/双击
+        // /长按由 GestureDetector 的位置判定决定），所以只展示不给改 ——
+        // 用户要求「所有快捷键都在设置里列出来」，也包括这些。
+        return [
           ShortcutSection(
             bindings: _settings.shortcuts,
             onBind: (action, key) {
@@ -264,7 +399,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _persist();
             },
           ),
-          const _Section('关于'),
+        ];
+
+      case SettingsTab.about:
+        return [
           const ListTile(
             title: Text('版本'),
             subtitle: Text(kAppVersion),
@@ -295,9 +433,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
-        ],
-      ),
-    );
+        ];
+    }
   }
 
   int? _safeAbi() {
@@ -309,23 +446,117 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
-class _Section extends StatelessWidget {
-  const _Section(this.title);
+/// 宽屏的左侧目录栏。
+class _TabRail extends StatelessWidget {
+  const _TabRail({required this.current, required this.onSelect});
 
-  final String title;
+  final SettingsTab current;
+  final ValueChanged<SettingsTab> onSelect;
 
   @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 6),
-        child: Text(
-          title,
-          style: TextStyle(
-            fontSize: 12,
-            letterSpacing: 1.2,
-            color: Theme.of(context).colorScheme.primary,
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      children: [
+        for (final tab in SettingsTab.values)
+          _TabTile(
+            tab: tab,
+            selected: tab == current,
+            onTap: () => onSelect(tab),
           ),
+      ],
+    );
+  }
+}
+
+/// 窄屏的顶部目录条：同一个目录表，横排。
+class _TabStrip extends StatelessWidget {
+  const _TabStrip({required this.current, required this.onSelect});
+
+  final SettingsTab current;
+  final ValueChanged<SettingsTab> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      child: Row(
+        children: [
+          for (final tab in SettingsTab.values)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: _TabTile(
+                tab: tab,
+                selected: tab == current,
+                onTap: () => onSelect(tab),
+                compact: true,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TabTile extends StatelessWidget {
+  const _TabTile({
+    required this.tab,
+    required this.selected,
+    required this.onTap,
+    this.compact = false,
+  });
+
+  final SettingsTab tab;
+  final bool selected;
+  final VoidCallback onTap;
+
+  /// 横排时不留整行宽度，按内容撑开。
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    // 字号与字体跟着正文走（见 SettingsTab.textStyle 的注释），
+    // 选中与否只靠颜色和底色区分，不靠字号大小 —— 大小一变，扫视时会
+    // 觉得那是两种层级的东西。
+    final style = tab.textStyle(context)?.copyWith(
+      color: selected ? scheme.primary : scheme.onSurface,
+      fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+    );
+    if (compact) {
+      return InkWell(
+        key: tab.tabKey,
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: selected ? scheme.primary.withValues(alpha: 0.14) : null,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text(tab.label, style: style),
         ),
       );
+    }
+    return InkWell(
+      key: tab.tabKey,
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        decoration: BoxDecoration(
+          color: selected ? scheme.primary.withValues(alpha: 0.14) : null,
+          border: Border(
+            left: BorderSide(
+              width: 3,
+              color: selected ? scheme.primary : Colors.transparent,
+            ),
+          ),
+        ),
+        child: Text(tab.label, style: style),
+      ),
+    );
+  }
 }
 
 /// 「首选/次选语言」选择项：点开是一个下拉，列出常见语言。

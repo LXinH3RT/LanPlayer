@@ -63,11 +63,12 @@ void main() {
   });
 
   testWidgets('设置页用填数改步长，越界会被夹紧', (tester) async {
-    // 设置页是 ListView，默认 800x600 画布 build 不到「进度」段（懒加载）。
+    // 设置页现在左目录右内容，一次只构建一格，所以直接点开「进度」。
     tester.view.physicalSize = const Size(1200, 2600);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
-    await tester.pumpWidget(const MaterialApp(home: SettingsScreen()));
+    await tester.pumpWidget(const MaterialApp(
+      home: SettingsScreen(initialTab: SettingsTab.progress)));
     await tester.pumpAndSettle();
 
     final tile = find.text('快进 / 快退步长');
@@ -112,7 +113,8 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     SettingsStore.instance.value = PlaybackSettings(volume: 1.0);
-    await tester.pumpWidget(const MaterialApp(home: SettingsScreen()));
+    await tester.pumpWidget(const MaterialApp(
+      home: SettingsScreen(initialTab: SettingsTab.audio)));
     await tester.pumpAndSettle();
 
     final tile = find.text('默认音量');

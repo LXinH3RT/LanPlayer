@@ -41,6 +41,9 @@ String? probeFlag(String name) {
     case 'LANPLAYER_SETTINGS_SCROLL':
       const v = String.fromEnvironment('LANPLAYER_SETTINGS_SCROLL');
       return v.isEmpty ? null : v;
+    case 'LANPLAYER_SETTINGS_TAB':
+      const v = String.fromEnvironment('LANPLAYER_SETTINGS_TAB');
+      return v.isEmpty ? null : v;
   }
   return null;
 }
