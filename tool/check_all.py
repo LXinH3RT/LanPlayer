@@ -804,6 +804,20 @@ def check_thumbnails() -> None:
             problems.append("home_screen _load must not swallow a reload while "
                             "one is in flight; the stale result is already "
                             "dropped by _loadGen")
+        # 「还有 N 项」本来 push 一个浏览页，等于把同一份列表换个界面再列一遍。
+        # 需求是就地摊开：按钮只改本页状态，不许再压新页面。
+        if "还有 $hidden 项" not in hc:
+            problems.append("home_screen lost the '还有 N 项' affordance for a "
+                            "long directory; the rest of the listing would be "
+                            "unreachable from the home screen")
+        if "onExpand" not in hc or "onCollapse" not in hc:
+            problems.append("home_screen must expand a long directory in place "
+                            "(onExpand/onCollapse); it used to push a browser "
+                            "page that re-listed the same entries")
+        # 就地展开一定要能被撤回，否则一次点击就把首页拉成几十行。
+        if "label: const Text('收起')" not in hc:
+            problems.append("home_screen lost the collapse control; an "
+                            "expanded source could never be folded again")
 
     notes.append("thumbnails: LPT2 header round-trips, hex cache key keyed by "
                  "mtime+size so a replaced file gets a fresh cover, covers only "

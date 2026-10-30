@@ -25,7 +25,11 @@ import 'widgets/media_row.dart';
 /// 多点一下，而且首页除了名字之外什么都看不出来。现在首页本身就是目录：
 /// 每块来源一小节，直接列出根目录里的文件夹与视频。
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.repo});
+
+  /// 目录列表的获取方式。默认真实仓库（走后台 isolate 调内核）；
+  /// 测试可以塞一个不碰 SMB 的假实现。
+  final MediaRepository? repo;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -46,7 +50,7 @@ class _SourceLoad {
 class _HomeScreenState extends State<HomeScreen> {
   // late: 首页在没有来源时也要能渲染（空状态页、添加菜单），不该为了画一屏
   // 「还没有内容」就去加载 lanplayer.dll。等到真的列目录时才碰内核。
-  late final MediaRepository _repo = MediaRepository();
+  late final MediaRepository _repo = widget.repo ?? MediaRepository();
 
   /// 添加流程（选服务器 / 挑文件夹）进行中时按下添加按钮不再重复触发。
   bool _busy = false;
@@ -60,7 +64,13 @@ class _HomeScreenState extends State<HomeScreen> {
   /// 只在多块来源时出现：点一下只看这一块。
   String? _only;
 
-  /// 一小节最多直接列这么多行，再多就交给「查看全部」。
+  /// 已经在首页上摊开的来源。
+  ///
+  /// 「还有 N 项」曾经是 push 一个浏览页，用户点完发现只是同一份列表换个
+  /// 界面再列一遍。现在改成就地摊开：多出来的行直接接在后面，页面不跳转。
+  final Set<String> _expanded = {};
+
+  /// 一小节最多直接列这么多行，其余收在「还有 N 项」后面。
   static const _maxRows = 8;
 
   List<HomeSource> get _sources => buildHomeSources(
@@ -497,6 +507,11 @@ class _HomeScreenState extends State<HomeScreen> {
                           source: s,
                           load: _loads[s.id],
                           maxRows: _maxRows,
+                          expanded: _expanded.contains(s.id),
+                          onExpand: () =>
+                              setState(() => _expanded.add(s.id)),
+                          onCollapse: () =>
+                              setState(() => _expanded.remove(s.id)),
                           onRetry: () => _load(s),
                           onOpenRoot: () => _openRoot(s),
                           onEnter: (e) => _enterSubdir(s, e),
@@ -606,6 +621,9 @@ class _SourceSection extends StatelessWidget {
     required this.source,
     required this.load,
     required this.maxRows,
+    required this.expanded,
+    required this.onExpand,
+    required this.onCollapse,
     required this.onRetry,
     required this.onOpenRoot,
     required this.onEnter,
@@ -617,6 +635,11 @@ class _SourceSection extends StatelessWidget {
   final HomeSource source;
   final _SourceLoad? load;
   final int maxRows;
+
+  /// 这一块是否已经在首页上摊开全部。摊开后「还有 N 项」变成「收起」。
+  final bool expanded;
+  final VoidCallback onExpand;
+  final VoidCallback onCollapse;
   final VoidCallback onRetry;
   final VoidCallback onOpenRoot;
   final ValueChanged<MediaEntry> onEnter;
@@ -628,7 +651,8 @@ class _SourceSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final listing = load?.listing;
     final rows = listing == null ? const <MediaEntry>[] : homeRows(listing);
-    final shown = rows.length > maxRows ? rows.take(maxRows).toList() : rows;
+    final collapsed = !expanded && rows.length > maxRows;
+    final shown = collapsed ? rows.take(maxRows).toList() : rows;
     final hidden = rows.length - shown.length;
     final loading = load?.loading ?? true;
     final error = load?.error;
@@ -725,9 +749,18 @@ class _SourceSection extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
               child: TextButton.icon(
-                onPressed: onOpenRoot,
+                onPressed: onExpand,
                 icon: const Icon(Icons.expand_more, size: 18),
                 label: Text('还有 $hidden 项'),
+              ),
+            )
+          else if (expanded && rows.length > maxRows)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: TextButton.icon(
+                onPressed: onCollapse,
+                icon: const Icon(Icons.expand_less, size: 18),
+                label: const Text('收起'),
               ),
             ),
         ],
