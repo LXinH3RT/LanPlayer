@@ -565,10 +565,11 @@ def check_seek_step() -> None:
         if "seekStepSeconds" not in sc:
             problems.append("the settings screen no longer exposes the seek "
                             "step; users could not change it any more")
-        # 下拉框而不是滑杆：滑杆能拖出 7.3，步长必须是整数秒。
-        if "DropdownButton<int>(" not in sc:
-            problems.append("the seek step must be picked from a dropdown so "
-                            "it stays an integer")
+        # 填数而不是滑杆（用户 2026-10-30 要求）：滑杆能拖出 7.3，且拖动
+        # 过程中每帧都落盘。校验这一格用的是 NumberField。
+        if "NumberField(" not in sc:
+            problems.append("the seek step must be a NumberField the user "
+                            "types into, not a slider")
 
     player = ROOT / "app" / "lib" / "ui" / "player_screen.dart"
     if not player.exists():

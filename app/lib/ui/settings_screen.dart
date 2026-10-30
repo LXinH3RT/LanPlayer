@@ -5,6 +5,7 @@ import '../data/build_info.dart';
 import '../data/models.dart' show PlaybackSettings, kLanguageOptions;
 import '../data/probe.dart';
 import '../data/stores.dart';
+import 'widgets/number_field.dart';
 import 'widgets/volume_sheet.dart' show VolumeSheet;
 
 /// Module 4: the knobs advanced users reach for when a file misbehaves.
@@ -92,17 +93,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const _Section('音频'),
           ListTile(
             title: const Text('默认音量'),
-            // 和播放页的音量面板用同一套刻度：滑杆上显示 0–100，内部存
-            // 0–2.0 的增益。两处口径不一致的话，用户会以为设置没生效。
-            subtitle: Slider(
-              value: VolumeSheet.displayOf(_settings.volume).toDouble(),
-              max: VolumeSheet.displayMax.toDouble(),
-              divisions: 20,
-              label: VolumeSheet.displayOf(_settings.volume).toString(),
+            // 和播放页的音量面板用同一套刻度：显示 0–100，内部存 0–2.0 的
+            // 增益。两处口径不一致的话，用户会以为设置没生效。
+            subtitle: const Text('开片时的音量；100 为原音量，上限 200。'),
+            trailing: NumberField(
+              value: VolumeSheet.displayOf(_settings.volume),
+              min: 0,
+              max: VolumeSheet.displayMax,
+              suffix: '%',
               onChanged: (v) {
                 setState(() => _settings.volume = VolumeSheet.volumeOf(v));
+                _persist();
               },
-              onChangeEnd: (_) => _persist(),
             ),
           ),
           ListTile(
@@ -187,21 +189,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
           const _Section('进度'),
-          // 用下拉而不是滑杆：滑杆能拖出 7.3 这种值，而步长必须是整数秒。
+          // 填数而不是滑杆/下拉：步长是 1..10 的整数，直接输比拖滑杆快。
+          // 越界与非法输入由 NumberField 夹到 [seekStepMin, seekStepMax]，
+          // 模型层 fromJson 里还有一道 clamp，手改 settings.json 也绕不过。
           ListTile(
             title: const Text('快进 / 快退步长'),
-            subtitle: const Text('播放页的按钮与方向键一次跳过这么多秒。'),
-            trailing: DropdownButton<int>(
+            subtitle: const Text('播放页的按钮与方向键一次跳过这么多秒'
+                '（1–10）。'),
+            trailing: NumberField(
               value: _settings.seekStepSeconds,
-              underline: const SizedBox.shrink(),
-              items: [
-                for (var s = PlaybackSettings.seekStepMin;
-                    s <= PlaybackSettings.seekStepMax;
-                    s++)
-                  DropdownMenuItem<int>(value: s, child: Text('$s 秒')),
-              ],
+              min: PlaybackSettings.seekStepMin,
+              max: PlaybackSettings.seekStepMax,
+              suffix: '秒',
               onChanged: (v) {
-                if (v == null) return;
                 setState(() => _settings.seekStepSeconds =
                     PlaybackSettings.clampSeekStep(v));
                 _persist();

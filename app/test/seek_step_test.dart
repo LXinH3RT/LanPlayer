@@ -62,7 +62,7 @@ void main() {
     });
   });
 
-  testWidgets('设置页能改步长，且只给 1..10 这些选项', (tester) async {
+  testWidgets('设置页用填数改步长，越界会被夹紧', (tester) async {
     // 设置页是 ListView，默认 800x600 画布 build 不到「进度」段（懒加载）。
     tester.view.physicalSize = const Size(1200, 2600);
     tester.view.devicePixelRatio = 1.0;
@@ -72,25 +72,70 @@ void main() {
 
     final tile = find.text('快进 / 快退步长');
     expect(tile, findsOneWidget);
-    expect(find.text('10 秒'), findsOneWidget);
+    // 步长这一格是输入框，不是滑杆，也不是下拉。
+    final field = find.descendant(
+      of: find.ancestor(of: tile, matching: find.byType(ListTile)),
+      matching: find.byType(TextField),
+    );
+    expect(field, findsOneWidget);
+    // 这一格里不能有滑杆（倍速/字幕那几格仍是滑杆，所以按格查）。
+    expect(
+      find.descendant(
+        of: find.ancestor(of: tile, matching: find.byType(ListTile)),
+        matching: find.byType(Slider),
+      ),
+      findsNothing,
+    );
 
-    await tester.tap(find.text('10 秒'));
-    await tester.pumpAndSettle();
-
-    // 下拉里应当正好 1..10 这十个选项（含当前值那份 10 秒）。
-    for (var s = PlaybackSettings.seekStepMin;
-        s <= PlaybackSettings.seekStepMax;
-        s++) {
-      expect(find.text('$s 秒'), findsWidgets, reason: '缺少 $s 秒这一项');
+    Future<void> enter(String text) async {
+      await tester.enterText(field, text);
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
     }
-    expect(find.text('11 秒'), findsNothing);
-    expect(find.text('0 秒'), findsNothing);
 
-    await tester.tap(find.text('3 秒').last);
+    await enter('3');
+    expect(SettingsStore.instance.value.seekStepSeconds, 3);
+    expect(tester.widget<TextField>(field).controller?.text, '3');
+
+    // 越界与非法输入：夹到区间内，不允许出现 0 或 99。
+    await enter('99');
+    expect(SettingsStore.instance.value.seekStepSeconds, 10);
+    expect(tester.widget<TextField>(field).controller?.text, '10');
+
+    await enter('0');
+    expect(SettingsStore.instance.value.seekStepSeconds, 1);
+    expect(tester.widget<TextField>(field).controller?.text, '1');
+  });
+
+  testWidgets('设置页的音量也是填数，且夹在 0..100', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    SettingsStore.instance.value = PlaybackSettings(volume: 1.0);
+    await tester.pumpWidget(const MaterialApp(home: SettingsScreen()));
     await tester.pumpAndSettle();
 
-    expect(SettingsStore.instance.value.seekStepSeconds, 3);
-    // 下拉菜单收起来之后，页面上只剩控件自身显示的那个「3 秒」。
-    expect(find.text('3 秒'), findsOneWidget);
+    final tile = find.text('默认音量');
+    final field = find.descendant(
+      of: find.ancestor(of: tile, matching: find.byType(ListTile)),
+      matching: find.byType(TextField),
+    );
+    expect(field, findsOneWidget);
+    // 1.0 增益显示成 50。
+    expect(tester.widget<TextField>(field).controller?.text, '50');
+
+    Future<void> enter(String text) async {
+      await tester.enterText(field, text);
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+    }
+
+    await enter('80');
+    // 80 显示值 = 1.6 增益。
+    expect(SettingsStore.instance.value.volume, closeTo(1.6, 1e-9));
+
+    await enter('999');
+    expect(tester.widget<TextField>(field).controller?.text, '100');
+    expect(SettingsStore.instance.value.volume, closeTo(2.0, 1e-9));
   });
 }
