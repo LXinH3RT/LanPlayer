@@ -6,6 +6,7 @@ import '../data/models.dart' show PlaybackSettings, kLanguageOptions;
 import '../data/probe.dart';
 import '../data/stores.dart';
 import 'widgets/number_field.dart';
+import 'widgets/shortcut_section.dart';
 import 'widgets/volume_sheet.dart' show VolumeSheet;
 
 /// Module 4: the knobs advanced users reach for when a file misbehaves.
@@ -232,6 +233,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 '关闭后不再记录进度，已保存的历史仍会保留。'),
             onChanged: (v) {
               _settings.rememberProgress = v;
+              _persist();
+            },
+          ),
+          const _Section('快捷键'),
+          // 键盘绑定 + 鼠标手势都列在这里。手势是固定的（画面上的单击/双击
+          // /长按由 GestureDetector 的位置判定决定），所以只展示不给改 ——
+          // 用户要求「所有快捷键都在设置里列出来」，也包括这些。
+          ShortcutSection(
+            bindings: _settings.shortcuts,
+            onBind: (action, key) {
+              final steal = key == null
+                  ? null
+                  : _settings.shortcuts.conflictFor(action, key);
+              setState(() {
+                _settings.shortcuts = _settings.shortcuts.bind(action, key);
+              });
+              _persist();
+              if (steal != null && mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('「${steal.label}」原来的键被拿走了，已解绑。'),
+                  ),
+                );
+              }
+            },
+            onResetAll: () {
+              setState(
+                  () => _settings.shortcuts = _settings.shortcuts.resetAll());
               _persist();
             },
           ),

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../data/models.dart';
 import '../data/repository.dart';
@@ -37,20 +38,26 @@ Future<LocalChoice?> pickLocalPath(
   BuildContext context,
   List<({String label, String path})> roots, {
   LocalLister? lister,
+  LogicalKeyboardKey? backKey,
 }) {
   return showDialog<LocalChoice>(
     context: context,
-    builder: (ctx) => _LocalPickerDialog(roots: roots, lister: lister),
+    builder: (ctx) =>
+        _LocalPickerDialog(roots: roots, lister: lister, backKey: backKey),
   );
 }
 
 class _LocalPickerDialog extends StatefulWidget {
-  const _LocalPickerDialog({required this.roots, this.lister});
+  const _LocalPickerDialog({required this.roots, this.lister, this.backKey});
 
   final List<({String label, String path})> roots;
 
   /// 测试用：替换真的列目录实现。生产代码不传。
   final LocalLister? lister;
+
+  /// 用户在设置里把「返回上一级」改成了别的键时传进来；
+  /// 不传就用出厂默认的 Backspace。
+  final LogicalKeyboardKey? backKey;
 
   @override
   State<_LocalPickerDialog> createState() => _LocalPickerDialogState();
@@ -69,8 +76,8 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
   bool _loading = false;
   String? _error;
 
-  /// Backspace 的抬起触发状态（长按不生效，见 keyboard.dart）。
-  final BackKeyHandler _backKey = BackKeyHandler();
+  /// 返回键的抬起触发状态（长按不生效，见 keyboard.dart）。
+  late final BackKeyHandler _backKey = BackKeyHandler(key: widget.backKey);
 
   /// 当前被点中的文件（目录由 [_currentPath] 表达）。
   MediaEntry? _pickedFile;

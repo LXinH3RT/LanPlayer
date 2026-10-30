@@ -1,6 +1,8 @@
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import '../data/shortcuts.dart';
+
 /// 全应用统一的键盘触发时机：**按键抬起时才执行**。
 ///
 /// 用户 2026-10-30 要求：所有键盘按键触发的逻辑都改成抬起后触发，
@@ -71,6 +73,9 @@ class KeyReleaseTrigger {
 ///
 /// macOS 键盘上印着 Delete 的那颗键，物理位置就是 Backspace，Flutter 给出的
 /// 也是 [LogicalKeyboardKey.backspace]，所以不需要为它再单独映射一次。
+///
+/// 2026-10-30 起这颗键可以改：设置 → 快捷键 →「返回上一级」。所以 [isBackKey]
+/// 降级成出厂默认值，实际判断走 [BackKeyHandler] 里的绑定表。
 bool isBackKey(LogicalKeyboardKey key) => key == LogicalKeyboardKey.backspace;
 
 /// Backspace → 退一层。触发时机由 [KeyReleaseTrigger] 统一决定：抬起才退。
@@ -79,7 +84,27 @@ bool isBackKey(LogicalKeyboardKey key) => key == LogicalKeyboardKey.backspace;
 /// 冒泡，`TextField` 拿到 Backspace 会自己消费掉（删一个字），不会传到包裹
 /// 整页的那个 `Focus`。
 class BackKeyHandler {
-  final KeyReleaseTrigger _trigger = KeyReleaseTrigger(isBackKey);
+  BackKeyHandler({LogicalKeyboardKey? key})
+      : _key = key ?? ShortcutBindings.empty.keyFor(ShortcutAction.back) {
+    _trigger = KeyReleaseTrigger(_matches);
+  }
+
+  LogicalKeyboardKey? _key;
+  late final KeyReleaseTrigger _trigger;
+
+  bool _matches(LogicalKeyboardKey key) => _key != null && key == _key;
+
+  /// 用户在设置里改了绑定之后调这里，让当前页面立刻用新键。
+  ///
+  /// 不用重建页面也能生效：`_trigger` 每次事件都问 `_matches`，而
+  /// `_matches` 读的是这个字段。
+  void rebind(LogicalKeyboardKey? key) {
+    if (key == _key) return;
+    _key = key;
+    _trigger.reset();
+  }
+
+  LogicalKeyboardKey? get key => _key;
 
   KeyEventResult handle(KeyEvent event, void Function() goBack) =>
       _trigger.handle(event, (_) => goBack());

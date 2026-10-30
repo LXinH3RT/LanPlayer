@@ -350,7 +350,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     if (!mounted) return;
 
-    final choice = await pickLocalPath(context, _repo.localRoots());
+    final choice = await pickLocalPath(context, _repo.localRoots(),
+        backKey: SettingsStore.instance.value.shortcuts
+            .keyFor(ShortcutAction.back));
     if (choice == null || !mounted) return;
     await LocalFolderStore.instance.add(
       label: choice.label,

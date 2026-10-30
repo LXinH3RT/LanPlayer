@@ -768,6 +768,62 @@ def check_backspace_guard() -> None:
             problems.append("player_screen must reset the key state on focus "
                             "loss, or the first release after a window switch "
                             "fires a phantom action")
+        # 快捷键现在是可改的：动作表在 shortcuts.dart，播放页只是查表。
+        # 一旦有人把它改回写死的 if 链，用户在设置里改的键就全失效了，
+        # 而且界面上还显示着新键 —— 这种「设置页撒谎」很难靠肉眼发现。
+        if "_settings.shortcuts.ownsKey(key)" not in pl:
+            problems.append("player_screen no longer asks the user's bindings "
+                            "which keys it owns; rebinding a shortcut in "
+                            "settings would silently do nothing")
+        if "ShortcutBindings.label(key)" not in pl:
+            problems.append("player_screen stopped naming the action by its "
+                            "binding; the key log would print a stale label")
+
+    enum_file = ROOT / "app/lib/data/shortcuts.dart"
+    if not enum_file.exists():
+        problems.append("app/lib/data/shortcuts.dart missing; the settings page "
+                        "could not list what is bound to what")
+    else:
+        sc = enum_file.read_text(encoding="utf-8")
+        # 存进 settings.json 的是 id 字符串，不是枚举名 —— 枚举改名会
+        # 静默丢掉所有用户的绑定。
+        if "final String id;" not in sc:
+            problems.append("ShortcutAction must carry a stable string id; "
+                            "settings.json keys would follow enum renames and "
+                            "user bindings would be lost")
+        if "ShortcutBindings.fromJson(" not in sc:
+            problems.append("shortcuts.dart lost fromJson; stored bindings "
+                            "would never be read back")
+        if "ShortcutBindings bind(ShortcutAction action" not in sc:
+            problems.append("shortcuts.dart lost bind(); the recorder could "
+                            "not store anything")
+        if "ShortcutAction? conflictFor(" not in sc:
+            problems.append("shortcuts.dart lost conflictFor(); binding a key "
+                            "twice would leave one action dead with no hint")
+        if "static String label(LogicalKeyboardKey key)" not in sc:
+            problems.append("shortcuts.dart lost the key label helper; arrow "
+                            "keys would render as ARROW LEFT")
+        if "static const List<PointerGesture> all" not in sc:
+            problems.append("shortcuts.dart lost the pointer gesture list; the "
+                            "settings page would stop documenting double tap "
+                            "and long press")
+
+    section = ROOT / "app/lib/ui/widgets/shortcut_section.dart"
+    if not section.exists():
+        problems.append("app/lib/ui/widgets/shortcut_section.dart missing; the "
+                        "shortcut bindings would have no UI")
+    else:
+        sec = section.read_text(encoding="utf-8")
+        if "if (event is! KeyDownEvent)" not in sec:
+            problems.append("the recorder must take the press, not the release; "
+                            "recording on key up would capture the wrong key "
+                            "when the user reuses a key held from before")
+        if "_isModifier(key)" not in sec:
+            problems.append("the recorder no longer rejects bare modifiers; a "
+                            "user pressing Shift would bind Shift itself")
+        if "class ShortcutPick" not in sec:
+            problems.append("the recorder must distinguish cancel from clear; "
+                            "showDialog returns null for both otherwise")
 
 
 def check_thumbnails() -> None:

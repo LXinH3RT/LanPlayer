@@ -31,6 +31,12 @@ void main() {
   testWidgets('设置 → 关于 里有版本这一行，值是注入的那个字符串', (tester) async {
     await pumpSettings(tester);
 
+    // 「关于」在页面最底部。设置页已经长到一屏放不下，ListView 又是懒
+    // 构建的，不先滚过去根本不会建出那一格。
+    await tester.scrollUntilVisible(find.text('关于'), 400,
+        scrollable: find.byType(Scrollable).first);
+    await tester.pumpAndSettle();
+
     expect(find.text('关于'), findsOneWidget);
     expect(find.text('版本'), findsOneWidget);
 

@@ -51,11 +51,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
   /// 当正在异步加载新目录列表时为 true。
   bool _loading = false;
 
-  /// Backspace 的抬起触发状态。
+  /// 返回键的抬起触发状态。
   ///
   /// 必须是实例字段：它记着「这颗键按下了还没抬起」，那是每个页面各自的
   /// 状态，不能做成全局函数。
-  final BackKeyHandler _backKey = BackKeyHandler();
+  late final BackKeyHandler _backKey = BackKeyHandler(
+      key: SettingsStore.instance.value.shortcuts
+          .keyFor(ShortcutAction.back));
 
   /// 导航到指定路径，并在替换为新目录内容前可选择性地把当前列表
   /// 压入返回栈中，方便后退浏览。

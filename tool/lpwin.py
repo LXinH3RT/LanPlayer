@@ -313,6 +313,15 @@ VK = {
     "Escape": 0x1B, "F": 0x46, "M": 0x4D, "K": 0x4B, "S": 0x53, "D": 0x44,
     # 浏览器/列表页的「退一层」用得到；补在这里，验证脚本才有键可按。
     "Backspace": 0x08, "Enter": 0x0D, "Tab": 0x09,
+    # 改键验证要能按任意字母：快捷键现在由用户指定，写死一张短表
+    # 会让「换一颗没被用过的键」这种最需要验证的场景恰恰测不了。
+    **{chr(c): c for c in range(ord("A"), ord("Z") + 1)},
+    **{str(d): 0x30 + d for d in range(10)},
+    "BracketLeft": 0xDB, "BracketRight": 0xDD,
+    "Comma": 0xBC, "Period": 0xBE, "Slash": 0xBF, "Semicolon": 0xBA,
+    "Quote": 0xDE, "Backslash": 0xDC, "Minus": 0xBD, "Equal": 0xBB,
+    "Home": 0x24, "End": 0x23, "PageUp": 0x21, "PageDown": 0x22,
+    "Insert": 0x2D, "Delete": 0x2E,
 }
 
 _WM_KEYDOWN, _WM_KEYUP = 0x0100, 0x0101

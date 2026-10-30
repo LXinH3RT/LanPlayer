@@ -998,110 +998,105 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _hideHud();
   }
 
-  /// Readable name for the verification log.  `keyLabel` is empty for keys
-  /// like space, and `keyId` alone would be an opaque number, so both get a
-  /// readable spelling here.
-  ///
-  /// A `const` map cannot be used: `LogicalKeyboardKey` overrides `==`, and
-  /// constant maps reject keys with a custom equality operator.
-  static String _keyName(LogicalKeyboardKey key) {
-    final label = key.keyLabel.trim();
-    if (label.isNotEmpty) return label;
-    if (key == LogicalKeyboardKey.space) return 'Space';
-    if (key == LogicalKeyboardKey.escape) return 'Escape';
-    if (key == LogicalKeyboardKey.arrowLeft) return 'Arrow Left';
-    if (key == LogicalKeyboardKey.arrowRight) return 'Arrow Right';
-    if (key == LogicalKeyboardKey.arrowUp) return 'Arrow Up';
-    if (key == LogicalKeyboardKey.arrowDown) return 'Arrow Down';
-    if (key == LogicalKeyboardKey.bracketLeft) return 'Bracket Left';
-    if (key == LogicalKeyboardKey.bracketRight) return 'Bracket Right';
-    return key.debugName ?? key.keyId.toString();
-  }
-
-  /// Desktop keys: the transport tablet/remote convention (space, arrows, F,
-  /// Esc).  Returning handled keeps them from leaking to ancestor shortcuts.
   /// 播放页认的键。与 keyboard.dart 的约定一致：**抬起才执行**。
-  static bool _isPlayerKey(LogicalKeyboardKey key) =>
-      key == LogicalKeyboardKey.space ||
-      key == LogicalKeyboardKey.keyK ||
-      key == LogicalKeyboardKey.arrowLeft ||
-      key == LogicalKeyboardKey.arrowRight ||
-      key == LogicalKeyboardKey.arrowUp ||
-      key == LogicalKeyboardKey.arrowDown ||
-      key == LogicalKeyboardKey.keyM ||
-      key == LogicalKeyboardKey.keyF ||
-      key == LogicalKeyboardKey.escape ||
-      key == LogicalKeyboardKey.bracketLeft ||
-      key == LogicalKeyboardKey.bracketRight ||
-      key == LogicalKeyboardKey.keyS;
+  ///
+  /// 表来自用户绑定（设置 → 快捷键），不再是写死的一串 —— 用户改了键之后
+  /// 这里必须跟着变，否则改完还是老键生效。
+  bool _isPlayerKey(LogicalKeyboardKey key) =>
+      _settings.shortcuts.ownsKey(key);
 
   /// 抬起触发状态（长按不生效）。
-  final KeyReleaseTrigger _keys = KeyReleaseTrigger(_isPlayerKey);
+  late final KeyReleaseTrigger _keys = KeyReleaseTrigger(_isPlayerKey);
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     return _keys.handle(event, (key) {
-      final handled = _handleKey(key);
+      final action = _settings.shortcuts.actionForKey(key);
+      if (action == null) return;
+      final handled = _handleAction(action);
       if (handled) {
         // ignore: avoid_print
-        print('LanPlayer key: ${_keyName(key)}');
+        print('LanPlayer key: ${ShortcutBindings.label(key)} ($action)');
         _showControls();
       }
     });
   }
 
-  bool _handleKey(LogicalKeyboardKey key) {
-    if (key == LogicalKeyboardKey.space || key == LogicalKeyboardKey.keyK) {
-      _player.togglePlay();
-      _showHud(_player.isPlaying ? '播放' : '暂停');
-      return true;
-    }
-    if (key == LogicalKeyboardKey.arrowLeft) {
-      _seekRelative(-_seekStep);
-      return true;
-    }
-    if (key == LogicalKeyboardKey.arrowRight) {
-      _seekRelative(_seekStep);
-      return true;
-    }
-    if (key == LogicalKeyboardKey.arrowUp) {
-      _nudgeVolume(0.05);
-      return true;
-    }
-    if (key == LogicalKeyboardKey.arrowDown) {
-      _nudgeVolume(-0.05);
-      return true;
-    }
-    if (key == LogicalKeyboardKey.keyM) {
-      _player.toggleMute();
-      _showHud(_player.muted ? '静音' : '取消静音');
-      return true;
-    }
-    if (key == LogicalKeyboardKey.keyF) {
-      _toggleFullscreen();
-      return true;
-    }
-    if (key == LogicalKeyboardKey.escape) {
-      if (_fullscreen) {
+  /// 按「动作」执行，而不是按「键」—— 这样改键只影响查表，不影响行为。
+  bool _handleAction(ShortcutAction action) {
+    switch (action) {
+      case ShortcutAction.playPause:
+        _player.togglePlay();
+        _showHud(_player.isPlaying ? '播放' : '暂停');
+        return true;
+      case ShortcutAction.seekBack:
+        _seekRelative(-_seekStep);
+        return true;
+      case ShortcutAction.seekForward:
+        _seekRelative(_seekStep);
+        return true;
+      case ShortcutAction.volumeUp:
+        _nudgeVolume(0.05);
+        return true;
+      case ShortcutAction.volumeDown:
+        _nudgeVolume(-0.05);
+        return true;
+      case ShortcutAction.mute:
+        _player.toggleMute();
+        _showHud(_player.muted ? '静音' : '取消静音');
+        return true;
+      case ShortcutAction.speedUp:
+        _stepSpeed(1);
+        return true;
+      case ShortcutAction.speedDown:
+        _stepSpeed(-1);
+        return true;
+      case ShortcutAction.speedReset:
+        _player.setSpeed(PlaybackSettings.speedDefault);
+        _settings.speed = PlaybackSettings.speedDefault;
+        _showHud('1.0x');
+        return true;
+      case ShortcutAction.fullscreen:
         _toggleFullscreen();
-      } else {
-        Navigator.of(context).maybePop();
-      }
-      return true;
+        return true;
+      case ShortcutAction.escape:
+        if (_fullscreen) {
+          _toggleFullscreen();
+        } else {
+          Navigator.of(context).maybePop();
+        }
+        return true;
+      case ShortcutAction.subtitleEarlier:
+        _shiftSubtitle(-100);
+        return true;
+      case ShortcutAction.subtitleLater:
+        _shiftSubtitle(100);
+        return true;
+      case ShortcutAction.stats:
+        setState(() => _showStats = !_showStats);
+        _player.wantsStats = _showStats;
+        return true;
+      case ShortcutAction.back:
+        // 播放页里没有「上一级列表」的概念，退格等同于返回。
+        if (_fullscreen) {
+          _toggleFullscreen();
+        } else {
+          Navigator.of(context).maybePop();
+        }
+        return true;
     }
-    if (key == LogicalKeyboardKey.bracketLeft) {
-      _shiftSubtitle(-100);
-      return true;
-    }
-    if (key == LogicalKeyboardKey.bracketRight) {
-      _shiftSubtitle(100);
-      return true;
-    }
-    if (key == LogicalKeyboardKey.keyS) {
-      setState(() => _showStats = !_showStats);
-      _player.wantsStats = _showStats;
-      return true;
-    }
-    return false;
+  }
+
+  /// 倍速按档位走一格。[dir] 为 +1 更快、-1 更慢。
+  void _stepSpeed(int dir) {
+    const steps = PlaybackSettings.speedSteps;
+    final current = PlaybackSettings.clampSpeed(_player.speed);
+    var index = steps.indexOf(current);
+    if (index < 0) index = steps.indexOf(PlaybackSettings.speedDefault);
+    final next = (index + dir).clamp(0, steps.length - 1);
+    final value = steps[next];
+    _player.setSpeed(value);
+    _settings.speed = value;
+    _showHud('${value.toStringAsFixed(2)}x');
   }
 
   void _shiftSubtitle(int deltaMs) {

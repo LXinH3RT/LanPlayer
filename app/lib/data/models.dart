@@ -1,6 +1,8 @@
+import 'shortcuts.dart';
 import 'subtitle_match.dart';
 import 'track_prefs.dart';
 
+export 'shortcuts.dart';
 export 'subtitle_match.dart';
 export 'track_prefs.dart';
 
@@ -51,6 +53,9 @@ class PlaybackSettings {
   static const int seekStepMin = 1;
   static const int seekStepMax = 10;
   static const int seekStepDefault = 10;
+
+  /// 键盘快捷键的用户绑定。只存与出厂不同项，见 `shortcuts.dart`。
+  ShortcutBindings shortcuts;
 
   /// 播放倍速只允许这几档（用户 2026-10-30 指定）。
   ///
@@ -104,7 +109,8 @@ class PlaybackSettings {
     this.audioPreference = const TrackPreference(primary: 'zh'),
     this.subtitlePreference = const TrackPreference(primary: 'zh'),
     this.seekStepSeconds = seekStepDefault,
-  });
+    ShortcutBindings? shortcuts,
+  }) : shortcuts = shortcuts ?? ShortcutBindings.empty;
 
   Map<String, dynamic> toJson() => {
         'hardware_decoding': hardwareDecoding,
@@ -121,6 +127,9 @@ class PlaybackSettings {
         'subtitle_primary': subtitlePreference.primary,
         'subtitle_secondary': subtitlePreference.secondary,
         'seek_step_seconds': seekStepSeconds,
+        // 空表就整个不写：老版本读到未知字段会原样保留，但没必要让
+        // settings.json 多一个空对象。
+        if (!shortcuts.isDefault) 'shortcuts': shortcuts.toJson(),
       };
 
   factory PlaybackSettings.fromJson(Map<String, dynamic> j) => PlaybackSettings(
@@ -149,6 +158,7 @@ class PlaybackSettings {
         ),
         // 老配置里没有这个字段，用默认的 10 秒，与改动前的行为一致。
         seekStepSeconds: clampSeekStep(j['seek_step_seconds']),
+        shortcuts: ShortcutBindings.fromJson(j['shortcuts']),
       );
 
   PlaybackSettings copy() => PlaybackSettings.fromJson(toJson());
