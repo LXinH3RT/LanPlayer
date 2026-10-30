@@ -93,23 +93,39 @@ def generator_for(cmake: Path, major: int) -> str:
     return match.group(1).strip()
 
 
-def read_version(app: Path) -> tuple[str, tuple[int, int, int, int]]:
+def read_version(app: Path, override: str = "") -> tuple[str, tuple[int, int, int, int]]:
     """The x.y.z+build line from app/pubspec.yaml.
 
     Runner.rc turns FLUTTER_VERSION into the exe's FileVersion/ProductVersion, so
     a stale literal makes every release claim the previous one and the
     installer's "currently installed" check compares the wrong numbers.
+
+    A version like `0.1.8-local.3` is also accepted: local builds should not
+    bump app/pubspec.yaml, they pass `--version` instead (see §8.0 in the
+    working notes). Only the leading digits go into the numeric fields.
     """
-    spec = app / "pubspec.yaml"
-    if not spec.exists():
+    text = ""
+    if override:
+        text = override.strip()
+    else:
+        spec = app / "pubspec.yaml"
+        if not spec.exists():
+            return "0.1.0+1", (0, 1, 0, 1)
+        for line in spec.read_text(encoding="utf-8").splitlines():
+            match = re.match(r"^\s*version:\s*(\S+)\s*$", line)
+            if match:
+                text = match.group(1)
+                break
+    # 「0.1.8-local.3」这类本地号只取前三段数字给 FileVersion，字符串字段原样保留，
+    # 这样「关于」里显示的就是你指定的那个本地号。
+    # Runner.rc 只在四个数字都给齐时才用 FLUTTER_VERSION，缺一个就退回
+    # "1.0.0"，所以这里返回的字符串必须是带 +build 的完整形式。
+    match = re.match(r"^([0-9]+)\.([0-9]+)\.([0-9]+)(?:\+([0-9]+))?", text)
+    if not match:
         return "0.1.0+1", (0, 1, 0, 1)
-    for line in spec.read_text(encoding="utf-8").splitlines():
-        match = re.match(r"^\s*version:\s*([0-9]+)\.([0-9]+)\.([0-9]+)(?:\+([0-9]+))?\s*$", line)
-        if match:
-            major, minor, patch = (int(match.group(i)) for i in (1, 2, 3))
-            build = int(match.group(4)) if match.group(4) else 0
-            return f"{major}.{minor}.{patch}+{build}", (major, minor, patch, build)
-    return "0.1.0+1", (0, 1, 0, 1)
+    major, minor, patch = (int(match.group(i)) for i in (1, 2, 3))
+    build = int(match.group(4)) if match.group(4) else 0
+    return text or f"{major}.{minor}.{patch}+{build}", (major, minor, patch, build)
 
 
 def write_generated_config(eph: Path, fs: Path, app: Path, version: str,
@@ -176,6 +192,10 @@ def main() -> int:
                              "Flutter action already populated them)")
     parser.add_argument("--dart-defines", action="append", default=[],
                         help="extra --dart-define value, e.g. --dart-defines LANPLAYER_UI=add-server")
+    parser.add_argument("--version", default="",
+                        help="override the version stamped into the exe (default: app/pubspec.yaml). "
+                             "Local builds should pass a local tag like 0.1.8-local.3 instead of "
+                             "bumping pubspec, which only moves when a real GitHub release ships")
     args = parser.parse_args()
 
     root = lp.ROOT
@@ -239,7 +259,7 @@ def main() -> int:
         if not (eph / "cpp_client_wrapper").exists():
             shutil.copytree(artifacts / "cpp_client_wrapper", eph / "cpp_client_wrapper")
 
-    version, parts = read_version(app)
+    version, parts = read_version(app, args.version)
     # 「关于」里要显示版本号。pubspec 是唯一来源，但 Dart 读不到它，只能用
     # --dart-define 注入；只取 x.y.z，不带 +build。
     dart_defines = list(args.dart_defines)
@@ -248,7 +268,8 @@ def main() -> int:
         dart_defines.append(f"LANPLAYER_VERSION={short}")
     if dart_defines:
         print(f"\n== dart-define: {' '.join(dart_defines)}")
-    print(f"\n== version: {version} (from app/pubspec.yaml)")
+    print(f"\n== version: {version}"
+          f"{'' if args.version else ' (from app/pubspec.yaml)'}")
     write_generated_config(eph, fs, app, version, parts, dart_defines)
 
     build_dir = win_dir / "out" / "build" / f"x64-{re.sub(r'\\s+', '', generator)}"

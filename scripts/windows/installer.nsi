@@ -27,6 +27,12 @@ SetCompressorDictSize 64
 !ifndef APP_VERSION
   !define APP_VERSION "0.1.0"
 !endif
+; VIProductVersion 只认 X.X.X.X 四段纯数字，而本地构建号可能是
+; 「0.1.8-local.3」这种形式。取前三段数字补一个 0，展示用的字符串仍用
+; APP_VERSION 原样，所以「应用和功能」里看到的还是你指定的那个本地号。
+!ifndef APP_VERSION_4
+  !define APP_VERSION_4 "0.1.0.0"
+!endif
 !ifndef STAGE
   !define STAGE "..\..\dist\stage\windows"
 !endif
@@ -64,7 +70,7 @@ InstallDirRegKey HKCU "Software\${APP_ID}" "InstallDir"
 RequestExecutionLevel user
 BrandingText "${APP_NAME} ${APP_VERSION}"
 
-VIProductVersion "${APP_VERSION}.0"
+VIProductVersion "${APP_VERSION_4}.0"
 VIAddVersionKey /LANG=2052 "ProductName"     "${APP_NAME}"
 VIAddVersionKey /LANG=2052 "FileDescription" "${APP_NAME} 安装程序"
 VIAddVersionKey /LANG=2052 "FileVersion"     "${APP_VERSION}"

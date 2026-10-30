@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -128,10 +129,15 @@ def build(version: str, release: Path, out_dir: Path, keep_stage: bool) -> Path:
     env["TMP"] = str(tmp)
     env["TEMP"] = str(tmp)
 
+    # VIProductVersion 只接受 X.X.X.X 四段纯数字，而本地构建号可能是
+    # 「0.1.8-local.3」。取开头三段数字补 0 交给它，展示用的 APP_VERSION 仍原样。
+    m = re.match(r"^([0-9]+)\.([0-9]+)\.([0-9]+)", version)
+    version4 = f"{m.group(1)}.{m.group(2)}.{m.group(3)}.0" if m else "0.1.0.0"
+
     print("== makensis ==")
     result = subprocess.run(
-        [str(nsis), "/V2", f"/DAPP_VERSION={version}", f"/DSTAGE={stage}",
-         f"/DOUTFILE={out_file}", f"/DAPP_ICON={icon}", str(script)],
+        [str(nsis), "/V2", f"/DAPP_VERSION={version}", f"/DAPP_VERSION_4={version4}",
+         f"/DSTAGE={stage}", f"/DOUTFILE={out_file}", f"/DAPP_ICON={icon}", str(script)],
         env=env, text=True, capture_output=True, encoding="mbcs", errors="replace",
     )
     if result.returncode != 0:

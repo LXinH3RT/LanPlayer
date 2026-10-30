@@ -1167,6 +1167,25 @@ def check_release_policy() -> None:
                             f"from app/pubspec.yaml; its packages would be "
                             f"named with a stale version")
 
+    # 版本号只在正式发版时更迭（用户在 2026-10-30 明确要求）。每个构建脚本都得
+    # 留一个覆盖口子，本地构建才能不改 pubspec 就打出一个可区分的包 —— 否则下
+    # 一次改代码又会有人顺手去升 pubspec，发版时 tag 和 asset 名全对不上。
+    overrides = {
+        "build_windows_desktop.py": '"--version"',
+        "build_windows_installer.py": '"--version"',
+        "build_macos_dmg.py": 'environ.get("VERSION"',
+        "build_android_apk.py": 'environ.get("VERSION"',
+    }
+    for builder, token in overrides.items():
+        path = ROOT / "scripts" / builder
+        if not path.is_file():
+            continue
+        body = path.read_text(encoding="utf-8", errors="replace")
+        if token not in body:
+            problems.append(f"scripts/{builder} lost its version override "
+                            f"({token}); local builds would have to bump "
+                            f"app/pubspec.yaml just to tell packages apart")
+
     # Checkout-only rules live in .git/info/exclude rather than a tracked
     # ignore list: naming such files in a published file would announce what
     # this machine runs, which is exactly what we are trying not to publish.
