@@ -2877,6 +2877,74 @@ def check_apple_wiring() -> None:
         notes.append("apple audio: playback category + AudioQueue volume floor")
 
 
+def check_ui_thread() -> None:
+    """Keep blocking native calls off the Flutter UI thread.
+
+    `lp_source_list` and `lp_source_probe` are synchronous: they open a TCP
+    connection, negotiate SMB2 and read a directory, and when the server does
+    not answer they sit there until the socket times out (15 s by default).
+    Called from the main isolate they freeze everything the user can see --
+    the window paints nothing (a solid white client area), buttons produce no
+    ripple, spinners stop turning and a "retry" tap does nothing at all.
+
+    The fix is that the repository hands those calls to `Isolate.run`.  It is
+    easy to undo without noticing, because the code still compiles, the unit
+    tests still pass and it only misbehaves when a share is unreachable.
+    """
+    bg = ROOT / "app/lib/core/background.dart"
+    repo = ROOT / "app/lib/data/repository.dart"
+    if not bg.exists():
+        problems.append(
+            "app/lib/core/background.dart is gone; the directory listing would "
+            "run on the UI thread again and freeze the window when a share is "
+            "unreachable")
+        return
+    text = bg.read_text(encoding="utf-8")
+    for raw in ("_listRaw(url, options)", "_probeRaw(url, options)"):
+        # 两个入口都必须各自包一层 Isolate.run —— 只包住其中一个，
+        # 另一条路径（例如「添加服务器」时的凭据校验）照样会冻住界面。
+        if f"Isolate.run(() => {raw})" not in text:
+            problems.append(
+                f"background.dart calls {raw} outside Isolate.run(); that "
+                f"blocking native call would run on the UI thread")
+    for name in ("listDirectoryInBackground", "probeServerInBackground"):
+        if name not in text:
+            problems.append(
+                f"background.dart lost {name}(); the UI would call the "
+                f"blocking native function directly")
+
+    if not repo.exists():
+        problems.append("app/lib/data/repository.dart is gone")
+        return
+    src = repo.read_text(encoding="utf-8")
+    if "fetchListing ?? listDirectoryInBackground;" not in src:
+        problems.append(
+            "repository.dart no longer defaults its listing fetcher to the "
+            "background isolate; scrolling into a dead share would freeze "
+            "the window")
+    if "_core.listDirectory(" in src:
+        problems.append(
+            "repository.dart calls _core.listDirectory() on the UI thread "
+            "again; that is the call that freezes the window for 15 s")
+    # 三个列目录入口必须各自把「取不到」变成异常。少一个，那条路径就会
+    # 静默返回空列表 —— 用户看到「这里是空的」而不是「连不上」。
+    for method, next_marker in (
+        ("Future<DirectoryListing> browse(", "Future<DirectoryListing> browseUrl("),
+        ("Future<DirectoryListing> browseUrl(", "Future<SourceProbe> probeServer("),
+        ("Future<DirectoryListing> browseLocal(", "List<({String label, String path})> localRoots("),
+    ):
+        start = src.find(method)
+        end = src.find(next_marker, start + 1)
+        body = src[start:end] if start >= 0 and end > start else ""
+        if "throw MediaSourceException(" not in body:
+            name = method.split()[-1].rstrip("(")
+            problems.append(
+                f"repository.dart {name}() no longer turns a failed listing "
+                f"into a MediaSourceException; the list would just stay empty")
+    notes.append("ui thread: directory listings and probes run on a "
+                 "background isolate, the window keeps painting")
+
+
 def check_windows_playback_paths() -> None:
     """Guard the Windows GPU surface output and the WASAPI audio sink.
 
@@ -3122,6 +3190,7 @@ def main() -> int:
     check_hw_decode()
     check_local_picker()
     check_splash()
+    check_ui_thread()
     check_windows_playback_paths()
 
     for n in notes:

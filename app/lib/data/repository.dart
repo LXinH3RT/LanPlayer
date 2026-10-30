@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import '../core/background.dart';
 import '../core/bindings.dart';
 import 'models.dart';
 
@@ -24,31 +25,55 @@ class SourceProbe {
   final String server;
 }
 
+/// 一次目录列表请求：返回内核的原始 JSON，失败返回 null。
+///
+/// 抽成函数类型是为了让测试能换成不碰 SMB 的假实现 —— 真实现要起后台
+/// isolate 并加载动态库，widget 测试里跑不起来。
+typedef ListingFetcher = Future<String?> Function(
+    String url, Map<String, dynamic> options);
+
 /// UI 访问共享所需的全部能力：目录浏览、凭据校验，以及两个入口
 /// （已保存的配置、单个共享地址）。
+///
+/// **所有会触网的方法都不在主 isolate 上跑。** `lp_source_list` 是同步 C
+/// 函数，服务器不应答时要等到 socket 超时（默认 15 s），在主 isolate 上调用
+/// 会把整个界面冻住：窗口一片白、按钮点了没水波纹、转圈不动。所以这些入口
+/// 统一走 [listDirectoryInBackground] / [probeServerInBackground]。
 class MediaRepository {
-  MediaRepository({NativeCore? core}) : _core = core ?? NativeCore.instance;
+  MediaRepository({ListingFetcher? fetchListing})
+      : _fetch = fetchListing ?? listDirectoryInBackground;
 
-  final NativeCore _core;
+  /// 真正去取列表的实现。默认走后台 isolate；测试可以换成假的。
+  final ListingFetcher _fetch;
+
+  /// 给测试用的只读入口：确认仓库默认把请求交给了后台 isolate。
+  ListingFetcher get fetchListingForTest => _fetch;
 
   Future<DirectoryListing> browse(ServerProfile profile, {String? url}) async {
     final target = url ?? profile.rootUrl;
-    final json = _core.listDirectory(target, profile.transportOptions());
-    if (json == null) {
-      final detail = _core.lastSourceError();
-      throw MediaSourceException(detail ?? '无法访问 $target');
+    final listing = await _fetch(target, profile.transportOptions());
+    if (listing == null) {
+      throw MediaSourceException(_errorFor(target));
     }
-    return DirectoryListing.fromJson(json);
+    return DirectoryListing.fromJson(decodeJson(listing) ?? const {});
   }
 
   Future<DirectoryListing> browseUrl(
       String url, Map<String, dynamic> options) async {
-    final json = _core.listDirectory(url, options);
-    if (json == null) {
-      throw MediaSourceException(_core.lastSourceError() ?? '无法访问 $url');
+    final listing = await _fetch(url, options);
+    if (listing == null) {
+      throw MediaSourceException(_errorFor(url));
     }
-    return DirectoryListing.fromJson(json);
+    return DirectoryListing.fromJson(decodeJson(listing) ?? const {});
   }
+
+  /// 失败时给用户的文案。
+  ///
+  /// 后台 isolate 里内核记的错误是线程本地的，跨 isolate 拿不到，所以这里只
+  /// 给一条通用说法。以前能显示内核原文（`connect //host/share failed:
+  /// Timeout expired and no connection exists`），代价是整个界面在请求期间
+  /// 冻住十几秒 —— 那条细节不值得。
+  String _errorFor(String url) => '无法访问 $url：连接超时或服务器不可达';
 
   /// Verifies credentials without listing a directory.
   Future<void> probe(ServerProfile profile) async {
@@ -57,14 +82,14 @@ class MediaRepository {
 
   /// 只校验账号密码：真的连一次服务器，连上了就返回，不列共享。
   Future<SourceProbe> probeServer(ServerProfile profile) async {
-    final json = _core.probeServer(
+    final raw = await probeServerInBackground(
       'smb://${profile.host}${profile.port == 445 ? '' : ':${profile.port}'}/${profile.share}',
       profile.transportOptions(),
     );
-    if (json == null) {
-      throw MediaSourceException(_core.lastSourceError() ?? '认证失败');
+    if (raw == null) {
+      throw MediaSourceException('认证失败：连不上 ${profile.host}');
     }
-    return SourceProbe.fromJson(json);
+    return SourceProbe.fromJson(decodeJson(raw) ?? const {});
   }
 
   /// 单个文件作为来源时用的「列表」：父目录里只留下这个文件本身，外加与它
@@ -97,11 +122,11 @@ class MediaRepository {
 
   /// Entry point for module 5: local storage.
   Future<DirectoryListing> browseLocal(String path) async {
-    final json = _core.listDirectory('file://$path', const {});
-    if (json == null) {
-      throw MediaSourceException(_core.lastSourceError() ?? '无法读取 $path');
+    final listing = await _fetch('file://$path', const {});
+    if (listing == null) {
+      throw MediaSourceException('无法读取 $path');
     }
-    return DirectoryListing.fromJson(json);
+    return DirectoryListing.fromJson(decodeJson(listing) ?? const {});
   }
 
   /// Well known local roots; the Android/iOS sandboxes expose different paths.
