@@ -527,6 +527,54 @@ def check_lan_scan() -> None:
                         "share) so cards stay readable when name is empty")
 
 
+def check_backspace_guard() -> None:
+    """Backspace 退一层：按键判定、两个页面都挂上、对话框能接住。"""
+    # Backspace = 返回上一浏览层级（用户 2026-10-30 要求）。
+    #
+    # 三条护栏分别盯：按键判定只认 backspace、列表页真的挂上了这个处理、
+    # 选择器也走同一个入口。少任何一条，用户按下去就是没反应。
+    kb = ROOT / "app/lib/ui/keyboard.dart"
+    if not kb.exists():
+        problems.append("app/lib/ui/keyboard.dart missing; Backspace would no "
+                        "longer go back one level")
+    else:
+        kc = kb.read_text(encoding="utf-8")
+        # 只看函数体：文件里的文档注释也提到了这颗键，全文搜索会把注释当成
+        # 实现，导致「改成恒 false」这种真回退被抓漏。
+        body = kc.split("bool isBackKey(", 1)
+        body = body[1].split(";", 1)[0] if len(body) > 1 else ""
+        if "LogicalKeyboardKey.backspace" not in body:
+            problems.append("keyboard.dart no longer maps Backspace to the "
+                            "back action")
+        if "is! KeyDownEvent" not in kc:
+            problems.append("keyboard.dart must only act on KeyDownEvent; "
+                            "handling KeyRepeatEvent walks a deep tree back to "
+                            "the root while the key is held")
+
+    for path, why in (
+        ("app/lib/ui/browser_screen.dart",
+         "the browser page would ignore Backspace and the file manager habit "
+         "of stepping out one folder at a time breaks"),
+        ("app/lib/ui/folder_picker.dart",
+         "the local picker would ignore Backspace while every other list in "
+         "the app honours it"),
+    ):
+        f = ROOT / path
+        if not f.exists():
+            continue
+        body = f.read_text(encoding="utf-8")
+        if "handleBackKey(" not in body:
+            problems.append(f"{path}: no Backspace handler; {why}")
+    picker = ROOT / "app/lib/ui/folder_picker.dart"
+    if picker.exists():
+        pc = picker.read_text(encoding="utf-8")
+        head = pc.split("handleBackKey(", 1)[0][-400:]
+        if "autofocus: true" not in head:
+            problems.append("app/lib/ui/folder_picker.dart: the dialog's Focus "
+                            "must autofocus, or Backspace never reaches it and "
+                            "the key falls through to the page underneath")
+
+
 def check_thumbnails() -> None:
     """Guard the cover-art contract.
 
@@ -818,6 +866,7 @@ def check_thumbnails() -> None:
         if "label: const Text('收起')" not in hc:
             problems.append("home_screen lost the collapse control; an "
                             "expanded source could never be folded again")
+
 
     notes.append("thumbnails: LPT2 header round-trips, hex cache key keyed by "
                  "mtime+size so a replaced file gets a fresh cover, covers only "
@@ -3209,6 +3258,7 @@ def main() -> int:
     check_texture_colors()
     check_lan_scan()
     check_thumbnails()
+    check_backspace_guard()
     check_installers()
     check_release_policy()
     check_player_layout()

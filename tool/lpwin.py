@@ -311,6 +311,8 @@ def wheel(notches: int, x: int, y: int) -> None:
 VK = {
     "Space": 0x20, "Left": 0x25, "Up": 0x26, "Right": 0x27, "Down": 0x28,
     "Escape": 0x1B, "F": 0x46, "M": 0x4D, "K": 0x4B, "S": 0x53, "D": 0x44,
+    # 浏览器/列表页的「退一层」用得到；补在这里，验证脚本才有键可按。
+    "Backspace": 0x08, "Enter": 0x0D, "Tab": 0x09,
 }
 
 _WM_KEYDOWN, _WM_KEYUP = 0x0100, 0x0101
@@ -333,16 +335,25 @@ def focus_window(frame: int) -> int:
 
 
 def post_key(hwnd: int, name: str) -> None:
-    """Post one key down/up pair.  'F' is an Alt combo, the rest are plain."""
+    """Post one key down/up pair.  'F' is an Alt combo, the rest are plain.
+
+    lParam 的 bit 16..23 是 **scancode**，Flutter 的 Windows embedder 就是靠
+    它认键（`(lparam >> 16) & 0xFF`）。早先这里固定传 0x00000001，scancode
+    恒为 0，于是 PostMessage 出去的消息在引擎那边匹配不到任何 KeyboardKey，
+    按键等于没按 —— 只有真正走一遍键盘路径才会暴露。
+    scancode 用 MapVirtualKeyW 从 VK 反查，不必手写一张表。
+    """
     if name not in VK:
         raise ValueError(f"unknown key {name!r}")
     vk = VK[name]
     alt = name == "F"
     down = _WM_SYSKEYDOWN if alt else _WM_KEYDOWN
     up = _WM_SYSKEYUP if alt else _WM_KEYUP
-    _user32.PostMessageW(hwnd, down, vk, 0x00000001)
+    scan = _user32.MapVirtualKeyW(vk, 0) & 0xFF   # MAPVK_VK_TO_VSC
+    # 按下：repeat=1，scancode 就位；抬起：再加上 30/31 位（前一状态 + 转换态）。
+    _user32.PostMessageW(hwnd, down, vk, 0x00000001 | (scan << 16))
     time.sleep(0.05)
-    _user32.PostMessageW(hwnd, up, vk, 0xC0000001)
+    _user32.PostMessageW(hwnd, up, vk, 0xC0000001 | (scan << 16))
 
 
 # ----------------------------------------------------------------------

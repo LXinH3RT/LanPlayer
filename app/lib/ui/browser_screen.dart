@@ -8,6 +8,7 @@ import '../data/repository.dart';
 import '../data/stores.dart';
 import '../player/playlist.dart';
 import 'feedback.dart';
+import 'keyboard.dart';
 import 'player_screen.dart';
 import 'widgets/media_row.dart';
 
@@ -21,7 +22,7 @@ import 'widgets/media_row.dart';
 /// 部件，两处才不会慢慢长成两种列表。
 class BrowserScreen extends StatefulWidget {
   const BrowserScreen(
-      {super.key, required this.location, required this.initial});
+      {super.key, required this.location, required this.initial, this.repo});
 
   /// 当前正在浏览的媒体源，例如 SMB 共享或本地存储。
   final MediaLocation location;
@@ -29,13 +30,16 @@ class BrowserScreen extends StatefulWidget {
   /// 屏幕首次创建时使用的初始目录列表。
   final DirectoryListing initial;
 
+  /// 取数入口。默认真的去连共享；测试注入一个不碰网络的假实现。
+  final MediaRepository? repo;
+
   @override
   State<BrowserScreen> createState() => _BrowserScreenState();
 }
 
 class _BrowserScreenState extends State<BrowserScreen> {
   /// 负责处理所有媒体源的网络/文件系统浏览逻辑的仓库。
-  final _repo = MediaRepository();
+  late final MediaRepository _repo = widget.repo ?? MediaRepository();
 
   /// 当前目录列表，这是用户正在查看的实时数据。
   late DirectoryListing _listing = widget.initial;
@@ -100,6 +104,19 @@ class _BrowserScreenState extends State<BrowserScreen> {
     }
   }
 
+  /// 退一层；已经退到根目录时再退一次就离开浏览页。
+  ///
+  /// AppBar 那颗返回箭头和键盘上的 Backspace 共用这个入口。两处的判断必须
+  /// 一致，否则会出现「鼠标退到根层后再按键盘，先关掉页面再关掉首页」这种
+  /// 连跳两级的情况。
+  void _upOrLeave() {
+    if (_stack.isNotEmpty || _listing.parent.isNotEmpty) {
+      _up();
+    } else {
+      Navigator.of(context).maybePop();
+    }
+  }
+
   /// 创建播放列表并跳转到播放器界面。
   ///
   /// [subtitles] 是归属到这条视频的外挂字幕；只把它们传给播放器，
@@ -133,72 +150,71 @@ class _BrowserScreenState extends State<BrowserScreen> {
         _listing.url.split('/').where((s) => s.isNotEmpty).toList();
     final folderName = segments.isEmpty ? '' : segments.last;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 根目录下显示媒体源名称，进入子目录后显示当前文件夹名，
-            // 这样页面标题更像面包屑导航，阅读起来更清晰。
-            Text(_stack.isEmpty ? widget.location.label : folderName,
-                maxLines: 1, overflow: TextOverflow.ellipsis),
-            Text(
-              // 字幕不单独计数：它们已经被归属到视频下面，单独报个数会让
-              // 用户以为列表里还有没显示出来的东西。
-              '${entries.where((e) => e.isVideo).length} 个视频 · '
-              '${entries.where((e) => e.isDir).length} 个文件夹'
-              '${_listing.subtitles.isNotEmpty ? ' · ${_listing.subtitles.length} 个字幕已关联' : ''}',
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
-            ),
+    return Focus(
+      // 整页包一层 Focus 而不是给 ListView 加：列表本身不接受焦点，
+      // 没有这层的话按键事件根本没有节点可冒泡。
+      autofocus: true,
+      onKeyEvent: (node, event) => handleBackKey(event, _upOrLeave),
+      child: Scaffold(
+        appBar: AppBar(
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 根目录下显示媒体源名称，进入子目录后显示当前文件夹名，
+              // 这样页面标题更像面包屑导航，阅读起来更清晰。
+              Text(_stack.isEmpty ? widget.location.label : folderName,
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              Text(
+                // 字幕不单独计数：它们已经被归属到视频下面，单独报个数会让
+                // 用户以为列表里还有没显示出来的东西。
+                '${entries.where((e) => e.isVideo).length} 个视频 · '
+                '${entries.where((e) => e.isDir).length} 个文件夹'
+                '${_listing.subtitles.isNotEmpty ? ' · ${_listing.subtitles.length} 个字幕已关联' : ''}',
+                style:
+                    const TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
+              ),
+            ],
+          ),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: _upOrLeave,
+          ),
+          actions: [
+            // 刷新会重新拉取当前目录的列表，但不会丢失当前定位或历史导航栈。
+            IconButton(
+                onPressed: _reload,
+                icon: const Icon(Icons.refresh),
+                tooltip: '刷新'),
           ],
         ),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            // 如果存在历史目录项，就直接返回上一层，而不需要重新请求网络；
-            // 反之则视为离开当前浏览器界面，执行正常的页面退出逻辑。
-            if (_stack.isNotEmpty || _listing.parent.isNotEmpty) {
-              _up();
-            } else {
-              Navigator.of(context).maybePop();
-            }
-          },
+        body: Stack(
+          children: [
+            if (entries.isEmpty)
+              const Center(child: Text('这个文件夹是空的'))
+            else
+              ListView.builder(
+                padding: const EdgeInsets.only(top: 4, bottom: 24),
+                itemCount: entries.length,
+                itemBuilder: (ctx, i) {
+                  final e = entries[i];
+                  return MediaRow(
+                    entry: e,
+                    listing: _listing,
+                    location: widget.location,
+                    onEnter: (dir) => _navigate(dir.path),
+                    onPlay: (entry, subs) => _play(entry, subtitles: subs),
+                  );
+                },
+              ),
+            if (_loading)
+              const Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: LinearProgressIndicator(minHeight: 2),
+              ),
+          ],
         ),
-        actions: [
-          // 刷新会重新拉取当前目录的列表，但不会丢失当前定位或历史导航栈。
-          IconButton(
-              onPressed: _reload,
-              icon: const Icon(Icons.refresh),
-              tooltip: '刷新'),
-        ],
-      ),
-      body: Stack(
-        children: [
-          if (entries.isEmpty)
-            const Center(child: Text('这个文件夹是空的'))
-          else
-            ListView.builder(
-              padding: const EdgeInsets.only(top: 4, bottom: 24),
-              itemCount: entries.length,
-              itemBuilder: (ctx, i) {
-                final e = entries[i];
-                return MediaRow(
-                  entry: e,
-                  listing: _listing,
-                  location: widget.location,
-                  onEnter: (dir) => _navigate(dir.path),
-                  onPlay: (entry, subs) => _play(entry, subtitles: subs),
-                );
-              },
-            ),
-          if (_loading)
-            const Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: LinearProgressIndicator(minHeight: 2),
-            ),
-        ],
       ),
     );
   }

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../data/models.dart';
 import '../data/repository.dart';
 import 'feedback.dart';
+import 'keyboard.dart';
 
 /// 用户选好的本机路径：可能是一块目录，也可能是一个文件。
 class LocalChoice {
@@ -110,7 +111,8 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
       final listing = await _list(path);
       if (!mounted) return;
       setState(() {
-        final segments = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty);
+        final segments =
+            path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty);
         _stack.add((
           title: segments.isEmpty ? path : segments.last,
           path: path,
@@ -169,6 +171,19 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
     if (_stack.isNotEmpty) unawaited(_reload());
   }
 
+  /// 左上角那颗按钮：还在子目录里就退一层，已经在根层就关掉对话框。
+  ///
+  /// 键盘上的 Backspace 走的是同一个入口（见 `keyboard.dart`），两条路
+  /// 对同一件事的判断必须一致，否则鼠标退到根层后再按一下会先关闭对话框、
+  /// 再关掉背后的首页。
+  void _closeOrUp() {
+    if (_stack.isEmpty) {
+      Navigator.pop(context);
+    } else {
+      _up();
+    }
+  }
+
   /// 底部按钮的结果：选中的文件优先，否则就是当前这一层目录。
   LocalChoice? get _choice {
     final file = _pickedFile;
@@ -193,94 +208,97 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
     final media = MediaQuery.of(context);
     final maxWidth = media.size.width - 48;
     final maxHeight = media.size.height - 64;
-    return Dialog(
-      insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
-      child: SizedBox(
-        width: maxWidth < 620 ? maxWidth : 620,
-        height: maxHeight < 660 ? maxHeight : 660,
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
-              child: Row(
-                children: [
-                  IconButton(
-                    tooltip: _stack.isEmpty ? '关闭' : '上一级',
-                    icon: Icon(_stack.isEmpty ? Icons.close : Icons.arrow_back),
-                    onPressed: () {
-                      if (_stack.isEmpty) {
-                        Navigator.pop(context);
-                      } else {
-                        _up();
-                      }
-                    },
-                  ),
-                  Expanded(
-                    child: Text(title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleMedium),
-                  ),
-                ],
-              ),
-            ),
-            if (_stack.isNotEmpty)
+    // 键盘 Backspace 退一层：对话框里没有输入框（手输路径那是另一个
+    // 独立的 AlertDialog），所以这里的按键可以直接当作「上一级」。
+    return Focus(
+      // 必须 autofocus：对话框里的焦点默认落在滚动视图上，没有这一句
+      // Backspace 根本没有节点接，按键会一路冒到背后的页面去。
+      autofocus: true,
+      onKeyEvent: (node, event) => handleBackKey(event, _closeOrUp),
+      child: Dialog(
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+        child: SizedBox(
+          width: maxWidth < 620 ? maxWidth : 620,
+          height: maxHeight < 660 ? maxHeight : 660,
+          child: Column(
+            children: [
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    _stack.last.path,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12),
-                  ),
+                padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
+                child: Row(
+                  children: [
+                    IconButton(
+                      tooltip: _stack.isEmpty ? '关闭' : '上一级',
+                      icon:
+                          Icon(_stack.isEmpty ? Icons.close : Icons.arrow_back),
+                      onPressed: _closeOrUp,
+                    ),
+                    Expanded(
+                      child: Text(title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleMedium),
+                    ),
+                  ],
                 ),
               ),
-            const Divider(height: 12),
-            Expanded(child: _body()),
-            const Divider(height: 1),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-              child: Row(
-                children: [
-                  Expanded(
+              if (_stack.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
                     child: Text(
-                      choice == null
-                          ? '先挑一个位置'
-                          : choice.isFile
-                              ? '选中文件：${choice.label}'
-                              : '选中这一层目录',
-                      maxLines: 1,
+                      _stack.last.path,
+                      maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 12),
                     ),
                   ),
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('取消'),
-                  ),
-                  const SizedBox(width: 8),
-                  // The app theme gives every FilledButton
-                  // minimumSize: Size.fromHeight(48), i.e. an *infinite*
-                  // minimum width.  Inside a Row the button then asks for
-                  // unbounded width, the flexible text collapses to zero and
-                  // the button itself is painted outside the row and clipped:
-                  // the footer looked like it only had 取消.  Pin a finite
-                  // minimum here.
-                  FilledButton(
-                    style: FilledButton.styleFrom(
-                      minimumSize: const Size(0, 48),
+                ),
+              const Divider(height: 12),
+              Expanded(child: _body()),
+              const Divider(height: 1),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        choice == null
+                            ? '先挑一个位置'
+                            : choice.isFile
+                                ? '选中文件：${choice.label}'
+                                : '选中这一层目录',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12),
+                      ),
                     ),
-                    onPressed: choice == null
-                        ? null
-                        : () => Navigator.pop(context, choice),
-                    child: const Text('加进首页'),
-                  ),
-                ],
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('取消'),
+                    ),
+                    const SizedBox(width: 8),
+                    // The app theme gives every FilledButton
+                    // minimumSize: Size.fromHeight(48), i.e. an *infinite*
+                    // minimum width.  Inside a Row the button then asks for
+                    // unbounded width, the flexible text collapses to zero and
+                    // the button itself is painted outside the row and clipped:
+                    // the footer looked like it only had 取消.  Pin a finite
+                    // minimum here.
+                    FilledButton(
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size(0, 48),
+                      ),
+                      onPressed: choice == null
+                          ? null
+                          : () => Navigator.pop(context, choice),
+                      child: const Text('加进首页'),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -353,9 +371,7 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
           ),
           title: Text(e.name, maxLines: 1, overflow: TextOverflow.ellipsis),
           subtitle: Text(
-            playable
-                ? _describe(e)
-                : '${_describe(e)} · 这个类型不能播放',
+            playable ? _describe(e) : '${_describe(e)} · 这个类型不能播放',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
@@ -373,9 +389,8 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
     return Icons.sd_storage_outlined;
   }
 
-  static IconData _fileIcon(String kind) => kind == 'audio'
-      ? Icons.audiotrack_outlined
-      : Icons.movie_outlined;
+  static IconData _fileIcon(String kind) =>
+      kind == 'audio' ? Icons.audiotrack_outlined : Icons.movie_outlined;
 
   static String _describe(MediaEntry e) {
     final parts = <String>[];
@@ -392,7 +407,8 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
       v /= 1024;
       i++;
     }
-    final text = v >= 100 || i == 0 ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+    final text =
+        v >= 100 || i == 0 ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
     return '$text ${units[i]}';
   }
 }
@@ -416,7 +432,8 @@ Future<String?> askLocalPath(BuildContext context, String hint) async {
         onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+        TextButton(
+            onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
         FilledButton(
           onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
           child: const Text('确定'),
