@@ -41,6 +41,25 @@ class PlaybackSettings {
   /// 默认字幕轨的语言偏好。
   TrackPreference subtitlePreference;
 
+  /// 快进/快退一次跳多少秒。播放页的按钮与方向键共用这一个步长。
+  ///
+  /// 用户要求「必须是整数且大于等于 1 小于等于 10」，所以读写两头都夹紧：
+  /// 只在界面上限制不够，`settings.json` 是可以手改的，读到 0 会让快进退
+  /// 变成原地不动，读到 999 一点就跳到片尾。
+  int seekStepSeconds;
+
+  static const int seekStepMin = 1;
+  static const int seekStepMax = 10;
+  static const int seekStepDefault = 10;
+
+  /// 把任意来源的值夹到 [seekStepMin]..[seekStepMax]。
+  static int clampSeekStep(Object? raw) {
+    final v = raw is num ? raw.toInt() : seekStepDefault;
+    if (v < seekStepMin) return seekStepMin;
+    if (v > seekStepMax) return seekStepMax;
+    return v;
+  }
+
   PlaybackSettings({
     this.hardwareDecoding = true,
     this.deinterlace = false,
@@ -54,6 +73,7 @@ class PlaybackSettings {
     // 默认偏中文：用户报的就是多音轨片子落到英文轨上。
     this.audioPreference = const TrackPreference(primary: 'zh'),
     this.subtitlePreference = const TrackPreference(primary: 'zh'),
+    this.seekStepSeconds = seekStepDefault,
   });
 
   Map<String, dynamic> toJson() => {
@@ -70,6 +90,7 @@ class PlaybackSettings {
         'audio_secondary': audioPreference.secondary,
         'subtitle_primary': subtitlePreference.primary,
         'subtitle_secondary': subtitlePreference.secondary,
+        'seek_step_seconds': seekStepSeconds,
       };
 
   factory PlaybackSettings.fromJson(Map<String, dynamic> j) => PlaybackSettings(
@@ -94,6 +115,8 @@ class PlaybackSettings {
           primary: j['subtitle_primary'] as String? ?? 'zh',
           secondary: j['subtitle_secondary'] as String? ?? 'auto',
         ),
+        // 老配置里没有这个字段，用默认的 10 秒，与改动前的行为一致。
+        seekStepSeconds: clampSeekStep(j['seek_step_seconds']),
       );
 
   PlaybackSettings copy() => PlaybackSettings.fromJson(toJson());

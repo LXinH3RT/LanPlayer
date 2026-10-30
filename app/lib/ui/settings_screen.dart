@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/bindings.dart';
 import '../data/build_info.dart';
-import '../data/models.dart' show kLanguageOptions;
+import '../data/models.dart' show PlaybackSettings, kLanguageOptions;
 import '../data/probe.dart';
 import '../data/stores.dart';
 import 'widgets/volume_sheet.dart' show VolumeSheet;
@@ -185,6 +185,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _settings.subtitlePreference.copyWith(secondary: v));
               _persist();
             },
+          ),
+          const _Section('进度'),
+          // 用下拉而不是滑杆：滑杆能拖出 7.3 这种值，而步长必须是整数秒。
+          ListTile(
+            title: const Text('快进 / 快退步长'),
+            subtitle: const Text('播放页的按钮与方向键一次跳过这么多秒。'),
+            trailing: DropdownButton<int>(
+              value: _settings.seekStepSeconds,
+              underline: const SizedBox.shrink(),
+              items: [
+                for (var s = PlaybackSettings.seekStepMin;
+                    s <= PlaybackSettings.seekStepMax;
+                    s++)
+                  DropdownMenuItem<int>(value: s, child: Text('$s 秒')),
+              ],
+              onChanged: (v) {
+                if (v == null) return;
+                setState(() => _settings.seekStepSeconds =
+                    PlaybackSettings.clampSeekStep(v));
+                _persist();
+              },
+            ),
           ),
           const _Section('连播'),
           SwitchListTile(

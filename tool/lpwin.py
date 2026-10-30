@@ -318,6 +318,14 @@ VK = {
 _WM_KEYDOWN, _WM_KEYUP = 0x0100, 0x0101
 _WM_SYSKEYDOWN, _WM_SYSKEYUP = 0x0104, 0x0105
 
+# 这些键在真实键盘上走的是「扩展键」路径，lParam 的 bit 24 必须置 1。
+# 少了这一位，Flutter 的 Windows embedder 认不出来 —— 实测 Space 能收到、
+# Right 收不到，正是这个原因。
+_EXTENDED = {
+    "Left", "Up", "Right", "Down",
+    "Home", "End", "PageUp", "PageDown", "Insert", "Delete",
+}
+
 
 def focus_window(frame: int) -> int:
     """Whatever the window's thread considers focused, else the frame.
@@ -342,6 +350,7 @@ def post_key(hwnd: int, name: str) -> None:
     恒为 0，于是 PostMessage 出去的消息在引擎那边匹配不到任何 KeyboardKey，
     按键等于没按 —— 只有真正走一遍键盘路径才会暴露。
     scancode 用 MapVirtualKeyW 从 VK 反查，不必手写一张表。
+    方向键一类的扩展键还要置 bit 24，否则同样收不到（见 [_EXTENDED]）。
     """
     if name not in VK:
         raise ValueError(f"unknown key {name!r}")
@@ -350,10 +359,11 @@ def post_key(hwnd: int, name: str) -> None:
     down = _WM_SYSKEYDOWN if alt else _WM_KEYDOWN
     up = _WM_SYSKEYUP if alt else _WM_KEYUP
     scan = _user32.MapVirtualKeyW(vk, 0) & 0xFF   # MAPVK_VK_TO_VSC
+    ext = 0x01000000 if name in _EXTENDED else 0
     # 按下：repeat=1，scancode 就位；抬起：再加上 30/31 位（前一状态 + 转换态）。
-    _user32.PostMessageW(hwnd, down, vk, 0x00000001 | (scan << 16))
+    _user32.PostMessageW(hwnd, down, vk, 0x00000001 | (scan << 16) | ext)
     time.sleep(0.05)
-    _user32.PostMessageW(hwnd, up, vk, 0xC0000001 | (scan << 16))
+    _user32.PostMessageW(hwnd, up, vk, 0xC0000001 | (scan << 16) | ext)
 
 
 # ----------------------------------------------------------------------

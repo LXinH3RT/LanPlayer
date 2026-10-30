@@ -419,6 +419,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   // ---------------------------------------------------------------- actions ---
 
+  /// 快进/快退的步长，取自设置。播放页拿到的是开片那一刻的一份拷贝，
+  /// 所以设置里改了要在下次进入播放页时生效 —— 与音量、倍速的处理一致。
+  int get _seekStep => PlaybackSettings.clampSeekStep(_settings.seekStepSeconds);
+
   void _seekRelative(int seconds) {
     _player.seekBy(seconds * 1000000);
     _showControls();
@@ -1050,11 +1054,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       return true;
     }
     if (key == LogicalKeyboardKey.arrowLeft) {
-      _seekRelative(-10);
+      _seekRelative(-_seekStep);
       return true;
     }
     if (key == LogicalKeyboardKey.arrowRight) {
-      _seekRelative(10);
+      _seekRelative(_seekStep);
       return true;
     }
     if (key == LogicalKeyboardKey.arrowUp) {
@@ -1230,9 +1234,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       : null,
                 ),
                 IconButton(
-                  tooltip: '快退 10 秒',
-                  icon: const Icon(Icons.replay_10),
-                  onPressed: () => _seekRelative(-10),
+                  tooltip: '快退 $_seekStep 秒',
+                  // replay_10 / forward_10 是写死「10」的图标，步长改成别的
+                  // 秒数后图标就开始撒谎，所以换成不带数字的版本。
+                  icon: const Icon(Icons.fast_rewind),
+                  onPressed: () => _seekRelative(-_seekStep),
                 ),
                 IconButton.filled(
                   iconSize: 34,
@@ -1244,9 +1250,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       Icon(_player.isPlaying ? Icons.pause : Icons.play_arrow),
                 ),
                 IconButton(
-                  tooltip: '快进 10 秒',
-                  icon: const Icon(Icons.forward_10),
-                  onPressed: () => _seekRelative(10),
+                  tooltip: '快进 $_seekStep 秒',
+                  icon: const Icon(Icons.fast_forward),
+                  onPressed: () => _seekRelative(_seekStep),
                 ),
                 IconButton(
                   tooltip: '下一集',

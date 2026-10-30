@@ -527,6 +527,72 @@ def check_lan_scan() -> None:
                         "share) so cards stay readable when name is empty")
 
 
+def check_seek_step() -> None:
+    """快进/快退步长：1..10 的整数，设置可改，播放页读设置。
+
+    用户 2026-10-30 要求「可以设置快进快退的秒数，这个数字必须是整数且
+    大于等于 1 小于等于 10」。界面上用下拉框只能选 1..10，但 settings.json
+    是可以手改的 —— 读到 0 会让快进退原地不动，读到 999 一点就跳到片尾。
+    所以断言同时盯住：模型里必须夹紧、默认值必须合法、播放页不得再写死 10。
+    """
+    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    if not models.exists():
+        problems.append("app/lib/data/models.dart is missing")
+        return
+    md = models.read_text(encoding="utf-8")
+
+    # 断言字段声明本身，不是全文搜名字：名字还留在 toJson/fromJson 里，
+    # 单纯删掉字段声明时全文搜索照样命中，护栏就成了摆设。
+    if "int seekStepSeconds;" not in md:
+        problems.append("PlaybackSettings lost the seekStepSeconds field; "
+                        "the fast forward step would be fixed at ten "
+                        "seconds again")
+    if "static const int seekStepMin = 1;" not in md:
+        problems.append("PlaybackSettings.seekStepMin must stay 1")
+    if "static const int seekStepMax = 10;" not in md:
+        problems.append("PlaybackSettings.seekStepMax must stay 10")
+    # fromJson 必须过 clampSeekStep，否则手改过的 json 能绕过区间。
+    if "seekStepSeconds: clampSeekStep(" not in md:
+        problems.append(
+            "PlaybackSettings.fromJson must clamp seek_step_seconds; a "
+            "hand-edited 0 or 999 would otherwise reach the player")
+
+    screen = ROOT / "app" / "lib" / "ui" / "settings_screen.dart"
+    if not screen.exists():
+        problems.append("app/lib/ui/settings_screen.dart is missing")
+    else:
+        sc = screen.read_text(encoding="utf-8")
+        if "seekStepSeconds" not in sc:
+            problems.append("the settings screen no longer exposes the seek "
+                            "step; users could not change it any more")
+        # 下拉框而不是滑杆：滑杆能拖出 7.3，步长必须是整数秒。
+        if "DropdownButton<int>(" not in sc:
+            problems.append("the seek step must be picked from a dropdown so "
+                            "it stays an integer")
+
+    player = ROOT / "app" / "lib" / "ui" / "player_screen.dart"
+    if not player.exists():
+        problems.append("app/lib/ui/player_screen.dart is missing")
+    else:
+        pl = player.read_text(encoding="utf-8")
+        # 同上：`_seekStep` 还会出现在调用处，必须断言 getter 定义本身。
+        if "int get _seekStep" not in pl:
+            problems.append("player_screen lost the _seekStep getter; the "
+                            "buttons would jump a hard coded number of "
+                            "seconds again")
+        # 逐个调用点检查，全文搜 «_seekRelative(10)» 抓不住「一处改了、
+        # 另一处还写死 10」这种半吊子状态。
+        if pl.count("_seekRelative(10)") or pl.count("_seekRelative(-10)"):
+            problems.append("player_screen still seeks a hard coded 10 seconds "
+                            "somewhere; every call site must use _seekStep")
+        # replay_10 / forward_10 是写死「10」的图标，步长改了图标就撒谎。
+        for icon in ("Icons.replay_10", "Icons.forward_10"):
+            if icon in pl:
+                problems.append(
+                    f"player_screen still uses {icon}; the digits in the icon "
+                    f"are wrong once the step is not ten seconds")
+
+
 def check_backspace_guard() -> None:
     """键盘触发时机：全应用统一「抬起才执行」，以及 Backspace 退一层的接线。
 
@@ -3330,6 +3396,7 @@ def main() -> int:
     check_lan_scan()
     check_thumbnails()
     check_backspace_guard()
+    check_seek_step()
     check_installers()
     check_release_policy()
     check_player_layout()
