@@ -335,6 +335,48 @@ def check_splash() -> None:
                 "app/lib/main.dart: home is not wrapped in SplashGate; "
                 "nothing would mask the load")
 
+        # 启动动画的代价：runApp 早于 store 读取，首页第一帧必然拿到空列表。
+        # 若两个 store 不是可监听的，读完也没有人通知界面 —— 0.1.6 就是这样
+        # 发布的，首页永远停在「还没有内容」，而磁盘上的服务器好好的。
+        for rel, cls in (("app/lib/data/stores.dart", "ServerStore"),
+                         ("app/lib/data/folders.dart", "LocalFolderStore")):
+            path = ROOT / rel
+            if not path.exists():
+                problems.append("%s missing" % rel)
+                continue
+            src = path.read_text(encoding="utf-8")
+            head = "class %s extends ChangeNotifier" % cls
+            if head not in src:
+                problems.append(
+                    "%s: %s no longer extends ChangeNotifier; the home screen "
+                    "would stay empty after the stores finish loading"
+                    % (rel, cls))
+            if "bool get loaded => _loaded;" not in src:
+                problems.append(
+                    "%s: %s lost the `loaded` flag; the home screen could not "
+                    "tell 'nothing saved' from 'not read yet'" % (rel, cls))
+            if "notifyListeners();" not in src:
+                problems.append(
+                    "%s: %s never calls notifyListeners(); loading would not "
+                    "redraw the home screen" % (rel, cls))
+
+        home = ROOT / "app" / "lib" / "ui" / "home_screen.dart"
+        if not home.exists():
+            problems.append("app/lib/ui/home_screen.dart missing")
+        else:
+            hs = home.read_text(encoding="utf-8")
+            for token, why in (
+                ("addListener(_onStoreChanged)",
+                 "subscribing to the stores"),
+                ("removeListener(_onStoreChanged)",
+                 "unsubscribing when the screen goes away"),
+                ("_storesReady", "holding the empty state until the read ends"),
+            ):
+                if token not in hs:
+                    problems.append(
+                        "app/lib/ui/home_screen.dart: missing %r (%s)"
+                        % (token, why))
+
     ios = (ROOT / "app" / "ios" / "Runner" / "Base.lproj"
            / "LaunchScreen.storyboard")
     if not ios.exists():

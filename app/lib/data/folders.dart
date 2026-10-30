@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import 'stores.dart';
 
 /// 一个被收进首页的本机路径：一块目录，或者单个文件。
@@ -64,7 +66,11 @@ class LocalFolder {
 ///
 /// 这里特意不叫「最近打开」之类的名字 —— 存下来的就是用户放上首页的目录，
 /// 顺序即添加顺序，不按使用时间重排，找东西的时候位置不会乱跳。
-class LocalFolderStore {
+/// 本机路径列表。
+///
+/// 与 [ServerStore] 一样是可监听的：磁盘读取可能晚于首页第一帧，读完要通知
+/// 界面重建。
+class LocalFolderStore extends ChangeNotifier {
   LocalFolderStore._();
   static final LocalFolderStore instance = LocalFolderStore._();
 
@@ -72,6 +78,29 @@ class LocalFolderStore {
 
   final List<LocalFolder> folders = <LocalFolder>[];
   bool _loaded = false;
+
+  /// 已经读过磁盘。首页用它区分「真的没有来源」与「还没读完」。
+  bool get loaded => _loaded;
+
+  /// 测试用：直接置成「已读完」并给定内容，不碰磁盘。
+  ///
+  /// 单独 pump 首页的 widget 测试没有 [main] 里的 `_boot()`，缺这个入口就
+  /// 只能看到「还没读完」留下的空白。
+  @visibleForTesting
+  void debugSeed(List<LocalFolder> items) {
+    folders
+      ..clear()
+      ..addAll(items);
+    _loaded = true;
+    notifyListeners();
+  }
+
+  /// 测试用：回到「还没读磁盘」的状态。
+  @visibleForTesting
+  void debugReset() {
+    folders.clear();
+    _loaded = false;
+  }
 
   Future<void> load() async {
     if (_loaded) return;
@@ -89,6 +118,7 @@ class LocalFolderStore {
       }
     }
     _loaded = true;
+    notifyListeners();
   }
 
   LocalFolder? byId(String id) {
@@ -154,5 +184,6 @@ class LocalFolderStore {
       'version': 1,
       'folders': folders.map((f) => f.toJson()).toList(),
     });
+    notifyListeners();
   }
 }

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 
 import '../data/folders.dart';
@@ -67,10 +68,42 @@ class _HomeScreenState extends State<HomeScreen> {
         LocalFolderStore.instance.folders,
       );
 
+  /// 两个 store 都读完磁盘了吗。
+  ///
+  /// 启动动画把 [runApp] 提到了读取之前，所以首页第一帧的来源列表必然是空的。
+  /// 在读完之后说「还没有内容」，用户会以为配置丢了 —— 那两点几秒里先画空，
+  /// 由 store 的 notifyListeners 触发重建。
+  bool get _storesReady =>
+      ServerStore.instance.loaded && LocalFolderStore.instance.loaded;
+
   @override
   void initState() {
     super.initState();
+    // store 是 ChangeNotifier：读取完成、增删改都会通知，界面不需要自己补
+    // setState。以前的写法是首帧读一次单例列表，读完没人通知，桌面端就永远
+    // 停在空状态。
+    ServerStore.instance.addListener(_onStoreChanged);
+    LocalFolderStore.instance.addListener(_onStoreChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadAll());
+  }
+
+  @override
+  void dispose() {
+    ServerStore.instance.removeListener(_onStoreChanged);
+    LocalFolderStore.instance.removeListener(_onStoreChanged);
+    super.dispose();
+  }
+
+  /// store 变化：读完磁盘、增删来源、改名都会走到这里。
+  ///
+  /// 只重画一次，然后按「已加载的块」与「现在的来源」是否对得上决定要不要
+  /// 补拉。改名/换标签不动目录，不该再发一轮请求。
+  void _onStoreChanged() {
+    if (!mounted) return;
+    final ids = _sources.map((s) => s.id).toSet();
+    final needsLoad = !setEquals(ids, _loads.keys.toSet());
+    setState(() {});
+    if (needsLoad) unawaited(_loadAll());
   }
 
   /// 统一的错误文案：网络/IO 异常也要给用户一个可读的提示，
@@ -242,9 +275,11 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       showDragHandle: true,
       isScrollControlled: false,
-      capturedThemes: InheritedTheme.capture(from: context, to: navigator.context),
+      capturedThemes:
+          InheritedTheme.capture(from: context, to: navigator.context),
       barrierLabel: localizations.scrimLabel,
-      barrierOnTapHint: localizations.scrimOnTapHint(localizations.bottomSheetLabel),
+      barrierOnTapHint:
+          localizations.scrimOnTapHint(localizations.bottomSheetLabel),
     );
     final choice = await navigator.push(route);
     await route.completed;
@@ -434,11 +469,16 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       // 添加入口只在顶栏出现，且只在已经有来源时出现：空状态页面中央
       // 本来就摆着两颗按钮，再顶一个「+」就是重复。
+      //
+      // 还没读完磁盘时先留空：这时候说「还没有内容」是错的，用户会以为
+      // 保存的服务器丢了。读取只占开头几毫秒到几十毫秒，空一帧看不出来。
       body: sources.isEmpty
-          ? _EmptyState(
-              onAdd: _addMenu,
-              onLocal: _addLocalFolder,
-            )
+          ? (_storesReady
+              ? _EmptyState(
+                  onAdd: _addMenu,
+                  onLocal: _addLocalFolder,
+                )
+              : const SizedBox.expand())
           : Column(
               children: [
                 if (showSourceFilter(sources.length))

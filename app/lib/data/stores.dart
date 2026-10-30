@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'models.dart';
@@ -104,13 +105,42 @@ class AppStorage {
   }
 }
 
-class ServerStore {
+/// 服务器列表。
+///
+/// 是 [ChangeNotifier] 而不是普通单例：首页第一帧就可能早于磁盘读取完成
+/// （启动动画把 `runApp` 提到 store 加载之前），读完之后必须有人通知界面
+/// 重建，否则首页会永远停在「还没有内容」。
+class ServerStore extends ChangeNotifier {
   ServerStore._();
   static final ServerStore instance = ServerStore._();
 
   static const _file = 'servers.json';
   final List<ServerProfile> servers = <ServerProfile>[];
   bool _loaded = false;
+
+  /// 磁盘上的列表是否已经读进来了。首页靠它区分「真的没有来源」与
+  /// 「还没读完」—— 后者不该显示空状态。
+  bool get loaded => _loaded;
+
+  /// 测试用：把 store 直接置成「已读完」并给定内容，不碰磁盘。
+  ///
+  /// 单独 pump 首页的 widget 测试不会有 [main] 里的 `_boot()`，没有这个入口
+  /// 就只能看到「还没读完」留下的空白，测不到真正的空状态与列表。
+  @visibleForTesting
+  void debugSeed(List<ServerProfile> items) {
+    servers
+      ..clear()
+      ..addAll(items);
+    _loaded = true;
+    notifyListeners();
+  }
+
+  /// 测试用：回到「还没读磁盘」的状态。
+  @visibleForTesting
+  void debugReset() {
+    servers.clear();
+    _loaded = false;
+  }
 
   Future<void> load() async {
     if (_loaded) return;
@@ -126,6 +156,7 @@ class ServerStore {
       }
     }
     _loaded = true;
+    notifyListeners();
   }
 
   ServerProfile? byId(String id) {
@@ -162,6 +193,7 @@ class ServerStore {
       'version': 1,
       'servers': servers.map((s) => s.toJson()).toList(),
     });
+    notifyListeners();
   }
 }
 

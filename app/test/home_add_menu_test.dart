@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lanplayer/data/folders.dart';
+import 'package:lanplayer/data/stores.dart';
 import 'package:lanplayer/ui/home_screen.dart';
 import 'package:lanplayer/ui/server_edit_screen.dart';
 
@@ -11,6 +13,18 @@ import 'package:lanplayer/ui/server_edit_screen.dart';
 /// 弹出的二级页面立刻自己收回」。所以这里断言：菜单收干净之前不 push，
 /// push 之后页面要能停住。
 void main() {
+  setUp(() {
+    // 单独 pump 首页不会有 main() 里的 _boot()，而空状态页只在「磁盘读完
+    // 且确实没有来源」时才出现 —— 先把两个 store 置成读完了的空表。
+    ServerStore.instance.debugSeed(const []);
+    LocalFolderStore.instance.debugSeed(const []);
+  });
+
+  tearDown(() {
+    ServerStore.instance.debugReset();
+    LocalFolderStore.instance.debugReset();
+  });
+
   testWidgets('空状态页有「添加服务器」和「添加本地文件/文件夹」两颗按钮', (tester) async {
     await tester.pumpWidget(const MaterialApp(home: HomeScreen()));
     await tester.pump();
