@@ -122,9 +122,10 @@ def main() -> int:
     lnk_desk = userprofile / "Desktop" / "LanPlayer.lnk"
     lnk_box = temp / "lp-shortcut-backup"
 
-    # %TEMP% copy: files created under this checkout carry a Low integrity label,
-    # and a Low-label installer cannot write to a Medium-label directory -- it
-    # exits 0 having done nothing.  %TEMP% itself is Medium.
+    # %TEMP% copy: keeps the run away from dist/ so a half-finished uninstall
+    # cannot disturb the artefacts being tested.  (The Low label that files under
+    # this checkout inherit does not lower the installer's token; the launching
+    # shell's integrity does that.)
     shutil.copy2(setup, tmp_exe)
 
     created_keys: list[str] = []

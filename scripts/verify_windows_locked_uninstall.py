@@ -117,7 +117,7 @@ def main() -> int:
         Path(os.environ.get("TEMP", ".")) / "lp-locked-uninstall"
     python = lp.find_python()
 
-    # Run from %TEMP%: files under the repo carry a Low integrity label.
+    # Run from %TEMP% so the test never touches dist/.
     temp = Path(os.environ.get("TEMP", "."))
     setup_tmp = temp / "lp-locked-unl-setup.exe"
     shutil.copy2(setup, setup_tmp)

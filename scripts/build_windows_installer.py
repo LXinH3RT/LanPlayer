@@ -140,16 +140,34 @@ def build(version: str, release: Path, out_dir: Path, keep_stage: bool) -> Path:
     if not out_file.exists():
         raise lp.ScriptError("makensis produced no output")
 
-    # A file inherits the integrity label of the directory it is created in.  If
-    # the checkout sits on a tree labelled Low, the installer inherits that
-    # label, and Windows then spawns it at Low integrity - where it cannot write
-    # to an ordinary user's install directory.  The user sees "cannot write:
-    # <install dir>\lanplayer.dll"; in silent mode the installer instead exits 0
-    # without installing anything at all.  The artefact has to leave the build
-    # tree without a label, like any file the user downloaded.
-    if lp.has_integrity_label(out_file):
-        lp.clear_integrity_label(out_file)
-        print("  cleared the integrity label inherited from the build tree")
+    # A file inherits the integrity label of the directory it is created in, so
+    # an installer built under a Low-labelled tree comes out labelled Low.  That
+    # label restricts what a Low process may write and propagates to files made
+    # under it - it does NOT decide the level of the process that runs the
+    # installer, which comes from the launching token.  Measured: a Low-labelled
+    # setup.exe installs fine from an ordinary shell, and a setup.exe run from a
+    # Low shell cannot install no matter how it is labelled.
+    #
+    # So strip the label as hygiene (a Low-labelled artefact is odd to ship and
+    # passes the restriction on to whatever it unpacks), and warn when the
+    # *build shell itself* is restricted, because then the silent install this
+    # very script runs afterwards will not be testing anything real.
+    if lp.low_integrity_label(out_file):
+        if lp.set_integrity_level(out_file, "Medium"):
+            print("  relabelled the installer to Medium; a Low label on an "
+                  "artefact is passed on to whatever unpacks it")
+        else:
+            print(f"!! {out_file.name} inherited a Low integrity label from the "
+                  f"build tree and could not be relabelled from this shell.")
+            print(f"!! Installing from a normal shell still works - the label "
+                  f"does not lower the installer's own token.")
+
+    level = lp.current_integrity()
+    if level == "Low":
+        print("!! this shell is running at Low integrity: anything it launches, "
+              "including the installer, inherits that token and cannot write to "
+              "an ordinary install directory.")
+        print("!! build and install from a normal shell.")
 
     print()
     print(f"built: {out_file} ({lp.size_mb(out_file)} MB)")

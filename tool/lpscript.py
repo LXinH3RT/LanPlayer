@@ -40,6 +40,18 @@ SCRIPTS = ROOT / "scripts"
 TOOLS = ROOT / ".tools"
 DIST = ROOT / "dist"
 
+# Where to put artefacts that must reach the user without inheriting the build
+# tree's integrity label.  Not used automatically - lowering a label is something
+# only a normal shell can do (see build_windows_installer.py) - but handy when a
+# release has to be assembled by hand.
+CLEAN = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "LanPlayer" / "dist"
+
+
+def clean_dir() -> Path:
+    """Directory reserved for artefacts that must not carry an integrity label."""
+    return CLEAN
+
+
 QUIET = False
 
 
@@ -268,16 +280,22 @@ def pubspec_version(path: Path | None = None) -> str:
 def clear_integrity_label(path: Path) -> bool:
     """Drop the mandatory integrity label from a file on Windows.
 
-    A file inherits the label of the directory it was created in.  If that
-    directory carries a *Low* label, Windows spawns the file's process at Low
-    integrity too, and the program then cannot write anywhere a normal user
-    can - an installer produced that way reports "cannot write to
-    <install dir>" on a machine whose install directory has no label at all.
+    A file inherits the label of the directory it is created in, so everything
+    built under a Low-labelled tree -- which is what a copy made from an
+    elevated or sandboxed shell can leave behind -- comes out labelled Low.
+    The label is a property of the *file*: it restricts what a Low-integrity
+    process may write, and it is passed on to files created under a Low
+    directory.  It does **not** decide the integrity level of a process that
+    executes the file; that level comes from the launching process's own token.
 
-    Build trees sometimes live on a volume whose root was labelled Low, so
-    every artefact built inside them silently inherits the restriction.
-    Clearing the label on the artefact itself makes it behave like a file the
-    user downloaded, which is what has to be shipped.
+    So a Low-labelled installer installed from an ordinary shell works fine
+    (measured).  What actually breaks an install is the *shell* running at Low,
+    which :func:`current_integrity` reports.  Stripping the label is still worth
+    doing as hygiene, because a Low-labelled artefact is an odd thing to ship
+    and it propagates to anything unpacked from it.
+
+    Needs WRITE_OWNER, so it fails when the caller itself is restricted; that is
+    why :func:`set_integrity_level` exists.
 
     Returns True when a label was present and removed.  No-op off Windows.
     """
@@ -307,6 +325,92 @@ def has_integrity_label(path: Path) -> bool:
         return False
     text = output(["icacls", str(path)]) or ""
     return "Mandatory Label" in text
+
+
+def low_integrity_label(path: Path) -> bool:
+    """True when the file is labelled Low.
+
+    Worth knowing about, but not the thing that breaks installs: the integrity
+    level of a process that runs the file comes from the launching token, not
+    from the file's label (measured - a Low-labelled installer installs fine
+    from a normal shell).  Use :func:`current_integrity` for the real question.
+    """
+    if os.name != "nt":
+        return False
+    text = output(["icacls", str(path)]) or ""
+    for line in text.splitlines():
+        if "Mandatory Label" in line and "Low" in line:
+            return True
+    return False
+
+
+def set_integrity_level(path: Path, level: str = "Medium") -> bool:
+    """Relabel a file's mandatory integrity level (``icacls /setintegritylevel``).
+
+    Unlike :func:`clear_integrity_label` this works without WRITE_OWNER, so it
+    succeeds even from a restricted shell.  Relabelling keeps a labelled
+    artefact from propagating the label to whatever is unpacked from it.
+    """
+    if os.name != "nt":
+        return False
+    result = subprocess.run(["icacls", str(path), "/setintegritylevel", level],
+                            capture_output=True, text=True,
+                            encoding="mbcs", errors="replace")
+    return result.returncode == 0 and not low_integrity_label(path)
+
+
+def current_integrity() -> str:
+    """This process's own mandatory integrity level: ``"Low"``, ``"Medium"``,
+    ``"High"`` or ``"System"``, or ``""`` when it cannot be read.
+
+    This is the level that matters.  A shell running at Low cannot write into an
+    ordinary install directory no matter how the installer it invokes is
+    labelled, because children inherit the parent's token.
+    """
+    if os.name != "nt":
+        return ""
+    import ctypes
+    import ctypes.wintypes as wt
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wt.HANDLE
+    kernel32.GetCurrentProcess.argtypes = []
+    advapi.OpenProcessToken.restype = wt.BOOL
+    advapi.OpenProcessToken.argtypes = [wt.HANDLE, wt.DWORD,
+                                        ctypes.POINTER(wt.HANDLE)]
+    advapi.GetTokenInformation.restype = wt.BOOL
+    advapi.GetTokenInformation.argtypes = [wt.HANDLE, ctypes.c_int,
+                                           ctypes.c_void_p, wt.DWORD,
+                                           ctypes.POINTER(wt.DWORD)]
+    advapi.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
+    advapi.GetSidSubAuthorityCount.argtypes = [ctypes.c_void_p]
+    advapi.GetSidSubAuthority.restype = ctypes.POINTER(ctypes.c_ulong)
+    advapi.GetSidSubAuthority.argtypes = [ctypes.c_void_p, wt.DWORD]
+
+    token = wt.HANDLE()
+    # GetCurrentProcess() hands back the pseudo handle -1, so its restype has to
+    # be HANDLE; with the default c_int the value goes negative and
+    # OpenProcessToken then fails with ERROR_INVALID_HANDLE.
+    if not advapi.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008,
+                                   ctypes.byref(token)):
+        return ""
+    size = wt.DWORD(0)
+    # TOKEN_INTEGRITY_LEVEL (25) fills a TOKEN_MANDATORY_LABEL, whose first
+    # member is a SID pointer - the RID sits in that SID's last sub-authority.
+    advapi.GetTokenInformation(token, 25, None, 0, ctypes.byref(size))
+    if not size.value:
+        return ""
+    buf = ctypes.create_string_buffer(size.value)
+    if not advapi.GetTokenInformation(token, 25, buf, size.value,
+                                      ctypes.byref(size)):
+        return ""
+    sid = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]
+    count = advapi.GetSidSubAuthorityCount(ctypes.c_void_p(sid)).contents.value
+    rid = advapi.GetSidSubAuthority(ctypes.c_void_p(sid), count - 1).contents.value
+    return {4096: "Low", 8192: "Medium", 12288: "High",
+            16384: "System"}.get(rid, f"rid={rid}")
+
 
 
 def write_text(path: Path, text: str, encoding: str = "utf-8",

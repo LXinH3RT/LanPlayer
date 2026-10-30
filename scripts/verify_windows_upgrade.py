@@ -16,9 +16,10 @@ skipping that restore quietly breaks the real install.
 
 Seven traps, all learned the hard way:
 
- 1. Copy the packages to %TEMP% before running them.  Files created under the
-    repo carry a Low integrity label, and keeping the run away from the repo also
-    means a half-finished install can never touch dist/.
+ 1. Copy the packages to %TEMP% before running them, so a half-finished install
+    can never touch dist/.  (Files created under the repo are labelled Low, but
+    that label does not lower the installer's token - the launching shell's own
+    integrity does that - so keeping the run out of dist/ is now just hygiene.)
  2. The launcher exe is byte-identical between releases (same size, same
     sha256), so its size proves nothing on its own.  Append marker bytes first;
     if the installer overwrites the file the size drops back.  The deleted DLL
