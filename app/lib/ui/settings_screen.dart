@@ -109,14 +109,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           ListTile(
             title: const Text('默认倍速'),
-            subtitle: Slider(
-              value: _settings.speed,
-              min: 0.5,
-              max: 2.0,
-              divisions: 6,
-              label: '${_settings.speed}x',
-              onChanged: (v) => setState(() => _settings.speed = v),
-              onChangeEnd: (_) => _persist(),
+            subtitle: const Text('开片时的速度；播放页的倍速按钮用同一组档位。'),
+            // 下拉而不是滑杆：档位是固定的八档，滑杆能拖出 1.3 这种值，
+            // 播放页那边按档位精确匹配就一个都不选中。
+            trailing: DropdownButton<double>(
+              value: PlaybackSettings.clampSpeed(_settings.speed),
+              underline: const SizedBox.shrink(),
+              items: [
+                for (final s in PlaybackSettings.speedSteps)
+                  DropdownMenuItem<double>(value: s, child: Text('${s}x')),
+              ],
+              onChanged: (v) {
+                if (v == null) return;
+                setState(() => _settings.speed = v);
+                _persist();
+              },
             ),
           ),
           _TrackLangTile(

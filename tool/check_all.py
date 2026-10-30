@@ -594,6 +594,63 @@ def check_seek_step() -> None:
                     f"are wrong once the step is not ten seconds")
 
 
+def check_speed_steps() -> None:
+    """播放倍速只允许固定的八档（用户 2026-10-30 指定 0.25..2.0）。
+
+    三处必须共用同一份档位：模型的 speedSteps、设置页的下拉、播放页的倍速
+    面板。任何一处各写一份列表，用户都会遇到「设置里选得出、播放页选不中」
+    或者反过来。另外 fromJson 必须走 clampSpeed —— 老配置里存过 1.3 这类
+    非档位值，不吸附的话 RadioListTile 的 groupValue 精确匹配会全落空。
+    """
+    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    if not models.exists():
+        problems.append("app/lib/data/models.dart is missing")
+        return
+    md = models.read_text(encoding="utf-8")
+
+    if "static const List<double> speedSteps = [" not in md:
+        problems.append("PlaybackSettings lost speedSteps; the speed menu "
+                        "would go back to a free-form slider")
+    for step in ("0.25,", "0.5,", "0.75,", "1.0,", "1.25,", "1.5,",
+                 "1.75,", "2.0,"):
+        if step not in md:
+            problems.append(f"PlaybackSettings.speedSteps lost the {step[:-1]} "
+                            f"step")
+    if "static double clampSpeed(Object? raw)" not in md:
+        problems.append("PlaybackSettings lost clampSpeed(); an old 1.3 in "
+                        "settings.json would match no dropdown entry")
+    # 逐个赋值点检查，光看名字在不在挡不住「fromJson 还在用原值」。
+    if "speed: clampSpeed(" not in md:
+        problems.append("PlaybackSettings.fromJson must snap speed through "
+                        "clampSpeed, not store whatever the file says")
+
+    screen = ROOT / "app" / "lib" / "ui" / "settings_screen.dart"
+    if not screen.exists():
+        problems.append("app/lib/ui/settings_screen.dart is missing")
+    else:
+        sc = screen.read_text(encoding="utf-8")
+        if "PlaybackSettings.speedSteps" not in sc:
+            problems.append("the settings screen no longer reads "
+                            "PlaybackSettings.speedSteps; it would drift from "
+                            "the player's menu")
+        if "DropdownButton<double>(" not in sc:
+            problems.append("the default speed must be a dropdown of fixed "
+                            "steps, not a slider")
+
+    player = ROOT / "app" / "lib" / "ui" / "player_screen.dart"
+    if not player.exists():
+        problems.append("app/lib/ui/player_screen.dart is missing")
+    else:
+        pl = player.read_text(encoding="utf-8")
+        if "const speeds = PlaybackSettings.speedSteps;" not in pl:
+            problems.append("player_screen must take its speed menu from "
+                            "PlaybackSettings.speedSteps")
+        # 面板上的 groupValue 要吸附，否则老配置下没有任何一档被选中。
+        if "groupValue: PlaybackSettings.clampSpeed(_player.speed)" not in pl:
+            problems.append("the speed sheet must snap groupValue through "
+                            "clampSpeed; a stale 1.3 would select nothing")
+
+
 def check_backspace_guard() -> None:
     """键盘触发时机：全应用统一「抬起才执行」，以及 Backspace 退一层的接线。
 
@@ -3398,6 +3455,7 @@ def main() -> int:
     check_thumbnails()
     check_backspace_guard()
     check_seek_step()
+    check_speed_steps()
     check_installers()
     check_release_policy()
     check_player_layout()

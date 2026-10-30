@@ -52,6 +52,36 @@ class PlaybackSettings {
   static const int seekStepMax = 10;
   static const int seekStepDefault = 10;
 
+  /// 播放倍速只允许这几档（用户 2026-10-30 指定）。
+  ///
+  /// 播放页的倍速面板与设置页的「默认倍速」共用这一份 —— 两边档位不一致
+  /// 会让用户以为设置没生效。0.25 比 0.5 更慢，适合逐句对字幕；超过 2.0
+  /// 音调补偿会明显失真，所以不给。
+  static const List<double> speedSteps = [
+    0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0,
+  ];
+
+  static const double speedDefault = 1.0;
+
+  /// 把任意来源的值吸附到最近的合法档位。
+  ///
+  /// 只做区间夹紧不够：内核对任意小数都收，但界面上的 RadioListTile 用
+  /// groupValue 精确匹配，1.3 这种老值会让所有档位都不选中。吸附到最近
+  /// 档位后界面总有落点。
+  static double clampSpeed(Object? raw) {
+    final v = raw is num ? raw.toDouble() : speedDefault;
+    var best = speedSteps.first;
+    var bestGap = (v - best).abs();
+    for (final s in speedSteps.skip(1)) {
+      final gap = (v - s).abs();
+      if (gap < bestGap) {
+        best = s;
+        bestGap = gap;
+      }
+    }
+    return best;
+  }
+
   /// 把任意来源的值夹到 [seekStepMin]..[seekStepMax]。
   static int clampSeekStep(Object? raw) {
     final v = raw is num ? raw.toInt() : seekStepDefault;
@@ -97,7 +127,9 @@ class PlaybackSettings {
         hardwareDecoding: j['hardware_decoding'] as bool? ?? true,
         deinterlace: j['deinterlace'] as bool? ?? false,
         scaleMode: (j['scale_mode'] as num?)?.toInt() ?? 0,
-        speed: (j['speed'] as num?)?.toDouble() ?? 1.0,
+        // 吸附到最近的合法档位：老配置里存过 1.3 这类值，界面上的
+        // RadioListTile 精确匹配，不吸附就一个档位都不选中。
+        speed: clampSpeed(j['speed']),
         volume: (j['volume'] as num?)?.toDouble() ?? 1.0,
         autoNext: j['auto_next'] as bool? ?? true,
         subtitleScale: (j['subtitle_scale'] as num?)?.toDouble() ?? 1.0,

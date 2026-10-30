@@ -613,7 +613,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> _openSpeedSheet() async {
     _hideTimer?.cancel();
-    const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+    // 档位与设置页的「默认倍速」共用一份，见 PlaybackSettings.speedSteps。
+    const speeds = PlaybackSettings.speedSteps;
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -625,10 +626,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
             for (final s in speeds)
               RadioListTile<double>(
                 value: s,
-                groupValue: _player.speed,
+                // 吸附到档位：老设置里可能存着 1.3，不吸附就一个都不选中。
+                groupValue: PlaybackSettings.clampSpeed(_player.speed),
                 title: Text('${s}x'),
                 onChanged: (v) {
-                  _player.setSpeed(v ?? 1.0);
+                  _player.setSpeed(v ?? PlaybackSettings.speedDefault);
                   setState(() {});
                   Navigator.pop(ctx);
                 },
