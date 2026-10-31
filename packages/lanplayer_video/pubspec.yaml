@@ -1,5 +1,5 @@
 name: lanplayer_video
-description: Windows texture bridge for the LanPlayer FFmpeg core (liblanplayer.dll).
+description: Cross-platform texture bridge for the LanPlayer FFmpeg core.
 version: 0.1.0
 publish_to: "none"
 
@@ -13,6 +13,10 @@ dependencies:
 
 flutter:
   plugin:
+    # 只有 Windows 有独立的 Flutter 插件（一个会加载 lanplayer.dll 的 C++ DLL）。
+    # iOS / macOS / Android 的宿主代码就住在 app/ 里，不是插件，但通道契约
+    # 由本包的 lib/src/channel.dart 定义，所以它们也要实现同一套方法名 ——
+    # 这层一致性由 tool/check_all.py 的 check_video_bridge_contract() 保证。
     platforms:
       windows:
         pluginClass: LanPlayerVideoPlugin

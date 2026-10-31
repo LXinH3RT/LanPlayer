@@ -1,90 +1,9 @@
-import 'dart:ffi';
-
-import 'package:flutter/services.dart';
-
-/// A video texture created by the platform side.
+/// 视频纹理桥在 app 侧的入口。
 ///
-/// Android: [windowPtr] is an ANativeWindow* the native core draws into (EGL
-/// for software decode, MediaCodec for hardware decode).
-/// iOS/macOS: [windowPtr] is 0; the core publishes CVPixelBuffers and the
-/// Swift FlutterTexture pulls them.
-class VideoTexture {
-  const VideoTexture(
-      {required this.textureId,
-      required this.windowPtr,
-      required this.width,
-      required this.height});
+/// 实现住在 `packages/lanplayer_video`：那里的 `lib/src/channel.dart` 定义通道
+/// 名、方法名与参数键，`lib/src/bridge.dart` 给出调用封装。这里只做转发，让
+/// `player_screen.dart` 与其它调用点保持 `import 'video_texture.dart';` 不变，
+/// 同时保证「通道叫什么」在整个仓库里只有一处定义。
+library;
 
-  final int textureId;
-  final int windowPtr;
-  final int width;
-  final int height;
-}
-
-class VideoTextureBridge {
-  static const MethodChannel _channel = MethodChannel('lanplayer/video');
-
-  static VideoTexture? _current;
-
-  static VideoTexture? get current => _current;
-
-  static Future<VideoTexture?> create(
-      {int width = 1920, int height = 1080}) async {
-    try {
-      final map =
-          await _channel.invokeMapMethod<String, dynamic>('createTexture', {
-        'width': width,
-        'height': height,
-      });
-      if (map == null) return null;
-      final tex = VideoTexture(
-        textureId: (map['textureId'] as num?)?.toInt() ?? -1,
-        windowPtr: (map['window'] as num?)?.toInt() ?? 0,
-        width: width,
-        height: height,
-      );
-      _current = tex;
-      return tex;
-    } on PlatformException catch (_) {
-      return null;
-    } on MissingPluginException catch (_) {
-      // Desktop / test host without the platform channel.
-      return null;
-    }
-  }
-
-  /// Tells the platform side which native player to bridge (iOS only needs it).
-  static Future<void> attachPlayer(Pointer<Void>? player) async {
-    if (player == null) return;
-    try {
-      await _channel
-          .invokeMethod<void>('attachPlayer', {'player': player.address});
-    } on PlatformException catch (_) {
-    } on MissingPluginException catch (_) {}
-  }
-
-  /// Toggles the desktop window between windowed and fullscreen.
-  ///
-  /// `SystemChrome.setEnabledSystemUIMode` only hides the status bar on mobile,
-  /// so on desktop the platform side resizes the real window.  Returns whether
-  /// the host accepted the request; false means there is no desktop plugin and
-  /// the caller should fall back to the Flutter-only behaviour.
-  static Future<bool> setFullscreen(bool on) async {
-    try {
-      final res = await _channel.invokeMethod<bool>('setFullscreen', on);
-      return res ?? false;
-    } on PlatformException catch (_) {
-      return false;
-    } on MissingPluginException catch (_) {
-      return false;
-    }
-  }
-
-  static Future<void> destroy() async {
-    _current = null;
-    try {
-      await _channel.invokeMethod<void>('destroyTexture');
-    } on PlatformException catch (_) {
-    } on MissingPluginException catch (_) {}
-  }
-}
+export 'package:lanplayer_video/lanplayer_video.dart';

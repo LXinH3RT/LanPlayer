@@ -115,9 +115,6 @@ import CoreVideo
           self.installFrameCallback()
         }
         result(nil)
-      case "resizeTexture":
-        // 纹理的尺寸由 Flutter 侧布局决定，原生侧无需处理。
-        result(nil)
       case "destroyTexture":
         self.removeFrameCallback()
         if let tex = self.texture {

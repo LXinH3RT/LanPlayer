@@ -92,7 +92,7 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
   /// 内核列出来的条目带 `file://` 前缀，而这里压栈、存盘用的都是裸路径
   /// （`LocalFolder.rootUrl` 自己会补前缀）。混用会拼出 `file://file://…`。
   static String _plain(String path) {
-    final prefix = LpScheme.filePrefix;
+    const prefix = LpScheme.filePrefix;
     if (!path.startsWith(prefix)) return path;
     final rest = path.substring(prefix.length);
     // `file:///C:/x` 这种三元斜杠，去掉前缀后还剩 `/C:/x`。

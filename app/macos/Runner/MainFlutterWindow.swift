@@ -74,10 +74,6 @@ class MainFlutterWindow: NSWindow {
         }
         result(nil)
 
-      case "resizeTexture":
-        // The texture is laid out by Flutter; nothing to resize natively.
-        result(nil)
-
       case "destroyTexture":
         self.removeFrameCallback()
         if let tex = self.texture, let registry = self.registry {

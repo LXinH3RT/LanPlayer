@@ -44,12 +44,6 @@ class MainActivity : FlutterActivity() {
                     val height = (call.argument<Int>("height") ?: 1080)
                     result.success(createTexture(flutterEngine, width, height))
                 }
-                "resizeTexture" -> {
-                    val width = call.argument<Int>("width") ?: 0
-                    val height = call.argument<Int>("height") ?: 0
-                    producer?.setSize(width, height)
-                    result.success(null)
-                }
                 "attachPlayer" -> {
                     playerPtr = (call.argument<Number>("player")?.toLong() ?: 0L)
                     result.success(null)

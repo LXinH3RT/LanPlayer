@@ -235,7 +235,7 @@ flutter build macos --release     # 或 flutter build ios --release --no-codesig
 `library not found for -llanplayer` = 4.2 没跑或没成功；`building for iOS 14.0, but linking in object file built for iOS 15.0` = 依赖用了更高的 `MIN_IOS`，把工程目标同步调高或重跑 4.2。
 
 ### 4.4 桌面纹理与音频
-`app/macos/Runner/MainFlutterWindow.swift` 注册 `lanplayer/video` 通道，`PlayerTexture` 从内核拉 `CVPixelBuffer` 交给引擎（BGRA，带图形字幕叠加）；iOS 侧是 `app/ios/Runner/AppDelegate.swift` 的同款实现。音频走 `native/src/platform/apple/coreaudio_sink.c`（AudioQueue，3×20 ms），视频解码走 `native/src/platform/apple/videotoolbox_decoder.c`。
+纹理桥的契约（通道名、方法名、参数键）定义在 `packages/lanplayer_video/lib/src/channel.dart`，Dart 侧封装在同包的 `lib/src/bridge.dart`；`app/lib/ui/video_texture.dart` 只是一行 `export`，`player_screen.dart` 经它拿到 `VideoTextureBridge`。四份宿主实现这套契约：Windows 是 `packages/lanplayer_video/windows/lanplayer_video_plugin.cpp`（D3D11 共享纹理），macOS 是 `app/macos/Runner/MainFlutterWindow.swift`、iOS 是 `app/ios/Runner/AppDelegate.swift`（两者的 `PlayerTexture` 从内核拉 `CVPixelBuffer` 交给引擎，BGRA，带图形字幕叠加），Android 是 `app/android/app/src/main/kotlin/dev/lanplayer/app/MainActivity.kt`（`SurfaceProducer` 交给 `egl_renderer.c`）。音频走 `native/src/platform/apple/coreaudio_sink.c`（AudioQueue，3×20 ms），视频解码走 `native/src/platform/apple/videotoolbox_decoder.c`。
 
 ### 4.5 权限
 `app/ios/Runner/Info.plist` 已含 `NSLocalNetworkUsageDescription`、`NSBonjourServices`(`_smb._tcp`)、`UIBackgroundModes=audio`、`UIFileSharingEnabled`、四个方向。`app/macos/Runner/{DebugProfile,Release}.entitlements` 已含 `com.apple.security.network.client`（**没有它会拦掉 SMB 端口出站**）与 `com.apple.security.files.user-selected.read-only`。

@@ -142,8 +142,8 @@ class ProgressStore {
   /// `file:///D:/x` and `file://D:/x` are the same file; the browser builds
   /// the second form and hand-written/older records may carry the first.
   static String _normalizeFileUrl(String s) {
-    final prefix = LpScheme.filePrefix;
-    final triplePrefix = '$prefix/';
+    const prefix = LpScheme.filePrefix;
+    const triplePrefix = '$prefix/';
     if (!s.startsWith(triplePrefix) || s.length <= triplePrefix.length) {
       return s;
     }

@@ -35,7 +35,7 @@ abstract final class LpScheme {
     final encodedUser = Uri.encodeComponent(user);
     final encodedPass = Uri.encodeComponent(password);
     return '$smbPrefix$encodedUser:$encodedPass@'
-        '${host}${port == smbDefaultPort ? '' : ':$port'}/$share';
+        '$host${port == smbDefaultPort ? '' : ':$port'}/$share';
   }
 
   /// `file://<path>`，裸路径原样接在后面（本机路径不转义）。

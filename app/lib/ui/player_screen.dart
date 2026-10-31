@@ -143,7 +143,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await VideoTextureBridge.attachPlayer(_player.nativeHandle);
     if (!mounted) return;
 
-    if (texture != null && texture.windowPtr != 0) {
+    if (texture != null && texture.needsSurface) {
       _player.attachVideo(
         textureId: texture.textureId,
         windowPtr: texture.windowPtr,

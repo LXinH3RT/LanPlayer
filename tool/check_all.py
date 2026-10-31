@@ -2126,6 +2126,134 @@ def check_transport_registry() -> None:
         notes.append("transport registry: one table drives scheme list, URL "
                      "shape, AVIO choice and default ports")
 
+def check_video_bridge_contract() -> None:
+    """Keep the texture bridge's channel contract in one place.
+
+    The bridge is implemented four times -- a Windows C++ plugin, a macOS Swift
+    window controller, an iOS Swift app delegate, and an Android activity -- and
+    the only thing tying them together is a method channel.  That contract used
+    to be written nowhere: `app/lib/ui/video_texture.dart` held the Dart half as
+    bare string literals, and each host spelled the same names out again in its
+    own `switch`.  Renaming a key meant four edits and the failure mode was a
+    silently missing texture (or a window pointer that stayed 0 on Android, so
+    the core drew into nothing).
+
+    Now the names live in `packages/lanplayer_video/lib/src/channel.dart`; the
+    app-side file is a one-line re-export.  This check asserts the hosts still
+    answer the names the contract declares, and that no new copy of the channel
+    name has grown back in app code.
+    """
+    channel = ROOT / "packages" / "lanplayer_video" / "lib" / "src" / "channel.dart"
+    bridge = ROOT / "packages" / "lanplayer_video" / "lib" / "src" / "bridge.dart"
+    facade = ROOT / "app" / "lib" / "ui" / "video_texture.dart"
+
+    if not channel.exists():
+        problems.append("packages/lanplayer_video/lib/src/channel.dart is gone; "
+                        "the four hosts would be back to four private copies of "
+                        "the channel contract")
+        return
+    contract = channel.read_text(encoding="utf-8")
+    for needle, why in (
+        ("lanplayerVideoChannel", "the channel name has to be a named constant"),
+        ("'lanplayer/video'", "the channel name itself belongs here"),
+        ("createTexture", "the create method name belongs here"),
+        ("attachPlayer", "the attach method name belongs here"),
+        ("destroyTexture", "the destroy method name belongs here"),
+        ("setFullscreen", "the fullscreen method name belongs here"),
+        ("TextureWindowPtr", "the \"platform gave us a window\" sentinel must be "
+                             "named, not a bare 0 at the call site"),
+    ):
+        if needle not in contract:
+            problems.append(f"packages/lanplayer_video/lib/src/channel.dart no "
+                            f"longer declares {needle!r}: {why}")
+
+    # 1. Dart 侧封装必须走常量，不能自己再抄一份通道名。
+    if bridge.exists():
+        bd = bridge.read_text(encoding="utf-8")
+        if "MethodChannel(lanplayerVideoChannel)" not in bd:
+            problems.append("packages/lanplayer_video/lib/src/bridge.dart must "
+                            "build its MethodChannel from lanplayerVideoChannel")
+        if "'lanplayer/video'" in bd:
+            problems.append("packages/lanplayer_video/lib/src/bridge.dart "
+                            "hard-codes the channel name again")
+    else:
+        problems.append("packages/lanplayer_video/lib/src/bridge.dart is gone")
+
+    # 2. app 侧只剩转发：它以前是这份契约的唯一（也是孤立的）副本。
+    if not facade.exists():
+        problems.append("app/lib/ui/video_texture.dart is gone; player_screen "
+                        "cannot reach the bridge")
+    else:
+        fc = facade.read_text(encoding="utf-8")
+        if "export 'package:lanplayer_video/" not in fc:
+            problems.append("app/lib/ui/video_texture.dart no longer re-exports "
+                            "package:lanplayer_video; the bridge API would have "
+                            "to be copied back into the app")
+        if "MethodChannel(" in fc:
+            problems.append("app/lib/ui/video_texture.dart builds its own "
+                            "MethodChannel again instead of using the package")
+
+    # 3. app 代码里不该再出现通道名字面量。
+    for path in (ROOT / "app" / "lib").rglob("*.dart"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("//"):
+                continue
+            if "'lanplayer/video'" in line or '"lanplayer/video"' in line:
+                problems.append(f"{path.relative_to(ROOT).as_posix()} hard-codes "
+                                f"the video channel name; import it from "
+                                f"package:lanplayer_video instead")
+
+    # 4. 四份宿主必须认同一套方法名。
+    hosts = (
+        ("packages/lanplayer_video/windows/lanplayer_video_plugin.cpp",
+         ("createTexture", "attachPlayer", "destroyTexture", "setFullscreen")),
+        ("app/android/app/src/main/kotlin/dev/lanplayer/app/MainActivity.kt",
+         ("createTexture", "attachPlayer", "destroyTexture")),
+        ("app/ios/Runner/AppDelegate.swift",
+         ("createTexture", "attachPlayer", "destroyTexture")),
+        ("app/macos/Runner/MainFlutterWindow.swift",
+         ("createTexture", "attachPlayer", "destroyTexture", "setFullscreen")),
+    )
+    for rel, methods in hosts:
+        path = ROOT / rel
+        if not path.exists():
+            problems.append(f"{rel} is missing; one of the four texture bridge "
+                            f"hosts disappeared")
+            continue
+        text = path.read_text(encoding="utf-8")
+        # 注释里提到通道名是正常的（macOS 的文件头就写了它是干什么的），
+        # 这里只认代码行。
+        code = "\n".join(
+            line for line in text.splitlines()
+            if not line.strip().startswith("//"))
+        if "lanplayer/video" not in code:
+            problems.append(f"{rel} no longer registers the lanplayer/video "
+                            f"method channel")
+        for method in methods:
+            if f'"{method}"' not in code:
+                problems.append(f"{rel} no longer handles \"{method}\"; the "
+                                f"Dart side calls it through the shared "
+                                f"contract in packages/lanplayer_video")
+
+    # 5. window 指针哨兵：Android 拿到的是 ANativeWindow*，Apple/Windows 是 0。
+    #    丢掉这个区分，Android 会像 Apple/Windows 一样跳过 lp_player_set_surface，
+    #    内核就往一个不存在的窗口里画 —— 表现是「有音频、黑屏」。
+    if not re.search(r"abstract final class TextureWindowPtr\b", contract):
+        problems.append("packages/lanplayer_video/lib/src/channel.dart lost the "
+                        "TextureWindowPtr sentinel; Android would look like "
+                        "Apple/Windows and skip lp_player_set_surface")
+    if bridge.exists():
+        bd = bridge.read_text(encoding="utf-8")
+        if "TextureWindowPtr.inProcess" not in bd:
+            problems.append("packages/lanplayer_video/lib/src/bridge.dart no "
+                            "longer derives needsSurface from "
+                            "TextureWindowPtr.inProcess")
+
+    if not problems:
+        notes.append("video bridge: one channel contract, four hosts answering "
+                     "the same names")
+
 def check_dart_tests() -> None:
     """Run the Dart test suite (share key + subtitle rendering).
 
@@ -2660,6 +2788,18 @@ def check_dead_code() -> None:
          "VideoTextureBridge.resize() had no Dart caller and the Windows "
          "plugin answered it with a bare Success()"),
         ("packages/lanplayer_video/windows/lanplayer_video_plugin.cpp",
+         '"resizeTexture"',
+         "the resizeTexture method channel case is dead: nothing on the Dart "
+         "side calls it, and it only acknowledged the call"),
+        ("app/android/app/src/main/kotlin/dev/lanplayer/app/MainActivity.kt",
+         '"resizeTexture"',
+         "the resizeTexture method channel case is dead: nothing on the Dart "
+         "side calls it, and it only acknowledged the call"),
+        ("app/ios/Runner/AppDelegate.swift",
+         '"resizeTexture"',
+         "the resizeTexture method channel case is dead: nothing on the Dart "
+         "side calls it, and it only acknowledged the call"),
+        ("app/macos/Runner/MainFlutterWindow.swift",
          '"resizeTexture"',
          "the resizeTexture method channel case is dead: nothing on the Dart "
          "side calls it, and it only acknowledged the call"),
@@ -4503,6 +4643,7 @@ def main() -> int:
     check_required_files()
     check_source_manifest()
     check_transport_registry()
+    check_video_bridge_contract()
     check_symbols()
     check_native_runtime()
     check_dart_syntax()
