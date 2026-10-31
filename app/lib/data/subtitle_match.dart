@@ -25,7 +25,8 @@ library;
 /// 这些词出现在谁身上都不影响「是不是同一个片子」，所以比较前先摘掉。
 const Set<String> _noiseTokens = {
   // 分辨率
-  '2160p', '1080p', '1080i', '720p', '576p', '480p', '4k', '8k', 'uhd', 'hd', 'sd',
+  '2160p', '1080p', '1080i', '720p', '576p', '480p', '4k', '8k', 'uhd', 'hd',
+  'sd',
   // 片源
   'bluray', 'blu', 'ray', 'bdrip', 'brrip', 'bd', 'remux', 'webrip', 'webdl',
   'web', 'dl', 'hdtv', 'dvdrip', 'dvd', 'hdrip', 'cam', 'ts', 'tc',
@@ -137,9 +138,8 @@ String? _episodeKey(String stem) {
   //
   // 只收 2–3 位：`2049` 这种四位数是年份或片名里的数字，收进来会让
   // `Blade.Runner.2049.mkv` 与 `Blade.Runner.2049.2017.zh.srt` 判成两集。
-  final loose = RegExp(r'(?<![0-9a-z])(\d{2,3})(?![0-9a-z])')
-      .allMatches(stem)
-      .toList();
+  final loose =
+      RegExp(r'(?<![0-9a-z])(\d{2,3})(?![0-9a-z])').allMatches(stem).toList();
   if (loose.isNotEmpty) {
     return 'e${int.parse(loose.last.group(1)!)}';
   }
@@ -155,7 +155,8 @@ String? _episodeKey(String stem) {
   return null;
 }
 
-bool _isAsciiLetter(int c) => (c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a);
+bool _isAsciiLetter(int c) =>
+    (c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a);
 
 /// 摘掉发布组/质量/语言标签后的主体，只留片名与本集编号。
 String _core(String stem) {

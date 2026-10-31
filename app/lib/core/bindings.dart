@@ -12,6 +12,23 @@ import 'package:ffi/ffi.dart';
 
 const int abiVersion = 1;
 
+/// 内核事件类型，与 `native/include/lanplayer/lp_types.h` 的 `LP_EVENT_*` 一一对应。
+///
+/// 以前 Dart 侧直接写 `case 1:` / `case 6:`，加事件或调顺序时没人会去翻 C 头
+/// 文件核对；现在两边的名字对得上，改一处就能 grep 到另一处。
+abstract final class LpEvent {
+  static const int state = 1;
+  static const int position = 2;
+  static const int mediaInfo = 3;
+  static const int error = 4;
+  static const int ended = 5;
+  static const int subtitle = 6;
+  static const int stats = 7;
+  static const int log = 8;
+  static const int buffering = 9;
+  static const int tracks = 10;
+}
+
 /// 一帧缩略图：[rgba] 是每像素 4 字节的 RGBA8888，行间无 padding。
 class ThumbnailResult {
   const ThumbnailResult(
@@ -96,13 +113,6 @@ typedef _SurfaceD = int Function(
 
 typedef _SurfaceSizeC = Int32 Function(Pointer<Void> player, Int32 w, Int32 h);
 typedef _SurfaceSizeD = int Function(Pointer<Void> player, int w, int h);
-
-typedef LpFrameCbC = Void Function(Pointer<Void> user);
-
-typedef LpInstallFrameCbC = Int32 Function(Pointer<Void> player,
-    Pointer<NativeFunction<LpFrameCbC>> cb, Pointer<Void> user);
-typedef LpInstallFrameCbD = int Function(Pointer<Void> player,
-    Pointer<NativeFunction<LpFrameCbC>> cb, Pointer<Void> user);
 
 typedef _OptionC = Int32 Function(
     Pointer<Void> player, Pointer<Utf8> key, Pointer<Utf8> value);
@@ -232,9 +242,6 @@ class NativeCore {
           'lp_player_set_surface_size');
   late final _Int32ArgD _setScaleMode =
       _lib.lookupFunction<_Int32ArgC, _Int32ArgD>('lp_player_set_scale_mode');
-  late final LpInstallFrameCbD _installFrameCb =
-      _lib.lookupFunction<LpInstallFrameCbC, LpInstallFrameCbD>(
-          'lp_player_install_frame_callback');
   late final _OptionD _setOption =
       _lib.lookupFunction<_OptionC, _OptionD>('lp_player_set_option');
   late final _SourceListD _sourceList =
@@ -383,10 +390,6 @@ class NativeCore {
       _setSurfaceSize(p, width, height);
   int setScaleMode(Pointer<Void> p, int mode) => _setScaleMode(p, mode);
 
-  void installFrameCallback(Pointer<Void> p,
-          Pointer<NativeFunction<LpFrameCbC>> cb, Pointer<Void> user) =>
-      _installFrameCb(p, cb, user);
-
   int setOption(Pointer<Void> p, String key, String value) {
     final k = key.toNativeUtf8();
     final v = value.toNativeUtf8();
@@ -459,8 +462,8 @@ class NativeCore {
         _freeBuffer(outPixels.value);
         return null;
       }
-      final bytes =
-          Uint8List.fromList(outPixels.value.cast<Uint8>().asTypedList(w * h * 4));
+      final bytes = Uint8List.fromList(
+          outPixels.value.cast<Uint8>().asTypedList(w * h * 4));
       _freeBuffer(outPixels.value);
       return ThumbnailResult(width: w, height: h, rgba: bytes);
     } finally {

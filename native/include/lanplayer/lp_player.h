@@ -5,8 +5,9 @@
  * serialised internally; only `lp_player_open` is asynchronous (it returns
  * immediately and reports progress through LP_EVENT_STATE).
  *
- * Events are delivered on the player's own worker thread; the Dart isolate
- * marshals them to the UI thread (see lib/core/ffi/event_port.dart).
+ * Events are delivered on the player's own worker thread; the Dart side hops
+ * them to the UI isolate through the NativePort callback registered in
+ * app/lib/core/player_controller.dart.
  */
 #ifndef LANPLAYER_LP_PLAYER_H
 #define LANPLAYER_LP_PLAYER_H

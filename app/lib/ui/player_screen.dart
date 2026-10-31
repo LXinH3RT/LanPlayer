@@ -458,7 +458,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   /// 快进/快退的步长，取自设置。播放页拿到的是开片那一刻的一份拷贝，
   /// 所以设置里改了要在下次进入播放页时生效 —— 与音量、倍速的处理一致。
-  int get _seekStep => PlaybackSettings.clampSeekStep(_settings.seekStepSeconds);
+  int get _seekStep =>
+      PlaybackSettings.clampSeekStep(_settings.seekStepSeconds);
 
   void _seekRelative(int seconds) {
     _player.seekBy(seconds * 1000000);
@@ -1130,8 +1131,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   ///
   /// 表来自用户绑定（设置 → 快捷键），不再是写死的一串 —— 用户改了键之后
   /// 这里必须跟着变，否则改完还是老键生效。
-  bool _isPlayerKey(LogicalKeyboardKey key) =>
-      _settings.shortcuts.ownsKey(key);
+  bool _isPlayerKey(LogicalKeyboardKey key) => _settings.shortcuts.ownsKey(key);
 
   /// 抬起触发状态（长按不生效）。
   late final KeyReleaseTrigger _keys = KeyReleaseTrigger(_isPlayerKey);

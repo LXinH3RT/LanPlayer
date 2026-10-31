@@ -63,14 +63,6 @@ class VideoTextureBridge {
     } on MissingPluginException catch (_) {}
   }
 
-  static Future<void> resize(int width, int height) async {
-    try {
-      await _channel.invokeMethod<void>(
-          'resizeTexture', {'width': width, 'height': height});
-    } on PlatformException catch (_) {
-    } on MissingPluginException catch (_) {}
-  }
-
   /// Toggles the desktop window between windowed and fullscreen.
   ///
   /// `SystemChrome.setEnabledSystemUIMode` only hides the status bar on mobile,

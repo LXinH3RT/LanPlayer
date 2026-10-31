@@ -109,8 +109,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
       // 换目录后从顶上开始看，除非探针明确要求跳到底。
-      final target =
-          jumpToEnd ? _scroll.position.maxScrollExtent : 0.0;
+      final target = jumpToEnd ? _scroll.position.maxScrollExtent : 0.0;
       _scroll.jumpTo(target);
     });
   }
@@ -595,9 +594,9 @@ class _TabTile extends StatelessWidget {
     // 选中与否只靠颜色和底色区分，不靠字号大小 —— 大小一变，扫视时会
     // 觉得那是两种层级的东西。
     final style = tab.textStyle(context)?.copyWith(
-      color: selected ? scheme.primary : scheme.onSurface,
-      fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-    );
+          color: selected ? scheme.primary : scheme.onSurface,
+          fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+        );
     if (compact) {
       return InkWell(
         key: tab.tabKey,

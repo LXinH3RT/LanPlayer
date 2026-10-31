@@ -31,6 +31,7 @@
 
 #include "lanplayer/lp_log.h"
 #include "lanplayer/lp_player.h"
+#include "player_internal.h"
 #include "platform/win32/win32_preview.h"
 
 static const wchar_t *kClassName = L"LanPlayerPreview";
@@ -78,32 +79,6 @@ static void utf8_to_wide(const char *src, wchar_t *dst, int cap)
     dst[cap - 1] = 0;
 }
 
-/* Copies the value of a JSON string field into out (UTF-8). */
-static void json_str(const char *json, const char *key, char *out, size_t cap)
-{
-    out[0] = 0;
-    char pattern[64];
-    snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
-    const char *p = strstr(json, pattern);
-    if (!p) {
-        return;
-    }
-    p += strlen(pattern);
-    size_t i = 0;
-    while (*p && *p != '"' && i + 1 < cap) {
-        if (*p == '\\' && p[1]) {
-            p++;
-            if (*p == 'n') {
-                out[i++] = ' ';
-                p++;
-                continue;
-            }
-        }
-        out[i++] = *p++;
-    }
-    out[i] = 0;
-}
-
 static void app_set_title(void)
 {
     if (!g_app.hwnd) {
@@ -130,12 +105,12 @@ static void on_event(void *user, int32_t event, const char *json, int64_t value)
     switch (event) {
     case LP_EVENT_MEDIA_INFO: {
         char codec[64] = {0}, hw[64] = {0}, fmt[64] = {0};
-        json_str(payload, "format", fmt, sizeof(fmt));
-        json_str(payload, "active", hw, sizeof(hw));
+        lp_json_get_str(payload, "format", fmt, sizeof(fmt));
+        lp_json_get_str(payload, "active", hw, sizeof(hw));
         /* first video codec */
         const char *v = strstr(payload, "\"video\":{");
         if (v) {
-            json_str(v, "codec", codec, sizeof(codec));
+            lp_json_get_str(v, "codec", codec, sizeof(codec));
         }
         wchar_t wcodec[64], whw[64], wfmt[64];
         utf8_to_wide(codec, wcodec, 64);
@@ -147,7 +122,7 @@ static void on_event(void *user, int32_t event, const char *json, int64_t value)
     }
     case LP_EVENT_SUBTITLE: {
         char text[1024];
-        json_str(payload, "text", text, sizeof(text));
+        lp_json_get_str(payload, "text", text, sizeof(text));
         utf8_to_wide(text, g_app.subtitle, 1024);
         if (g_app.hwnd) {
             InvalidateRect(g_app.hwnd, NULL, FALSE);

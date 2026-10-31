@@ -477,7 +477,10 @@ void lp_video_stop(LpPlayer *p)
 {
     lp_pq_abort(&p->video.pq);
     if (p->video.thread_started) {
-        pthread_join(p->video.thread, NULL);
+        int jr = pthread_join(p->video.thread, NULL);
+        if (jr != 0) {
+            LP_WARN("video", "pthread_join(video) failed: %d", jr);
+        }
         p->video.thread_started = 0;
     }
     if (p->video.hw) {

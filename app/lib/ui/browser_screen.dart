@@ -75,8 +75,7 @@ class _BrowserScreenState extends State<BrowserScreen> {
   /// 必须是实例字段：它记着「这颗键按下了还没抬起」，那是每个页面各自的
   /// 状态，不能做成全局函数。
   late final BackKeyHandler _backKey = BackKeyHandler(
-      key: SettingsStore.instance.value.shortcuts
-          .keyFor(ShortcutAction.back));
+      key: SettingsStore.instance.value.shortcuts.keyFor(ShortcutAction.back));
 
   void _markOnline() {
     final id = _sourceId;

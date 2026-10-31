@@ -51,7 +51,6 @@ class PlayerController extends ChangeNotifier {
 
   /// Set by the player screen; used for auto-advance.
   void Function()? onEnded;
-  void Function()? onReady;
 
   /// Address of the native player, handed to the platform texture bridge.
   Pointer<Void>? get nativeHandle => _player;
@@ -79,8 +78,12 @@ class PlayerController extends ChangeNotifier {
     _core.setEventCallback(p, _eventCb.nativeFunction, nullptr);
   }
 
-  /// Android: attach the SurfaceTexture owned by the platform view.
-  /// Apple: installs the frame callback used by the FlutterTexture bridge.
+  /// Android: attach the SurfaceTexture owned by the platform view — the
+  /// native side draws straight into `windowPtr`.
+  ///
+  /// Desktop: the window is drawn by the platform plugin, so the core never
+  /// sees the window handle; `textureId` is only recorded here so the UI can
+  /// build a `Texture` widget.
   void attachVideo(
       {int? textureId,
       int windowPtr = 0,
@@ -240,13 +243,13 @@ class PlayerController extends ChangeNotifier {
     }
     final map = decodeJson(raw) ?? const <String, dynamic>{};
     switch (event) {
-      case 1: // state
+      case LpEvent.state:
         state = playerStateFromInt((map['state'] as num?)?.toInt() ?? 0);
         if (state == PlayerState.error) {
           buffering = false;
         }
         break;
-      case 2: // position
+      case LpEvent.position:
         // 进度条与时间标签自己订阅 positionUsNotifier，不走整页重建。
         // 只有时长第一次确定（或换片后变了）时才需要通知整页。
         final pos = (map['pos'] as num?)?.toInt() ?? 0;
@@ -258,8 +261,8 @@ class PlayerController extends ChangeNotifier {
           notifyListeners();
         }
         return;
-      case 3: // media info
-      case 10: // tracks
+      case LpEvent.mediaInfo:
+      case LpEvent.tracks:
         // An empty payload means "the core had nothing to say", not "this file
         // has no tracks". Older cores emitted exactly that on open, which wiped
         // the list MEDIA_INFO had just delivered and made the sheets claim the
@@ -270,25 +273,24 @@ class PlayerController extends ChangeNotifier {
         media = MediaInfo.fromJson(map);
         if (media.durationUs > 0) durationUs = media.durationUs;
         hwActive = media.hw;
-        onReady?.call();
         buffering = false;
         break;
-      case 4: // error
+      case LpEvent.error:
         error = map['message'] as String? ?? '播放失败';
         state = PlayerState.error;
         buffering = false;
         break;
-      case 5: // ended
+      case LpEvent.ended:
         state = PlayerState.ended;
         final cb = onEnded;
         if (cb != null) cb();
         break;
-      case 6: // subtitle
+      case LpEvent.subtitle:
         cue = SubtitleCue.fromJson(map);
         // 字幕层自己订阅这个通道，别再触发整页重建。
         cueNotifier.value = cue;
         return;
-      case 7: // stats
+      case LpEvent.stats:
         fps = (map['fps'] as num?)?.toDouble() ?? 0;
         dropped = (map['dropped'] as num?)?.toInt() ?? 0;
         avDiffUs = (map['av_diff'] as num?)?.toInt() ?? 0;
@@ -299,9 +301,13 @@ class PlayerController extends ChangeNotifier {
         // unless the user asked for the debugging overlay.
         if (!wantsStats) return;
         break;
-      case 9: // buffering
+      case LpEvent.buffering:
         buffering = map['buffering'] == true;
         break;
+      case LpEvent.log:
+        // 内核当前只在调试构建里发这条，桌面/发布版永远收不到。留一个空
+        // 分支而不是掉进 default，是为了让「这个编号是已知的」写进代码。
+        return;
       default:
         return;
     }
@@ -312,7 +318,16 @@ class PlayerController extends ChangeNotifier {
   /// 实时数字之前必须先把这里打开。
   bool wantsStats = false;
 
-  Future<void> disposePlayer() async {
+  bool _torn = false;
+
+  /// 关掉内核播放器并回收资源。同步完成 —— 内核侧的 close / destroy 都是
+  /// 同步调用，这里只是把 FFI 调用和通知器收尾集中到一处。
+  ///
+  /// 返回 true 表示这次调用真的收拾了；重复调用返回 false，调用方据此决定
+  /// 要不要再走 `super.dispose()`（重复 dispose 在 debug 下会抛）。
+  bool _teardown() {
+    if (_torn) return false;
+    _torn = true;
     final p = _player;
     _player = null;
     if (p != null) {
@@ -322,21 +337,18 @@ class PlayerController extends ChangeNotifier {
     _eventCb.close();
     positionUsNotifier.dispose();
     cueNotifier.dispose();
+    return true;
+  }
+
+  /// 与 [dispose] 同义，保留异步签名给「先关页面、再等一拍」的调用点。
+  Future<void> disposePlayer() async {
+    if (!_teardown()) return;
     super.dispose();
   }
 
   @override
   void dispose() {
-    // Fire and forget: closing is synchronous on the native side.
-    final p = _player;
-    _player = null;
-    if (p != null) {
-      _core.close(p);
-      _core.destroyPlayer(p);
-    }
-    _eventCb.close();
-    positionUsNotifier.dispose();
-    cueNotifier.dispose();
+    if (!_teardown()) return;
     super.dispose();
   }
 }

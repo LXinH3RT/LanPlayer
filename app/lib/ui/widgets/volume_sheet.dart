@@ -87,7 +87,8 @@ class VolumeSheet extends StatefulWidget {
   /// 的 delta 是连续的小值，所以按 `dy / scrollPerNotch` 折算成「格」再乘
   /// [wheelStep]，不是简单地按符号加减一格。
   static double wheelVolume(double volume, double scrollDelta) {
-    final display = displayOf(volume) + (-scrollDelta / scrollPerNotch) * wheelStep;
+    final display =
+        displayOf(volume) + (-scrollDelta / scrollPerNotch) * wheelStep;
     return volumeOf(display);
   }
 
@@ -178,9 +179,8 @@ class _VolumeSheetState extends State<VolumeSheet> {
                     // 滑杆按显示值走，回调时换算回增益。
                     onChanged: _setDisplay,
                     // 松手才落盘（见 onVolumeCommitted 的注释）。
-                    onChangeEnd: (display) =>
-                        widget.onVolumeCommitted?.call(
-                            VolumeSheet.volumeOf(display)),
+                    onChangeEnd: (display) => widget.onVolumeCommitted
+                        ?.call(VolumeSheet.volumeOf(display)),
                   ),
                 ),
                 SizedBox(

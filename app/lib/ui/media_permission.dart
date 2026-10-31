@@ -36,21 +36,10 @@ class MediaPermission {
   /// 只在 Android 上需要；其它平台一律当作已授权。
   static bool get isNeeded => Platform.isAndroid;
 
-  /// 查询当前状态，不弹窗。
-  static Future<MediaPermissionResult> status() async {
-    if (!isNeeded) return MediaPermissionResult.full;
-    try {
-      final res = await _channel.invokeMapMethod<String, dynamic>('status');
-      return MediaPermissionResult.fromMap(res);
-    } on PlatformException catch (_) {
-      return MediaPermissionResult.denied;
-    } on MissingPluginException catch (_) {
-      // 平台通道不在（测试宿主、桌面）时不要卡住流程。
-      return MediaPermissionResult.full;
-    }
-  }
-
   /// 申请权限。已经授权过就直接返回，不弹窗。
+  ///
+  /// 没有「只查询不申请」的入口：Android 上查询本身也要走通道，而唯一
+  /// 需要权限的时机就是打开目录，直接申请比先查再申请少一次往复。
   static Future<MediaPermissionResult> request() async {
     if (!isNeeded) return MediaPermissionResult.full;
     try {

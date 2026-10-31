@@ -135,6 +135,16 @@ class LocalFolderStore extends ChangeNotifier {
     return null;
   }
 
+  /// 本地目录的 id 生成器。
+  ///
+  /// 只用毫秒时间戳会在「同一次点击里加两个目录」时撞车（两台机械盘挂载
+  /// 点连着加就是这样），后加的那条会把前一条覆盖掉。补一个进程内单调
+  /// 递增的序号，既不引入随机性也保证唯一。
+  static int _idSeq = 0;
+
+  static String _newId(String prefix) =>
+      '$prefix-${DateTime.now().millisecondsSinceEpoch}-${_idSeq++}';
+
   /// 加入首页。同一个路径重复添加时只更新名字，不产生第二条记录 ——
   /// 否则首页会出现两块内容完全一样的目录。
   Future<LocalFolder> add({
@@ -150,7 +160,7 @@ class LocalFolderStore extends ChangeNotifier {
       return existing;
     }
     final f = LocalFolder(
-      id: 'dir-${DateTime.now().millisecondsSinceEpoch}',
+      id: _newId('dir'),
       label: label,
       path: path,
       isFile: isFile,

@@ -32,8 +32,8 @@ class ShortcutRecorder extends StatefulWidget {
   /// 「取消」和「清除绑定」都要能从对话框传回来，而 `showDialog` 的 `null`
   /// 只能表示一件事，所以用一个小的结果类型区分两者 —— 拿 keyId 0 之类
   /// 的哨兵键来冒充「清除」迟早会和真实键撞上。
-  static Future<ShortcutPick?> show(BuildContext context,
-      ShortcutAction action, LogicalKeyboardKey? current) {
+  static Future<ShortcutPick?> show(BuildContext context, ShortcutAction action,
+      LogicalKeyboardKey? current) {
     return showDialog<ShortcutPick>(
       context: context,
       builder: (_) => ShortcutRecorder(action: action, current: current),
@@ -138,9 +138,7 @@ class ShortcutSection extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  bindings.isDefault
-                      ? '键盘快捷键，全部是出厂设置。'
-                      : '键盘快捷键，已按你的设置改过。',
+                  bindings.isDefault ? '键盘快捷键，全部是出厂设置。' : '键盘快捷键，已按你的设置改过。',
                   style: theme.textTheme.bodySmall
                       ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                 ),
@@ -192,8 +190,7 @@ class ShortcutSection extends StatelessWidget {
 
   Widget _row(BuildContext context, ShortcutAction action) {
     final key = bindings.keyFor(action);
-    final changed = bindings.isDefault == false &&
-        (key != action.defaultKey);
+    final changed = bindings.isDefault == false && (key != action.defaultKey);
     return ListTile(
       title: Text(action.label),
       subtitle: changed && action.defaultKey != null

@@ -482,8 +482,6 @@ class LanPlayerVideoPlugin : public flutter::Plugin {
     } else if (method == "attachPlayer") {
       AttachPlayer(call.arguments());
       result->Success();
-    } else if (method == "resizeTexture") {
-      result->Success();  // the texture is laid out by Flutter
     } else if (method == "destroyTexture") {
       DestroyTexture();
       result->Success();

@@ -37,7 +37,8 @@ class SubtitleAnimator {
   ///
   /// 多个动画可以同时存在（`\t(0,300,\fscx120)\t(300,600,\fscx100)`），
   /// 后写的覆盖先写的，与 libass 一致。
-  static ResolvedSpan resolve(SubtitleSpan run, double nowMs) {
+  static ResolvedSpan resolve(SubtitleSpan run, double nowMs,
+      {int inheritColor = 0xFFFFFFFF}) {
     var color = run.color;
     final outlineColor = run.outlineColor;
     var scaleX = run.scaleX;
@@ -49,15 +50,17 @@ class SubtitleAnimator {
     var shadow = run.shadow;
     var alpha = run.alpha;
     var clip = run.clip;
-    final clipOn = run.clipOn;
+    var clipOn = run.clipOn;
     // `\iclip` 的逆标记不参与插值：`\t` 只能改矩形，改不了「保留里面还是外面」。
     final clipInverse = run.clipInverse;
 
     for (final anim in run.anims) {
       final p = progress(anim, nowMs);
       if (anim.has(SubtitleAnim.fieldColor)) {
-        // 动画的起点是 run 自己的颜色，终点是 anim 给的颜色。
-        final from = _colorOr(run.color, 0xFFFFFFFF);
+        // 动画的起点是 run 自己的颜色，终点是 anim 给的颜色。run 没写颜色
+        // （0）时从「继承色」起步 —— 用白色当起点会让深色样式里的行在动画
+        // 开头白闪一下，与 VSFilter 的语义也不符。
+        final from = _colorOr(run.color, inheritColor);
         color = _lerpColor(from, anim.color, p);
       }
       if (anim.has(SubtitleAnim.fieldScaleX)) {
@@ -89,7 +92,11 @@ class SubtitleAnimator {
         alpha = _lerp(alpha, anim.alpha, p);
       }
       if (anim.has(SubtitleAnim.fieldClip) && anim.clip.length == 4) {
+        // `\t(\clip(...))` 单独出现时，run 本身没有 clip，只有动画终点有。
+        // 以前这里只改矩形不置 clipOn，于是整条动画白算（矩形算对了，但
+        // 下游按 clipOn == false 直接不裁）。
         clip = _lerpRect(clip, anim.clip, p);
+        clipOn = true;
       }
     }
 

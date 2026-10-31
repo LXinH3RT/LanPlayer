@@ -102,7 +102,8 @@ class AppStorage {
   /// 就是半截 JSON。下次启动 `readJson` 把它当损坏文件丢掉，用户看到的是
   /// 所有设置回默认值 —— 而这个触发很容易碰到：拖一次音量滑杆每帧都
   /// `save()`。串行化按文件名分队列，不同文件之间仍可并行。
-  static final Map<String, Future<void>> _writeChains = <String, Future<void>>{};
+  static final Map<String, Future<void>> _writeChains =
+      <String, Future<void>>{};
 
   static Future<void> writeJson(String name, Map<String, dynamic> data) {
     final prev = _writeChains[name] ?? Future<void>.value();

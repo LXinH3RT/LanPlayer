@@ -2372,6 +2372,199 @@ def check_script_encoding() -> None:
         problems.extend(offenders)
 
 
+def check_dead_code() -> None:
+    """Grep-level guard for the P3 clean-up (docs/code-review.md chapter 5).
+
+    Every item here was a real bug of the same shape: code that looks alive but
+    is not wired to anything. None of them crash or print a warning, so the only
+    way to keep them from creeping back is a static assertion. Each entry below
+    names what breaks if the old code returns.
+
+    The positive controls matter as much as the negative ones: deleting a dead
+    function is fine until it was not actually dead.
+    """
+    def body(rel: str) -> str:
+        path = ROOT / rel
+        if not path.exists():
+            problems.append(f"{rel} missing")
+            return ""
+        return path.read_text(encoding="utf-8")
+
+    # 死代码：这些函数/方法全仓无调用者，留着只会让后来者以为有入口。
+    for rel, token, why in (
+        ("app/lib/ui/media_permission.dart",
+         "static Future<MediaPermissionResult> status()",
+         "status() had no caller; the only moment permissions are needed is "
+         "opening a directory, and request() already returns the current "
+         "result, so a query-only entry point is a second round trip"),
+        ("app/lib/ui/feedback.dart",
+         "Future<void> showSnack(",
+         "showSnack() had no caller; every call site uses "
+         "ScaffoldMessenger.showSnackBar directly"),
+        ("app/lib/player/playlist.dart",
+         "parseEpisode(",
+         "parseEpisode() had no caller; episode order comes from the core's "
+         "natural_cmp, and keeping a second parser invites the two to disagree"),
+        ("app/lib/player/playlist.dart",
+         "appendEpisodes(",
+         "appendEpisodes() had no caller; a playlist is always built from a "
+         "whole listing"),
+        ("app/lib/ui/video_texture.dart",
+         "static Future<void> resize(",
+         "VideoTextureBridge.resize() had no Dart caller and the Windows "
+         "plugin answered it with a bare Success()"),
+        ("packages/lanplayer_video/windows/lanplayer_video_plugin.cpp",
+         '"resizeTexture"',
+         "the resizeTexture method channel case is dead: nothing on the Dart "
+         "side calls it, and it only acknowledged the call"),
+        ("app/lib/core/bindings.dart",
+         "installFrameCallback",
+         "installFrameCallback() had no caller and the symbol it binds is not "
+         "in lp_map.txt, so it could never have resolved at runtime"),
+        ("app/lib/core/player_controller.dart",
+         "void Function()? onReady;",
+         "PlayerController.onReady was never assigned; media readiness is "
+         "observed through the mediaInfo event"),
+        ("native/src/player_internal.h",
+         "LP_PLATFORM_DESKTOP",
+         "the LP_PLATFORM_DESKTOP/APPLE/ANDROID block was defined and never "
+         "used by any #if; the real platform switch is the CMake source list"),
+        ("app/lib/data/track_prefs.dart",
+         "[allowNull]",
+         "pickTrack's doc promised an allowNull parameter that does not exist"),
+        ("native/include/lanplayer/lp_player.h",
+         "event_port.dart",
+         "the header pointed at a Dart file that no longer exists"),
+    ):
+        if token in body(rel):
+            problems.append(f"{rel}: {why}")
+
+    # lp_preview.c 里手写的 json_str() 与内核 lp_json_get_str 重复，
+    # 两份实现对转义与嵌套的处理迟早走岔（预览窗口显示错的值）。
+    preview = body("native/src/app/lp_preview.c")
+    if "static void json_str(" in preview:
+        problems.append("native/src/app/lp_preview.c reintroduced its own "
+                        "json_str(); the preview probe would parse events with "
+                        "a second, subtly different parser than the one the "
+                        "core ships")
+    if preview and "lp_json_get_str(" not in preview:
+        problems.append("native/src/app/lp_preview.c no longer reads the event "
+                        "payload through lp_json_get_str()")
+
+    # demux 的 discardcorrupt 提示以前写进一个随即 free 掉的临时字典，
+    # 等于什么都没做。字典必须交给 avformat_find_stream_info。
+    demux = body("native/src/core/demux.c")
+    if demux:
+        if 'hint_dict(&ifo, "discardcorrupt", "1")' not in demux:
+            problems.append("native/src/core/demux.c lost the discardcorrupt "
+                            "hint; high-bitrate files decode corrupt packets "
+                            "that the player then has to drop")
+        elif "avformat_find_stream_info(fmt, &ifo)" not in demux:
+            problems.append("native/src/core/demux.c builds the options "
+                            "dictionary but does not hand it to "
+                            "avformat_find_stream_info(); freeing it right "
+                            "after filling it is the same as not setting it")
+
+    # pthread_join 的返回值。失败说明线程还活着，随后释放它的上下文就是
+    # use-after-free —— 以前所有调用点都无声地扔掉了返回值。
+    ignores: list[str] = []
+    for rel in (
+        "native/src/core/audio.c",
+        "native/src/core/video.c",
+        "native/src/core/player.c",
+        "native/src/platform/stub/stub_platform.c",
+        "native/src/platform/win32/win32_platform.c",
+    ):
+        src = body(rel)
+        for line in src.splitlines():
+            stripped = line.strip()
+            # 只认「单独一行、既没接返回值也没断言」的调用。
+            if not stripped.startswith("pthread_join("):
+                continue
+            ignores.append(f"{rel}:{line.strip()}")
+    if ignores:
+        problems.append("pthread_join return value ignored again at "
+                        + "; ".join(ignores)
+                        + " -- a failed join means the thread is still running "
+                          "while its context gets freed")
+
+    # 事件类型曾经是一串裸字面量（case 1: ... case 10:），与 lp_types.h
+    # 的 LP_EVENT_* 各写一份。改常量表就等于改协议，得两边一起看。
+    bindings = body("app/lib/core/bindings.dart")
+    if bindings and "abstract final class LpEvent" not in bindings:
+        problems.append("app/lib/core/bindings.dart lost the LpEvent constant "
+                        "table; raw ints in the event switch drift from "
+                        "native/include/lanplayer/lp_types.h")
+    controller = body("app/lib/core/player_controller.dart")
+    if controller:
+        if "case LpEvent.position:" not in controller:
+            problems.append("player_controller.dart no longer names the event "
+                            "constants; a renumbered LP_EVENT_* would silently "
+                            "route events to the wrong branch")
+        # dispose 与 disposePlayer 曾经逐行相同、各调一次 super.dispose()。
+        if "bool _teardown()" not in controller:
+            problems.append("player_controller.dart lost the shared _teardown(); "
+                            "dispose() and disposePlayer() must not both close "
+                            "the player, or the second call double-frees the "
+                            "native handle")
+        if controller.count("super.dispose();") != 2:
+            problems.append("player_controller.dart should call super.dispose() "
+                            "exactly twice (once per public teardown path); "
+                            "duplicating it inside the shared helper would "
+                            "dispose the ChangeNotifier twice")
+
+    # main.dart 的注释写着「并行加载」而代码是四个串行 await：启动白屏的
+    # 长度等于四次磁盘 IO 之和。
+    main_dart = body("app/lib/main.dart")
+    if main_dart and "Future.wait<void>(" not in main_dart:
+        problems.append("app/lib/main.dart is back to serialising the four "
+                        "store loads; the start-up splash lasts as long as the "
+                        "sum of four reads instead of the slowest one")
+
+    # 目录 id 只用毫秒时间戳，同一毫秒内加两个目录会撞同一个 id，
+    # 随后删除其中一个会把另一个一起带走。
+    folders = body("app/lib/data/folders.dart")
+    if folders:
+        if "_newId(" not in folders:
+            problems.append("app/lib/data/folders.dart lost the sequence-"
+                            "stamped id helper")
+        if "'dir-${DateTime.now().millisecondsSinceEpoch}'" in folders:
+            problems.append("app/lib/data/folders.dart is back to a bare "
+                            "millisecond id; two folders added in the same "
+                            "millisecond collide, and removing one removes both")
+
+    # 源码里混进控制字符：cat 看得见、diff 看不见，改了行却不知道改了什么。
+    for rel in (
+        "app/lib/data/models.dart",
+        "app/lib/data/subtitle_anim.dart",
+        "app/lib/core/player_controller.dart",
+        "app/lib/ui/player_screen.dart",
+    ):
+        text = body(rel)
+        bad = [f"0x{ord(ch):02x}" for ch in text if ord(ch) < 32
+               and ch not in "\n\r\t"]
+        if bad:
+            problems.append(f"{rel} contains control character(s) {', '.join(sorted(set(bad)))}")
+
+    # \t(\clip(...)) 只改矩形不置 clipOn 的话，整条动画白算；
+    # 颜色动画从白色起步会让深色样式在动画开头闪一下。
+    anim = body("app/lib/data/subtitle_anim.dart")
+    if anim:
+        if "inheritColor" not in anim:
+            problems.append("app/lib/data/subtitle_anim.dart lost inheritColor; "
+                            "a colour animation on a run without \\c would "
+                            "start from white and flash")
+        clip_branch = anim.split("fieldClip", 1)[-1][:400]
+        if "clipOn = true;" not in clip_branch:
+            problems.append("app/lib/data/subtitle_anim.dart: the clip "
+                            "animation updates the rectangle but not clipOn, so "
+                            "\\t(\\clip(...)) never takes effect")
+
+    notes.append("dead code: the review's unused entry points are gone, the "
+                 "event table has names, pthread_join results are checked, and "
+                 "no control characters hide in the Dart sources")
+
+
 def check_track_selection() -> None:
     """Guard the audio/subtitle track picker.
 
@@ -4078,6 +4271,7 @@ def main() -> int:
     check_release_policy()
     check_player_layout()
     check_player_rebuild_scope()
+    check_dead_code()
     check_script_encoding()
     check_track_selection()
     check_subtitle_fonts()

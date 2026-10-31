@@ -406,7 +406,10 @@ void lp_audio_stop(LpPlayer *p)
         lp_ring_abort(&p->audio.ring);
     }
     if (p->audio.thread_started) {
-        pthread_join(p->audio.thread, NULL);
+        int jr = pthread_join(p->audio.thread, NULL);
+        if (jr != 0) {
+            LP_WARN("audio", "pthread_join(audio) failed: %d", jr);
+        }
         p->audio.thread_started = 0;
     }
     if (p->sink) {

@@ -46,10 +46,12 @@ Future<void> _boot() async {
     // ignore: avoid_print
     print("LanPlayer storage error: $e");
   }
-  await ServerStore.instance.load();
-  await LocalFolderStore.instance.load();
-  await SettingsStore.instance.load();
-  await ProgressStore.instance.load();
+  await Future.wait<void>([
+    ServerStore.instance.load(),
+    LocalFolderStore.instance.load(),
+    SettingsStore.instance.load(),
+    ProgressStore.instance.load(),
+  ]);
   // ignore: avoid_print
   print("LanPlayer loaded: servers=${ServerStore.instance.servers.length} "
       "folders=${LocalFolderStore.instance.folders.length}");

@@ -49,8 +49,9 @@ class _NumberFieldState extends State<NumberField> {
       TextEditingController(text: _format(widget.value));
   late final FocusNode _focus = FocusNode()..addListener(_onFocusChange);
 
-  String _format(num v) =>
-      widget.decimals == 0 ? v.round().toString() : v.toStringAsFixed(widget.decimals);
+  String _format(num v) => widget.decimals == 0
+      ? v.round().toString()
+      : v.toStringAsFixed(widget.decimals);
 
   @override
   void didUpdateWidget(NumberField oldWidget) {
@@ -105,7 +106,8 @@ class _NumberFieldState extends State<NumberField> {
         ],
         decoration: InputDecoration(
           isDense: true,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
           border: const OutlineInputBorder(),
           suffixText: widget.suffix,
         ),

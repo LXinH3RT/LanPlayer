@@ -63,7 +63,14 @@ class PlaybackSettings {
   /// 会让用户以为设置没生效。0.25 比 0.5 更慢，适合逐句对字幕；超过 2.0
   /// 音调补偿会明显失真，所以不给。
   static const List<double> speedSteps = [
-    0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0,
+    1.25,
+    1.5,
+    1.75,
+    2.0,
   ];
 
   static const double speedDefault = 1.0;
@@ -337,8 +344,10 @@ class DirectoryListing {
   /// 以前 `subtitlesFor` 每次都重新扫一遍 `subtitles` 并逐条做配对判定，
   /// 而调用方是「每个视频行一次、每行字幕再各一次」，滚动时退化成
   /// O(n²)/O(n³)。配对结果只取决于 `entries`，所以建表。
-  late final ({Map<String, List<MediaEntry>> byVideo,
-      Map<String, MediaEntry> owner}) _subtitleIndex = () {
+  late final ({
+    Map<String, List<MediaEntry>> byVideo,
+    Map<String, MediaEntry> owner
+  }) _subtitleIndex = () {
     final byVideo = <String, List<MediaEntry>>{};
     final owner = <String, MediaEntry>{};
     if (subtitles.isEmpty) return (byVideo: byVideo, owner: owner);
@@ -996,7 +1005,7 @@ class SubtitleLine {
             r.border >= 0 ||
             r.shadow >= 0 ||
             r.font.isNotEmpty ||
-            // 高级特性同样算「这一行有内联样式」：只带 lpha / \clip /
+            // 高级特性同样算「这一行有内联样式」：只带 \alpha / \clip /
             // \p 或卡拉 OK 的行，整行退回纯文本就把这些效果全丢了。
             r.alpha < 1.0 ||
             r.karaokeKind != 0 ||

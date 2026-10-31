@@ -68,8 +68,8 @@ class MediaRow extends StatelessWidget {
         entry.isVideo ? listing.subtitlesFor(entry) : const <MediaEntry>[];
 
     final progress = playable ? ProgressStore.instance.entry(entry.path) : null;
-    final watched = ProgressStore.instance.resumablePosition(
-        entry.path, progress?.durationUs ?? 0);
+    final watched = ProgressStore.instance
+        .resumablePosition(entry.path, progress?.durationUs ?? 0);
     final watchedPct =
         (progress == null || progress.durationUs <= 0 || watched == null)
             ? null
@@ -147,8 +147,9 @@ class MediaRow extends StatelessWidget {
             ),
         ],
       ),
-      trailing:
-          watchedPct != null ? const Icon(Icons.play_circle_outline, size: 20) : null,
+      trailing: watchedPct != null
+          ? const Icon(Icons.play_circle_outline, size: 20)
+          : null,
       onTap: playable ? () => onPlay(entry, subs) : null,
     );
   }

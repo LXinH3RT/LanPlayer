@@ -51,14 +51,6 @@
 extern "C" {
 #endif
 
-#if defined(__ANDROID__)
-#define LP_PLATFORM_ANDROID 1
-#elif defined(__APPLE__)
-#define LP_PLATFORM_APPLE 1
-#else
-#define LP_PLATFORM_DESKTOP 1
-#endif
-
 /* 预读窗口。以前两个队列分别给 256 MB 与 128 MB，而背压条件是
  * 「超过 8 个包且填满容量」（queue.c），也就是最多能堆到 384 MB ——
  * 移动端有真实的 OOM 风险，而这么深的缓冲对局域网播放毫无收益：

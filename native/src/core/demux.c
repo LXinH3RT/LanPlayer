@@ -272,14 +272,16 @@ static int open_input(LpPlayer *p, char *err, size_t errlen)
     }
     p->fmt = fmt;
 
+    /* Limit decoding work for high bitrate sources. The dictionary has to be
+     * built before find_stream_info and handed to it — building it afterwards
+     * and freeing it unread (as this used to do) changed nothing. */
     AVDictionary *ifo = NULL;
-    r = avformat_find_stream_info(fmt, NULL);
+    hint_dict(&ifo, "discardcorrupt", "1");
+    r = avformat_find_stream_info(fmt, &ifo);
+    av_dict_free(&ifo);
     if (r < 0) {
         LP_WARN("demux", "find_stream_info failed: %s", av_err2str(r));
     }
-    /* Limit decoding work for high bitrate sources. */
-    hint_dict(&ifo, "discardcorrupt", "1");
-    av_dict_free(&ifo);
 
     p->duration_us = fmt->duration != AV_NOPTS_VALUE ? fmt->duration : 0;
     p->start_us = fmt->start_time != AV_NOPTS_VALUE ? fmt->start_time : 0;

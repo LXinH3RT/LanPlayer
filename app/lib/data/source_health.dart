@@ -51,9 +51,8 @@ class SourceHealth extends ChangeNotifier {
 /// 用户要求提示里带上「请重新连接服务器或刷新后重试」—— 只说「超时」的话，
 /// 用户不知道下一步该干什么，只会反复点同一个按钮再等十几秒。
 String offlineHint(String url, String? reason) {
-  final head = reason == null || reason.isEmpty
-      ? '无法访问 $url：连接超时或服务器不可达'
-      : reason;
+  final head =
+      reason == null || reason.isEmpty ? '无法访问 $url：连接超时或服务器不可达' : reason;
   return '$head\n\n请重新连接服务器或刷新后重试。';
 }
 

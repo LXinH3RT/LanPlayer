@@ -177,7 +177,7 @@ bool sameLanguage(String a, String b) {
 /// 从轨道里挑一条。
 ///
 /// 返回被选中轨道的 `index`；没有任何轨道时返回 `null`。
-/// [allowNull] 为 true 且偏好是 `auto`、且没有默认标记时，返回第一条。
+/// [preferExternalLast] 为 true 时把外挂轨排在内嵌轨之后。
 int? pickTrack(
   List<TrackChoice> tracks,
   TrackPreference pref, {

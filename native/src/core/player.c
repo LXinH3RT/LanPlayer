@@ -507,7 +507,10 @@ void lp_player_destroy(LpPlayer *p)
      * 线程的退出不能看 abort_request，得看这个专用标志。 */
     atomic_store(&p->quit_request, 1);
     if (p->tick_started) {
-        pthread_join(p->tick_thread, NULL);
+        int jr = pthread_join(p->tick_thread, NULL);
+        if (jr != 0) {
+            LP_WARN("player", "pthread_join(tick) failed: %d", jr);
+        }
         p->tick_started = 0;
     }
     lp_pq_destroy(&p->video.pq);
@@ -575,11 +578,17 @@ int32_t lp_player_close(LpPlayer *p)
         lp_io_abort(p->io);
     }
     if (p->open_started) {
-        pthread_join(p->open_thread, NULL);
+        int jr = pthread_join(p->open_thread, NULL);
+        if (jr != 0) {
+            LP_WARN("player", "pthread_join(open) failed: %d", jr);
+        }
         p->open_started = 0;
     }
     if (p->demux_started) {
-        pthread_join(p->demux_thread, NULL);
+        int jr = pthread_join(p->demux_thread, NULL);
+        if (jr != 0) {
+            LP_WARN("player", "pthread_join(demux) failed: %d", jr);
+        }
         p->demux_started = 0;
     }
     /* The open worker and the demux thread share the same pthread handle; when

@@ -9,30 +9,29 @@ import 'package:flutter/services.dart';
 enum ShortcutAction {
   playPause('play_pause', '播放 / 暂停', ShortcutGroup.playback,
       LogicalKeyboardKey.space),
-  seekBack('seek_back', '快退', ShortcutGroup.playback,
-      LogicalKeyboardKey.arrowLeft),
+  seekBack(
+      'seek_back', '快退', ShortcutGroup.playback, LogicalKeyboardKey.arrowLeft),
   seekForward('seek_forward', '快进', ShortcutGroup.playback,
       LogicalKeyboardKey.arrowRight),
-  volumeUp('volume_up', '音量增大', ShortcutGroup.audio,
-      LogicalKeyboardKey.arrowUp),
-  volumeDown('volume_down', '音量减小', ShortcutGroup.audio,
-      LogicalKeyboardKey.arrowDown),
+  volumeUp(
+      'volume_up', '音量增大', ShortcutGroup.audio, LogicalKeyboardKey.arrowUp),
+  volumeDown(
+      'volume_down', '音量减小', ShortcutGroup.audio, LogicalKeyboardKey.arrowDown),
   mute('mute', '静音 / 取消静音', ShortcutGroup.audio, LogicalKeyboardKey.keyM),
   speedUp('speed_up', '加速一档', ShortcutGroup.playback, null),
   speedDown('speed_down', '减速一档', ShortcutGroup.playback, null),
   speedReset('speed_reset', '恢复 1.0 倍速', ShortcutGroup.playback, null),
-  fullscreen('fullscreen', '全屏 / 退出全屏', ShortcutGroup.window,
-      LogicalKeyboardKey.keyF),
-  escape('escape', '退出全屏，否则返回', ShortcutGroup.window,
-      LogicalKeyboardKey.escape),
+  fullscreen(
+      'fullscreen', '全屏 / 退出全屏', ShortcutGroup.window, LogicalKeyboardKey.keyF),
+  escape(
+      'escape', '退出全屏，否则返回', ShortcutGroup.window, LogicalKeyboardKey.escape),
   subtitleEarlier('subtitle_earlier', '字幕提前 0.1 秒', ShortcutGroup.subtitle,
       LogicalKeyboardKey.bracketLeft),
   subtitleLater('subtitle_later', '字幕延后 0.1 秒', ShortcutGroup.subtitle,
       LogicalKeyboardKey.bracketRight),
-  stats('stats', '显示 / 隐藏解码统计', ShortcutGroup.debug,
-      LogicalKeyboardKey.keyS),
-  back('back', '返回上一级（浏览页）', ShortcutGroup.window,
-      LogicalKeyboardKey.backspace);
+  stats('stats', '显示 / 隐藏解码统计', ShortcutGroup.debug, LogicalKeyboardKey.keyS),
+  back(
+      'back', '返回上一级（浏览页）', ShortcutGroup.window, LogicalKeyboardKey.backspace);
 
   const ShortcutAction(this.id, this.label, this.group, this.defaultKey);
 

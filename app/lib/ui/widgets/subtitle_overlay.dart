@@ -86,8 +86,8 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
   final Map<SubtitleSpan, ResolvedSpan> _resolved =
       <SubtitleSpan, ResolvedSpan>{};
 
-  ResolvedSpan _resolve(SubtitleSpan run) => _resolved.putIfAbsent(
-      run, () => SubtitleAnimator.resolve(run, _nowMs));
+  ResolvedSpan _resolve(SubtitleSpan run) =>
+      _resolved.putIfAbsent(run, () => SubtitleAnimator.resolve(run, _nowMs));
 
   /// 视频画面在给定区域里实际占据的矩形（与 [VideoSurface] 的贴合规则一致）。
   static Rect videoRect(Size area, double aspectRatio, int mode) {

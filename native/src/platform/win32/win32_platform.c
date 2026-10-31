@@ -670,7 +670,10 @@ static int was_start(LpAudioSink *s, int sample_rate, int channels)
     if (FAILED(hr)) {
         LP_WARN("wasapi", "IAudioClient::Start: 0x%08lx", (unsigned long)hr);
         atomic_store(&s->was_quit, 1);
-        pthread_join(s->was_thread, NULL);
+        int jr = pthread_join(s->was_thread, NULL);
+        if (jr != 0) {
+            LP_WARN("wasapi", "pthread_join(render) failed: %d", jr);
+        }
         goto fail;
     }
     s->backend = 1;
@@ -695,7 +698,10 @@ static void was_stop(LpAudioSink *s)
     if (s->was_event) {
         SetEvent(s->was_event);
     }
-    pthread_join(s->was_thread, NULL);
+    int jr = pthread_join(s->was_thread, NULL);
+    if (jr != 0) {
+        LP_WARN("wasapi", "pthread_join(render) failed: %d", jr);
+    }
     if (s->was_client) {
         IAudioClient_Stop(s->was_client);
     }

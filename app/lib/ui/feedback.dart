@@ -17,13 +17,6 @@ Future<void> showError(BuildContext context, String message) async {
   );
 }
 
-void showSnack(BuildContext context, String message) {
-  if (!context.mounted) return;
-  ScaffoldMessenger.of(context)
-    ..hideCurrentSnackBar()
-    ..showSnackBar(SnackBar(content: Text(message)));
-}
-
 /// Secondary line of a server card: root URL plus how it authenticates.
 String describeServer(ServerProfile p) {
   final parts = <String>[p.rootUrl];

@@ -70,7 +70,10 @@ void lp_audio_sink_stop(LpAudioSink *s)
         return;
     }
     atomic_store(&s->run, 0);
-    pthread_join(s->thread, NULL);
+    int jr = pthread_join(s->thread, NULL);
+    if (jr != 0) {
+        LP_WARN("stub", "pthread_join(sink) failed: %d", jr);
+    }
     s->started = 0;
 }
 
