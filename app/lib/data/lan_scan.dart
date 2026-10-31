@@ -67,21 +67,33 @@ String formatIPv4(int value) =>
 /// 列出 [cidr] 里所有可分配的主机地址（去掉网络地址与广播地址）。
 ///
 /// [maxHosts] 是硬上限：/16 有 6 万多个地址，扫完要几分钟，没有意义。
-/// 超过上限时只取「本机所在的那个 /24」——家用 / 小办公室网络实际都是 /24。
-List<String> hostsInSubnet(String cidr, {int maxHosts = 1024}) {
+/// 超过上限时只取**一个** /24 —— 家用 / 小办公室网络实际都是 /24。
+///
+/// [localAddress] 是本机 IPv4 的 32 位整数形式，决定收敛出来的是哪一个 /24。
+/// 踩过的坑：CIDR 文字里常写的是网络地址（`192.168.0.0/16`），按它对齐会去
+/// 扫 `192.168.0.x`，而用户的本机在 `192.168.5.x` —— 扫完一台都找不到。
+/// 传了本机地址、且它确实落在这个 CIDR 里，就收敛到本机所在的那个 /24。
+List<String> hostsInSubnet(String cidr,
+    {int maxHosts = 1024, int? localAddress}) {
   final parsed = parseCidr(cidr);
   if (parsed == null) return const [];
   final (ip, prefix) = parsed;
   if (prefix >= 31) return [formatIPv4(ip)];
 
   var effective = prefix;
+  var pivot = ip;
   if ((1 << (32 - prefix)) - 2 > maxHosts) {
-    // 太大：收敛到本机地址所在的 /24，避免几万个探测把手机打爆。
+    // 太大：收敛到 /24，避免几万个探测把手机打爆。
     effective = 24;
+    final wideNet =
+        prefix == 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF;
+    if (localAddress != null && (localAddress & wideNet) == (ip & wideNet)) {
+      pivot = localAddress;
+    }
   }
   final mask =
       effective == 0 ? 0 : (0xFFFFFFFF << (32 - effective)) & 0xFFFFFFFF;
-  final network = ip & mask;
+  final network = pivot & mask;
   final broadcast = network | (~mask & 0xFFFFFFFF);
 
   final hosts = <String>[];
@@ -127,16 +139,21 @@ Future<List<String>> localSubnets() async {
 ///
 /// [concurrency] 控制同时在飞的连接数；[timeout] 是单次连接超时。
 /// 局域网内 445 开着的机器通常 < 50 ms 就握手完成，超时设 350 ms 足够。
+///
+/// [localAddress] 原样交给 [hostsInSubnet]：网段过大要收敛时，收敛到本机所在
+/// 的那个 /24，而不是 CIDR 文字里那个（常是网络地址）的 /24。
 Future<List<LanHost>> scanSubnet(
   String cidr, {
   int port = 445,
   Duration timeout = const Duration(milliseconds: 350),
   int concurrency = 64,
   int maxHosts = 1024,
+  int? localAddress,
   void Function(int done, int total)? onProgress,
   bool Function()? shouldStop,
 }) async {
-  final hosts = hostsInSubnet(cidr, maxHosts: maxHosts);
+  final hosts =
+      hostsInSubnet(cidr, maxHosts: maxHosts, localAddress: localAddress);
   if (hosts.isEmpty) return const [];
 
   final hits = <String>[];

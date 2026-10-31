@@ -22,6 +22,38 @@ void main() {
     expect(repo.fetchListingForTest, same(listDirectoryInBackground));
   });
 
+  /// 评审 4.8：盘符探测会同步 stat，掉线的网络盘要等系统重试好几秒。
+  /// 它必须在后台 isolate 上跑，而且测试要能换掉它 —— 否则测一次就要真去
+  /// 碰一遍本机所有盘符。
+  test('盘符探测默认也交给后台 isolate，并且可以被替换', () async {
+    expect(MediaRepository().driveScannerForTest,
+        same(windowsDriveRootsInBackground));
+
+    final repo = MediaRepository(
+      scanDrives: () async => <String>['C:\\', 'D:\\'],
+    );
+    final roots = await repo.localRoots();
+    expect(roots.map((r) => r.label), containsAll(<String>['C 盘', 'D 盘']));
+    expect(roots.where((r) => r.path == 'C:\\'), hasLength(1));
+  });
+
+  test('localRoots 不会在调用返回前就完成（盘符探测是异步的）', () async {
+    var scanned = false;
+    final repo = MediaRepository(
+      scanDrives: () async {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        scanned = true;
+        return const <String>[];
+      },
+    );
+
+    final future = repo.localRoots();
+    // 同步实现会在这里就已经扫完，界面要等它；异步实现让页面先画出来。
+    expect(scanned, isFalse);
+    await future;
+    expect(scanned, isTrue);
+  });
+
   test('列目录不会在调用返回前就完成', () async {
     var finished = false;
     final repo = MediaRepository(
@@ -45,8 +77,8 @@ void main() {
 
   test('请求失败时给的不是内核原文，而是一句能读懂的话', () async {
     final repo = MediaRepository(
-      fetchListing: (url, options) async =>
-          ListingResult.failure(const SourceFailure(code: SourceFailure.timeout)),
+      fetchListing: (url, options) async => ListingResult.failure(
+          const SourceFailure(code: SourceFailure.timeout)),
     );
     await expectLater(
       repo.browseUrl('smb://host/share', const {}),

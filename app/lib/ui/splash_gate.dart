@@ -57,7 +57,8 @@ class SplashGate extends StatefulWidget {
 
   /// 图标与首页的稳定 key，供测试与截图脚本定位。
   static const Key splashKey = Key('splash');
-  static const Key contentKey = Key('splash-content');}
+  static const Key contentKey = Key('splash-content');
+}
 
 class SplashGateState extends State<SplashGate> {
   _Phase _phase = _Phase.running;
@@ -129,10 +130,14 @@ class SplashView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    // 启动页跟着系统深浅色走：写死深色底 + 白字，在浅色系统上会先闪一下
+    // 黑屏再进白界面，看起来像主题加载失败。
+    final title = scheme.onSurface;
     // Material，而不是 ColoredBox：没有它，Text 拿不到默认文本样式，
     // Flutter 会退回那个「黄色双下划线」的兜底样式，几行标题下面会挂一道黄线。
     return Material(
-      color: LanPlayerTheme.surface,
+      color: scheme.surface,
       child: Center(
         child: TweenAnimationBuilder<double>(
           tween: Tween<double>(begin: 0, end: 1),
@@ -157,14 +162,14 @@ class SplashView extends StatelessWidget {
                 filterQuality: FilterQuality.medium,
               ),
               const SizedBox(height: 22),
-              const Text(
+              Text(
                 'LanPlayer',
                 style: TextStyle(
                   fontFamily: LanPlayerTheme.fontFamily,
                   fontSize: 22,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 0.6,
-                  color: Colors.white,
+                  color: title,
                 ),
               ),
               const SizedBox(height: 6),
@@ -174,7 +179,7 @@ class SplashView extends StatelessWidget {
                   fontFamily: LanPlayerTheme.fontFamily,
                   fontSize: 13,
                   letterSpacing: 1.6,
-                  color: Colors.white.withValues(alpha: 0.55),
+                  color: title.withValues(alpha: 0.55),
                 ),
               ),
             ],

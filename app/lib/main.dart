@@ -231,7 +231,11 @@ class LanPlayerApp extends StatelessWidget {
       navigatorKey: appNavigatorKey,
       title: 'LanPlayer',
       debugShowCheckedModeBanner: false,
-      theme: LanPlayerTheme.dark(),
+      // 深浅色跟随系统：两套都给，交给 MaterialApp 按系统设置挑。只有
+      // `theme:` 的话，系统设成浅色的用户会看到一个写死深色的界面。
+      theme: LanPlayerTheme.light(),
+      darkTheme: LanPlayerTheme.dark(),
+      themeMode: ThemeMode.system,
       home: SplashGate(
         boot: boot ?? () async {},
         enabled: boot != null && _splashEnabled,

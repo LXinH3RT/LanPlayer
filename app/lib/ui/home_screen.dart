@@ -371,7 +371,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     if (!mounted) return;
 
-    final choice = await pickLocalPath(context, _repo.localRoots(),
+    // 盘符探测会同步 stat，放到后台 isolate 上去，这里只等结果（评审 4.8）。
+    final roots = await _repo.localRoots();
+    if (!mounted) return;
+    final choice = await pickLocalPath(context, roots,
         backKey:
             SettingsStore.instance.value.shortcuts.keyFor(ShortcutAction.back));
     if (choice == null || !mounted) return;
@@ -384,7 +387,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _addFolderByPathInner() async {
-    final home = _repo.localRoots();
+    // 盘符探测在后台 isolate 上跑；等结果期间页面可能已经被弹走。
+    final home = await _repo.localRoots();
+    if (!mounted) return;
     final path =
         await askLocalPath(context, home.isEmpty ? '' : home.first.path);
     if (path == null || !mounted) return;

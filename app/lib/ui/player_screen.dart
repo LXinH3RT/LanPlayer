@@ -667,7 +667,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 groupValue: PlaybackSettings.clampSpeed(_player.speed),
                 title: Text('${s}x'),
                 onChanged: (v) {
-                  _player.setSpeed(v ?? PlaybackSettings.speedDefault);
+                  final next = v ?? PlaybackSettings.speedDefault;
+                  _player.setSpeed(next);
+                  // 播放页改的倍速要记住：以前只改了内核这一次，切集或重开
+                  // 应用就回到设置页里的旧值，用户以为面板没生效。
+                  _settings.speed = next;
+                  SettingsStore.instance.value.speed = next;
+                  unawaited(SettingsStore.instance.save());
                   setState(() {});
                   Navigator.pop(ctx);
                 },
@@ -699,9 +705,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   /// 键盘上下键与手势共用的音量微调，统一按显示值给反馈。
-  void _nudgeVolume(double delta) {
-    _player.setVolume(_player.volume + delta);
-    _showHud('音量 ${VolumeSheet.displayOf(_player.volume)}');
+  ///
+  /// 步长走 [VolumeSheet.keyStep]（= 滚轮一格），不再是一个写死的增益增量：
+  /// 原来这里按 `volume + 0.05` 算，落到显示刻度上只有 2.5，按十次键盘才
+  /// 等于滚五下滚轮。按显示刻度算也顺带修掉了「靠近 2.0 时最后一次被夹掉、
+  /// 再按没反应」的问题 —— 每次都是显式吸附到整档。
+  void _nudgeVolume(double displayDelta) {
+    final next = VolumeSheet.volumeOf(
+        VolumeSheet.displayOf(_player.volume) + displayDelta);
+    _player.setVolume(next);
+    _settings.volume = next;
+    _showHud('音量 ${VolumeSheet.displayOf(next)}');
   }
 
   /// 底栏音量按钮点一下就走这里：静音 / 解除静音。
@@ -778,6 +792,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     // 内核只把它当渲染提示（Android EGL 会读），真正决定
                     // 画面如何贴合这一块区域的是 build 里的 FittedBox。
                     _player.setScaleMode(mode);
+                    // 缩放方式也要记住：以前只改内存里这一份，切集/重启就
+                    // 回到原来的贴合方式，用户以为按钮没用。
+                    SettingsStore.instance.value.scaleMode = mode;
+                    unawaited(SettingsStore.instance.save());
                     setState(() {});
                     Navigator.pop(ctx);
                   },
@@ -1145,10 +1163,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _seekRelative(_seekStep);
         return true;
       case ShortcutAction.volumeUp:
-        _nudgeVolume(0.05);
+        _nudgeVolume(VolumeSheet.keyStep);
         return true;
       case ShortcutAction.volumeDown:
-        _nudgeVolume(-0.05);
+        _nudgeVolume(-VolumeSheet.keyStep);
         return true;
       case ShortcutAction.mute:
         _player.toggleMute();

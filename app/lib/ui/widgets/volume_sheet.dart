@@ -65,9 +65,20 @@ class VolumeSheet extends StatefulWidget {
   /// 正好能从 0 到 100 用二十格走完，不至于滚半天没反应、也不至于一碰就满。
   static const double wheelStep = 5.0;
 
-  /// Flutter 在 Windows 上把一格滚轮报成 `scrollDelta.dy = 60`（实测：滚三格
-  /// 正好走过 9 个显示刻度，每格 3），不是原始消息里的 120。换算以实测值为
-  /// 准，别照抄 Win32 的 120 —— 那样一格会跳两倍。
+  /// 键盘上下键按一次走多少显示刻度。
+  ///
+  /// 曾经这里和滚轮各走各的：键盘是 `_nudgeVolume(±0.05)`（2.5 个显示刻度），
+  /// 滚轮是一格 5 个，滑杆一档又是 2.5 个。同一个「调大一点」，三条路径给出
+  /// 三个幅度，用户按十下键盘才等于滚五下滚轮。现在键与滚轮统一成
+  /// [wheelStep]，滑杆一档是它的一半（[sliderDivisions] 的粒度）。
+  static const double keyStep = wheelStep;
+
+  /// 滑杆分几档。40 档 = 每档 2.5 个显示刻度 = 5% 增益。
+  static const int sliderDivisions = 40;
+
+  /// Flutter 在 Windows 上把一格滚轮报成 `scrollDelta.dy = 60`（原始消息是
+  /// 120，Flutter 折了一半）。换算以实测值为准，别照抄 Win32 的 120 ——
+  /// 那样一格会跳两倍，滚两下就满。
   static const double scrollPerNotch = 60.0;
 
   /// 滚轮增量 → 新增益。
@@ -160,8 +171,9 @@ class _VolumeSheetState extends State<VolumeSheet> {
                     key: const Key('volume-slider'),
                     value: shown.toDouble(),
                     max: VolumeSheet.displayMax.toDouble(),
-                    // 40 档 = 每档 2.5 显示值，等值于原来的 5% 增益。
-                    divisions: 40,
+                    // 40 档 = 每档 2.5 显示值，等值于 5% 增益。滚轮/键盘
+                    // 一格是它的两倍（[wheelStep]），三条路径步长同源。
+                    divisions: VolumeSheet.sliderDivisions,
                     label: label,
                     // 滑杆按显示值走，回调时换算回增益。
                     onChanged: _setDisplay,

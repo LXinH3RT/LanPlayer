@@ -32,6 +32,12 @@ class SourceProbe {
 typedef ListingFetcher = Future<ListingResult> Function(
     String url, Map<String, dynamic> options);
 
+/// 一次盘符探测：返回真实存在的根（形如 `C:\`）。
+///
+/// 与 [ListingFetcher] 同理抽成函数类型，测试里可以换成不碰磁盘的假实现 ——
+/// 真实现要起后台 isolate，widget 测试里跑不起来。
+typedef DriveScanner = Future<List<String>> Function();
+
 /// UI 访问共享所需的全部能力：目录浏览、凭据校验，以及两个入口
 /// （已保存的配置、单个共享地址）。
 ///
@@ -40,14 +46,21 @@ typedef ListingFetcher = Future<ListingResult> Function(
 /// 会把整个界面冻住：窗口一片白、按钮点了没水波纹、转圈不动。所以这些入口
 /// 统一走 [listDirectoryInBackground] / [probeServerInBackground]。
 class MediaRepository {
-  MediaRepository({ListingFetcher? fetchListing})
-      : _fetch = fetchListing ?? listDirectoryInBackground;
+  MediaRepository({ListingFetcher? fetchListing, DriveScanner? scanDrives})
+      : _fetch = fetchListing ?? listDirectoryInBackground,
+        _scanDrives = scanDrives ?? windowsDriveRootsInBackground;
 
   /// 真正去取列表的实现。默认走后台 isolate；测试可以换成假的。
   final ListingFetcher _fetch;
 
+  /// 盘符探测的实现。默认走后台 isolate；测试可以换成假的。
+  final DriveScanner _scanDrives;
+
   /// 给测试用的只读入口：确认仓库默认把请求交给了后台 isolate。
   ListingFetcher get fetchListingForTest => _fetch;
+
+  /// 给测试用的只读入口：确认盘符探测默认也交给了后台 isolate。
+  DriveScanner get driveScannerForTest => _scanDrives;
 
   Future<DirectoryListing> browse(ServerProfile profile, {String? url}) async {
     final target = url ?? profile.rootUrl;
@@ -144,7 +157,8 @@ class MediaRepository {
   Future<DirectoryListing> browseLocal(String path) async {
     final listing = await _fetch('file://$path', const {});
     if (!listing.ok) {
-      final why = listing.failure?.code == SourceFailure.notFound ? '不存在' : '读不出来';
+      final why =
+          listing.failure?.code == SourceFailure.notFound ? '不存在' : '读不出来';
       throw MediaSourceException('$path 这个目录$why');
     }
     return DirectoryListing.fromJson(decodeJson(listing.json!) ?? const {});
@@ -154,7 +168,11 @@ class MediaRepository {
   ///
   /// 桌面端在常用位置前面再补上所有盘符：只给「主目录」和「下载」的话，
   /// 片子放在别的盘就点不到了。
-  List<({String label, String path})> localRoots() {
+  ///
+  /// **会同步 stat 盘符，所以是异步的，而且盘符探测在后台 isolate 上跑**
+  /// （评审 4.8）：挂过掉线的网络盘时，`existsSync()` 在主 isolate 上要等
+  /// 系统重试，添加本地文件夹的对话框会几秒不出现。其它平台不碰盘符。
+  Future<List<({String label, String path})>> localRoots() async {
     final roots = <({String label, String path})>[];
     if (Platform.isAndroid) {
       roots.add((label: '内部存储', path: '/storage/emulated/0'));
@@ -164,7 +182,9 @@ class MediaRepository {
       final docs = Platform.environment['HOME'] ?? '';
       roots.add((label: 'App 文档', path: '$docs/Documents'));
     } else {
-      roots.addAll(_windowsDrives());
+      for (final path in await _scanDrives()) {
+        roots.add((label: '${path.substring(0, 1)} 盘', path: path));
+      }
       final home = Platform.environment['HOME'] ??
           Platform.environment['USERPROFILE'] ??
           '/';
@@ -172,26 +192,5 @@ class MediaRepository {
       roots.add((label: '下载', path: '$home/Downloads'));
     }
     return roots;
-  }
-
-  /// Windows 上能访问的盘符，按字母序。其它系统返回空。
-  ///
-  /// 不查 GetLogicalDrives，直接试一遍 A–Z：能 `stat` 到就当它是可用的根。
-  /// 光驱空着、网络盘掉线之类的情况自然就被跳过了。
-  List<({String label, String path})> _windowsDrives() {
-    if (!Platform.isWindows) return const [];
-    final out = <({String label, String path})>[];
-    for (var code = 'A'.codeUnitAt(0); code <= 'Z'.codeUnitAt(0); code++) {
-      final letter = String.fromCharCode(code);
-      final path = '$letter:\\';
-      try {
-        if (Directory(path).existsSync()) {
-          out.add((label: '$letter 盘', path: path));
-        }
-      } catch (_) {
-        // 没插盘 / 没权限：跳过，别让一个坏盘符挡住整个列表。
-      }
-    }
-    return out;
   }
 }

@@ -68,6 +68,32 @@ void main() {
       expect(hosts.every((h) => h.startsWith('10.20.')), isTrue);
     });
 
+    // 评审 4.7：CIDR 文字里写的常是网络地址。收敛时如果按那个地址对齐，
+    // 扫的就是 192.168.0.x，而本机在 192.168.5.x —— 扫完一台都找不到。
+    test('收敛时按本机地址选 /24，不按 CIDR 文字里的地址', () {
+      final hosts = hostsInSubnet('192.168.0.0/16',
+          maxHosts: 1024, localAddress: parseIPv4('192.168.5.77'));
+      expect(hosts.length, 254);
+      expect(hosts.first, '192.168.5.1');
+      expect(hosts.last, '192.168.5.254');
+      expect(hosts, isNot(contains('192.168.0.1')));
+    });
+
+    test('本机地址不在这个 CIDR 里时，仍按 CIDR 自己对齐', () {
+      // 传错网段不能把结果带偏：本机在 10.x，扫的却是 192.168.0.0/16。
+      final hosts = hostsInSubnet('192.168.0.0/16',
+          maxHosts: 1024, localAddress: parseIPv4('10.9.9.9'));
+      expect(hosts.first, '192.168.0.1');
+      expect(hosts.every((h) => h.startsWith('192.168.0.')), isTrue);
+    });
+
+    test('网段没超过上限时不受本机地址影响', () {
+      final hosts = hostsInSubnet('192.168.5.20/24',
+          localAddress: parseIPv4('192.168.9.9'));
+      expect(hosts.first, '192.168.5.1');
+      expect(hosts.last, '192.168.5.254');
+    });
+
     test('非法 CIDR 返回空列表而不是抛异常', () {
       expect(hostsInSubnet('192.168.1.0'), isEmpty);
       expect(hostsInSubnet('192.168.1.0/33'), isEmpty);

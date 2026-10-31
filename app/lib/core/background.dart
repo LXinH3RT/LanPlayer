@@ -19,6 +19,7 @@
 // `DirectoryListing.fromJson` 之类的代码只在一个地方跑。
 
 import 'dart:async';
+import 'dart:io';
 import 'dart:isolate';
 
 import '../core/bindings.dart';
@@ -53,6 +54,32 @@ ListingResult _probeRaw(String url, Map<String, dynamic> options) {
   return ListingResult.json(_encode(map));
 }
 
+/// 在后台 isolate 里试一遍 A–Z 盘符，返回真实存在的根（形如 `C:\`）。
+///
+/// 为什么不能在主 isolate 上做：`Directory.existsSync()` 对**掉线的网络盘**
+/// 要等系统重试（几秒到十几秒），而这段代码在打开「添加本地文件夹」时同步
+/// 跑，用户看到的是点了没反应。断掉的盘符越多，等得越久。
+///
+/// 返回字符串列表而不是 `({String label, String path})` 记录：跨 isolate 传输
+/// 只保证基本类型与列表可发送，标签在调用方那一侧拼更省事。
+Future<List<String>> windowsDriveRootsInBackground() =>
+    Isolate.run(_scanWindowsDrives);
+
+List<String> _scanWindowsDrives() {
+  if (!Platform.isWindows) return const <String>[];
+  final out = <String>[];
+  for (var code = 'A'.codeUnitAt(0); code <= 'Z'.codeUnitAt(0); code++) {
+    final letter = String.fromCharCode(code);
+    final path = '$letter:\\';
+    try {
+      if (Directory(path).existsSync()) out.add(path);
+    } catch (_) {
+      // 没插盘 / 没权限：跳过，别让一个坏盘符挡住整个列表。
+    }
+  }
+  return out;
+}
+
 /// 后台 isolate 里拿不到主 isolate 的 `jsonEncode` 之外的上下文，直接编码。
 String _encode(Map<String, dynamic> map) => encodeJson(map);
 
@@ -76,5 +103,6 @@ class ListingResult {
   bool get ok => json != null;
 
   /// 失败分类；成功时为 null。
-  SourceFailure? get failure => ok ? null : SourceFailure(message: message, code: code);
+  SourceFailure? get failure =>
+      ok ? null : SourceFailure(message: message, code: code);
 }

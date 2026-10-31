@@ -224,7 +224,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text('默认音量'),
             // 和播放页的音量面板用同一套刻度：显示 0–100，内部存 0–2.0 的
             // 增益。两处口径不一致的话，用户会以为设置没生效。
-            subtitle: const Text('开片时的音量；100 为原音量，上限 200。'),
+            //
+            // 文案要按**显示值**说：100 是满刻度（增益 2.0，会削顶），
+            // 原音量（增益 1.0）在显示刻度上是 50。以前这里写的是
+            // 「100 为原音量，上限 200」，与实际映射正好反过来。
+            subtitle: const Text('开片时的音量；50 为原音量，上限 100（再高会削顶）。'),
             trailing: NumberField(
               value: VolumeSheet.displayOf(_settings.volume),
               min: 0,

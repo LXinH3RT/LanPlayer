@@ -488,6 +488,22 @@ def check_lan_scan() -> None:
     if "shouldStop" not in body:
         problems.append("scanSubnet must accept shouldStop so a page can "
                         "abort a scan it no longer needs")
+    # 评审 4.7：网段过大要收敛到 /24 时，必须按本机地址收敛。按 CIDR 文字里
+    # 的地址收敛的话，`192.168.0.0/16` 会去扫 192.168.0.x，而用户的本机在
+    # 192.168.5.x —— 扫完一台都找不到，界面上却只是「这个网段没有 445 主机」。
+    if "localAddress" not in body:
+        problems.append("lan_scan.dart: hostsInSubnet must take the local "
+                        "address when it narrows an oversized subnet down to "
+                        "a /24; anchoring on the CIDR text scans the wrong /24")
+    if "pivot = localAddress;" not in body:
+        problems.append("lan_scan.dart: narrowing must pivot on the local "
+                        "address (pivot = localAddress), otherwise a /16 in "
+                        "the settings box scans the network address's /24")
+    if "localAddress: parseIPv4(" not in (
+            ui.read_text(encoding="utf-8") if ui.exists() else ""):
+        problems.append("server_edit_screen.dart must pass the local address "
+                        "into scanSubnet; without it the narrowing keeps "
+                        "scanning the wrong subnet")
 
     if not ui.exists():
         problems.append("missing app/lib/ui/server_edit_screen.dart")
@@ -2067,9 +2083,27 @@ def check_player_layout() -> None:
     theme = ROOT / "app" / "lib" / "ui" / "theme.dart"
     if not theme.exists():
         problems.append("app/lib/ui/theme.dart missing")
-    elif "fontFamily: fontFamily" not in theme.read_text(encoding="utf-8"):
-        problems.append("theme.dart no longer sets fontFamily; the default UI font "
-                        "would silently go back to the platform default")
+    else:
+        th = theme.read_text(encoding="utf-8")
+        if "fontFamily: fontFamily" not in th:
+            problems.append("theme.dart no longer sets fontFamily; the default UI "
+                            "font would silently go back to the platform default")
+        # 深浅色跟随系统（评审 4.6）：只有 dark() 的时候，系统设成浅色的用户
+        # 会看到一个写死深色的界面，而 README 承诺的是跟随系统。
+        if "static ThemeData light()" not in th or "static ThemeData dark()" not in th:
+            problems.append("theme.dart must expose both light() and dark(); with "
+                            "only one of them the app is stuck on a single "
+                            "brightness no matter what the system says")
+        main_dart = ROOT / "app" / "lib" / "main.dart"
+        if main_dart.exists():
+            md = main_dart.read_text(encoding="utf-8")
+            if "themeMode: ThemeMode.system" not in md:
+                problems.append("main.dart must hand the choice to the system "
+                                "(themeMode: ThemeMode.system); otherwise the "
+                                "light theme is built and never used")
+            if "darkTheme:" not in md:
+                problems.append("main.dart must set darkTheme as well as theme; "
+                                "one of the two is always missing without it")
 
     # 界面字体必须全局统一：漏一处写死的 monospace 就会在设置/统计里冒出
     # 一套完全不同的字形（用户报的是「音轨」「关闭」字体不一致）。等宽数字
@@ -3698,7 +3732,7 @@ def check_ui_thread() -> None:
         problems.append("app/lib/data/repository.dart is gone")
         return
     src = repo.read_text(encoding="utf-8")
-    if "fetchListing ?? listDirectoryInBackground;" not in src:
+    if "fetchListing ?? listDirectoryInBackground" not in src:
         problems.append(
             "repository.dart no longer defaults its listing fetcher to the "
             "background isolate; scrolling into a dead share would freeze "
@@ -3712,7 +3746,7 @@ def check_ui_thread() -> None:
     for method, next_marker in (
         ("Future<DirectoryListing> browse(", "Future<DirectoryListing> browseUrl("),
         ("Future<DirectoryListing> browseUrl(", "Future<SourceProbe> probeServer("),
-        ("Future<DirectoryListing> browseLocal(", "List<({String label, String path})> localRoots("),
+        ("Future<DirectoryListing> browseLocal(", "localRoots("),
     ):
         start = src.find(method)
         end = src.find(next_marker, start + 1)
@@ -3722,6 +3756,26 @@ def check_ui_thread() -> None:
             problems.append(
                 f"repository.dart {name}() no longer turns a failed listing "
                 f"into a MediaSourceException; the list would just stay empty")
+    # 评审 4.8：盘符探测会同步 stat，掉线的网络盘要等系统重试好几秒，不能在
+    # 主 isolate 上做，否则「添加本地文件夹」的对话框迟迟不出现。
+    if "scanDrives ?? windowsDriveRootsInBackground" not in src:
+        problems.append(
+            "repository.dart must probe Windows drive roots through the "
+            "background isolate (windowsDriveRootsInBackground); existsSync() "
+            "on a dropped network drive blocks the UI for seconds")
+    if "existsSync(" in "\n".join(l for l in src.splitlines()
+                                  if not l.strip().startswith("//")):
+        problems.append(
+            "repository.dart calls existsSync() on the UI thread again; a "
+            "dropped network drive makes the add-folder dialog hang")
+    bg = ROOT / "app" / "lib" / "core" / "background.dart"
+    if not bg.exists():
+        problems.append("app/lib/core/background.dart is gone")
+    elif "Isolate.run(_scanWindowsDrives)" not in bg.read_text(encoding="utf-8"):
+        problems.append(
+            "background.dart must run the drive scan on an isolate "
+            "(Isolate.run(_scanWindowsDrives)); keeping it inline defeats the "
+            "whole point of the file")
     notes.append("ui thread: directory listings and probes run on a "
                  "background isolate, the window keeps painting")
 

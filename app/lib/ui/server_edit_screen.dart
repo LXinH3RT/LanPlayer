@@ -96,6 +96,9 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
       }
       final hosts = await scanSubnet(
         subnets.first,
+        // 本机 IP 一起递进去：CIDR 文字里的地址常是网络地址，收敛 /24 时要
+        // 按本机所在的网段而不是那个地址所在的网段（评审 4.7）。
+        localAddress: parseIPv4(subnets.first.split('/').first),
         onProgress: (done, total) {
           if (!mounted) return;
           // 每 16 个地址刷一次，避免 254 次 setState 把界面刷爆。
@@ -203,8 +206,7 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar:
-          AppBar(title: Text(widget.profile == null ? '添加服务器' : '编辑服务器')),
+      appBar: AppBar(title: Text(widget.profile == null ? '添加服务器' : '编辑服务器')),
       body: Form(
         key: _form,
         child: ListView(
