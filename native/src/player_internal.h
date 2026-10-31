@@ -54,9 +54,16 @@ extern "C" {
 /* 预读窗口。以前两个队列分别给 256 MB 与 128 MB，而背压条件是
  * 「超过 8 个包且填满容量」（queue.c），也就是最多能堆到 384 MB ——
  * 移动端有真实的 OOM 风险，而这么深的缓冲对局域网播放毫无收益：
- * 20 Mbps 的片源，24 MB 已经是 10 秒的预读量。取 24 MB / 12 MB。 */
+ * 20 Mbps 的片源，24 MB 已经是 10 秒的预读量。取 24 MB / 12 MB 作为
+ * 码率未知时的缺省；码率读得出来就按下面的秒数折算。 */
 #define LP_MAX_PACKET_BYTES (24 * 1024 * 1024)
 #define LP_AUDIO_PACKET_BYTES (12 * 1024 * 1024)
+/* 预读按时间算，不按字节算：同样是 24 MB，对 4 Mbps 的老片是 48 秒
+ * （远超需要），对 80 Mbps 的蓝光是 2.4 秒（不够）。开片后按码率折算一次。 */
+#define LP_READAHEAD_SECONDS 8
+/* 折算的上下限。下限保证低码率片源也有足够深的缓冲吸收 SMB 抖动；
+ * 上限就是上面的缺省值，别让高码率把内存吃回去。 */
+#define LP_MIN_PACKET_BYTES (4 * 1024 * 1024)
 /* 单包上限：一个包超过它就说明解复用给出的尺寸不可信，直接拒绝，
  * 不要拿着它去 malloc。 */
 #define LP_MAX_SINGLE_PACKET_BYTES (16 * 1024 * 1024)
@@ -148,6 +155,9 @@ typedef struct LpPacketQueue {
 } LpPacketQueue;
 
 void lp_pq_init(LpPacketQueue *q, int64_t max_bytes);
+/* 改预读窗口。码率要等 find_stream_info 之后才知道，所以窗口不能只在
+ * init 时定；已经在队里的包不受影响，只是背压阈值换了。 */
+void lp_pq_resize(LpPacketQueue *q, int64_t max_bytes);
 void lp_pq_destroy(LpPacketQueue *q);
 void lp_pq_flush(LpPacketQueue *q);
 void lp_pq_abort(LpPacketQueue *q);

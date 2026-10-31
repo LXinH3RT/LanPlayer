@@ -975,9 +975,16 @@ def check_thumbnails() -> None:
     if "didUpdateWidget" not in tile_code:
         problems.append("ThumbnailTile must refetch in didUpdateWidget, "
                         "otherwise list recycling shows the previous cover")
-    if "dispose()" in tile_code and "_image?.dispose" in tile_code:
-        problems.append("ThumbnailTile must not dispose the ui.Image: the "
-                        "cache owns it and would hand out a dead handle")
+    tile_dispose = tile_code.split("void dispose()", 1)[-1]
+    if "_image?.dispose" not in tile_dispose:
+        problems.append("ThumbnailTile must dispose the ui.Image it owns when "
+                        "the row goes away; ThumbnailCache.load() hands out "
+                        "clones, so keeping the handle alive until the next GC "
+                        "leaks a screenful of covers")
+    if "image.dispose()" not in code:
+        problems.append("thumbs.dart must release evicted covers (ImageLru "
+                        "disposeValue), otherwise the LRU only drops references "
+                        "and the pixels wait for a GC that may not come")
 
     # A cover keyed only by the URL never expires: replacing a file under the
     # same name kept showing the old frame until the user wiped the cache by

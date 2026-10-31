@@ -99,10 +99,12 @@ class ThumbnailCache {
 
   /// 已解码封面的内存缓存，超出 [memoryLimit] 就丢掉最久没被用过的那张。
   ///
-  /// 淘汰时**只丢引用、不 `dispose()`**：正在显示这张图的行手里还握着它，
-  /// 提前释放会让下一帧画出「已释放的图片」。丢掉引用之后，`ui.Image` 的
-  /// 终结器会在没人用时把底下的像素还回去。
-  final ImageLru<ui.Image> _memory = ImageLru<ui.Image>(limit: memoryLimit);
+  /// 缓存持有的是「母本」，每个调用方拿到的是 [ui.Image.clone] 出来的副本。
+  /// 这样两边各自 dispose 自己的句柄都不会伤到对方：行被滚出屏幕时立刻
+  /// 归还像素，缓存淘汰时再释放母本。只有一个引用、谁都不敢 dispose 的
+  /// 做法会让 128×128 的封面一直挂到下一次 GC。
+  final ImageLru<ui.Image> _memory = ImageLru<ui.Image>(
+      limit: memoryLimit, disposeValue: (image) => image.dispose());
 
   /// 自上次清理以来写了多少个缓存文件。
   int _writesSincePrune = 0;
@@ -177,14 +179,17 @@ class ThumbnailCache {
       {String? version}) {
     final key = keyForVersion(url, version);
     final hit = _memory[key];
-    if (hit != null) return Future<ui.Image?>.value(hit);
+    // 命中缓存也要给副本：调用方会 dispose 自己那一份，母本留在缓存里。
+    if (hit != null) return Future<ui.Image?>.value(hit.clone());
     final pending = _inflight[key];
-    if (pending != null) return pending;
+    // 同一个键正在解码时后续调用方也得各拿一份副本 —— 把同一个 future
+    // 交给两行，第一行 dispose 之后第二行就画到已释放的像素上了。
+    if (pending != null) return pending.then((img) => img?.clone());
 
     final future = _load(key, url, options);
     _inflight[key] = future;
     future.whenComplete(() => _inflight.remove(key));
-    return future;
+    return future.then((img) => img?.clone());
   }
 
   Future<ui.Image?> _load(
@@ -497,10 +502,9 @@ class ConcurrencyGate {
 
 /// 有上限的 LRU 缓存：超过 [limit] 就丢掉最久没被读取的那一项。
 ///
-/// 只做「丢引用」这一件事，**不负责释放值**。`ui.Image` 这类对象一旦被
-/// 提前 dispose，正握着它绘制的那一帧就会画到已释放的像素；让 GC 在没人
-/// 用的时候回收才安全。需要显式回收的值可以传 [disposeValue]，但它只会在
-/// `clear()` 里被调用 —— 那是「确认整批都不要了」的场合。
+/// 淘汰与 `clear()` 都会调 [disposeValue]（如果给了）。[ThumbnailCache] 传进来的
+/// 回收函数直接释放母本 —— 调用方手里都是 [ui.Image.clone] 出来的副本，各自
+/// dispose 各自的，互不影响。
 ///
 /// 用 [LinkedHashMap] 的插入顺序当访问顺序：每次 [operator []] 命中就把键
 /// 挪到队尾，于是队首永远是最冷的那个。这样做比给每项记时间戳简单，也不比
@@ -531,7 +535,8 @@ class ImageLru<V extends Object> {
     _entries[key] = value;
     while (_entries.length > limit) {
       final oldest = _entries.keys.first;
-      _entries.remove(oldest);
+      final evicted = _entries.remove(oldest);
+      if (evicted != null) disposeValue?.call(evicted);
     }
   }
 

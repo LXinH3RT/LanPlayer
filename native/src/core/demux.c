@@ -288,6 +288,51 @@ static int open_input(LpPlayer *p, char *err, size_t errlen)
     return LP_OK;
 }
 
+/* 按码率折算预读窗口。
+ *
+ * 定长的 24 MB 对两端都不合适：4 Mbps 的老片能预读 48 秒（SMB 抖动早就
+ * 过去了，多出来的只是内存），80 Mbps 的蓝光只有 2.4 秒（一次目录扫描
+ * 就能把它耗光）。这里按「LP_READAHEAD_SECONDS 秒的数据量」算，夹在
+ * [LP_MIN_PACKET_BYTES, 缺省值] 之间 —— 码率读不出来（AVFMT_NO_BITRATE
+ * 的容器、裸流）就保持缺省。 */
+static void apply_readahead(LpPlayer *p)
+{
+    int64_t bit_rate = p->fmt ? p->fmt->bit_rate : 0;
+    if (bit_rate <= 0) {
+        /* 有些容器整体不给码率，但分轨给了。取所有分轨的字节速率之和。 */
+        if (p->fmt) {
+            for (unsigned i = 0; i < p->fmt->nb_streams; i++) {
+                AVStream *st = p->fmt->streams[i];
+                if (st->codecpar && st->codecpar->bit_rate > 0 &&
+                    st->disposition != AV_DISPOSITION_ATTACHED_PIC) {
+                    bit_rate += st->codecpar->bit_rate;
+                }
+            }
+        }
+    }
+    if (bit_rate <= 0) {
+        return;
+    }
+    int64_t want = bit_rate / 8 * LP_READAHEAD_SECONDS;
+    if (want < LP_MIN_PACKET_BYTES) {
+        want = LP_MIN_PACKET_BYTES;
+    }
+    /* 音视频分开算：视频队列拿 2/3，音频拿 1/3，与缺省配比一致。 */
+    int64_t video_bytes = want * 2 / 3;
+    int64_t audio_bytes = want / 3;
+    if (video_bytes > LP_MAX_PACKET_BYTES) {
+        video_bytes = LP_MAX_PACKET_BYTES;
+    }
+    if (audio_bytes > LP_AUDIO_PACKET_BYTES) {
+        audio_bytes = LP_AUDIO_PACKET_BYTES;
+    }
+    lp_pq_resize(&p->video.pq, video_bytes);
+    lp_pq_resize(&p->audio.pq, audio_bytes);
+    LP_DEBUG("demux", "read-ahead %lld KiB video / %lld KiB audio for %lld bps",
+             (long long)(video_bytes / 1024), (long long)(audio_bytes / 1024),
+             (long long)bit_rate);
+}
+
 static int select_streams(LpPlayer *p)
 {
     p->video.stream_index = av_find_best_stream(p->fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
@@ -454,6 +499,7 @@ int lp_demux_open(LpPlayer *p)
         lp_emit_error(p, LP_ERR_UNSUPPORTED, "no playable stream found");
         return LP_ERR_UNSUPPORTED;
     }
+    apply_readahead(p);
     if (lp_subtitle_open(p) != LP_OK) {
         LP_WARN("demux", "subtitle init failed");
     }

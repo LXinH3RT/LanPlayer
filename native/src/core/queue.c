@@ -19,6 +19,22 @@ void lp_pq_init(LpPacketQueue *q, int64_t max_bytes)
     pthread_cond_init(&q->cond, NULL);
 }
 
+void lp_pq_resize(LpPacketQueue *q, int64_t max_bytes)
+{
+    if (max_bytes <= 0) {
+        return;
+    }
+    const char *limit = getenv("LP_PQ_MAX_KB");  /* debug: shrink the read-ahead window */
+    if (limit && atoi(limit) > 0) {
+        max_bytes = (int64_t)atoi(limit) * 1024;
+    }
+    pthread_mutex_lock(&q->mutex);
+    q->max_bytes = max_bytes;
+    /* 阈值变小了，等待中的 demux 线程该醒来看一眼。 */
+    pthread_cond_broadcast(&q->cond);
+    pthread_mutex_unlock(&q->mutex);
+}
+
 void lp_pq_destroy(LpPacketQueue *q)
 {
     lp_pq_flush(q);

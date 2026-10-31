@@ -246,7 +246,7 @@ void main() {
       expect(lru['a'], 'A2');
     });
 
-    test('clear 只在给了回收函数时才释放值', () {
+    test('clear 与淘汰都会释放值', () {
       final disposed = <String>[];
       final lru = ImageLru<String>(limit: 4, disposeValue: disposed.add);
       lru['a'] = 'A';
@@ -255,12 +255,21 @@ void main() {
       expect(lru.length, 0);
       expect(disposed, <String>['A', 'B']);
 
-      // 封面缓存**故意**不传 disposeValue：淘汰只丢引用，正在绘制的那一帧
-      // 手里还握着像素，提前 dispose 会画出「已释放的图片」。
+      // 超出上限被挤掉的那一项也要回收：封面缓存传的正是 `image.dispose()`，
+      // 漏掉这一半的话淘汰只是丢引用，像素要等下一次 GC 才还回去。
+      final evicting = ImageLru<String>(limit: 2, disposeValue: disposed.add);
+      evicting['x'] = 'X';
+      evicting['y'] = 'Y';
+      evicting['z'] = 'Z';
+      expect(evicting.containsKey('x'), isFalse);
+      expect(disposed, <String>['A', 'B', 'X'], reason: '挤掉的最老那项要释放');
+
+      // 不传回收函数时什么也不做（纯值缓存不该被顺手释放）。
       final plain = ImageLru<String>(limit: 2);
       plain['x'] = 'X';
-      plain.clear();
-      expect(plain.length, 0);
+      plain['y'] = 'Y';
+      plain['z'] = 'Z';
+      expect(plain.length, 2);
     });
 
     test('上限是 240 张、磁盘 128 MB，都不是随手写的量级', () {

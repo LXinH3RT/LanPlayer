@@ -62,6 +62,8 @@ class _ThumbnailTileState extends State<ThumbnailTile> {
     // 取图，否则会显示上一行的封面。同一个 URL 但文件被替换过（version 变了）
     // 也要重取 —— 否则刷新完还是旧封面。
     if (oldWidget.url != widget.url || oldWidget.version != widget.version) {
+      // 换文件时马上把上一张还回去，不然列表一直滚就一直攒着。
+      _image?.dispose();
       _image = null;
       _loading = true;
       _fetch();
@@ -73,18 +75,28 @@ class _ThumbnailTileState extends State<ThumbnailTile> {
     final image = await ThumbnailCache.instance
         .load(widget.url, widget.options, version: widget.version);
     // 这一行已经被复用去显示别的文件了，本次结果作废。
-    if (!mounted || seq != _seq) return;
-    if (_image == image && !_loading) return;
+    if (!mounted || seq != _seq) {
+      // 迟到的副本没人接手，得自己释放。
+      image?.dispose();
+      return;
+    }
+    if (_image == image && !_loading) {
+      image?.dispose();
+      return;
+    }
+    final previous = _image;
     setState(() {
       _image = image;
       _loading = false;
     });
+    previous?.dispose();
   }
 
   @override
   void dispose() {
-    // ui.Image 由缓存持有，这里只丢掉引用，不能 dispose
-    // （否则缓存里的那张图会变成已释放状态）。
+    // 这份是缓存母本的副本（`load()` 里 clone 出来的），可以放心释放。
+    // 不释放的话，滚过去的一屏封面要等到下一次 GC 才把像素还回去。
+    _image?.dispose();
     _image = null;
     super.dispose();
   }
