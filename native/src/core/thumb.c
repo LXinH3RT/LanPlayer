@@ -116,7 +116,7 @@ static int thumb_open_input(const char *url, const char *options_json, LpThumbCt
     av_dict_set(&dict, "analyzeduration", "3000000", 0);
 
     AVFormatContext *fmt = NULL;
-    int custom_io = parsed.is_smb || strcmp(parsed.scheme, "file") == 0;
+    int custom_io = lp_transport_custom_io(parsed.scheme);
     if (custom_io) {
         LpIo *io = lp_io_open(url, &opts, err, errlen);
         if (!io) {

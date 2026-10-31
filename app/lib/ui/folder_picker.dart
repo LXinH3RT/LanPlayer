@@ -92,7 +92,7 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
   /// 内核列出来的条目带 `file://` 前缀，而这里压栈、存盘用的都是裸路径
   /// （`LocalFolder.rootUrl` 自己会补前缀）。混用会拼出 `file://file://…`。
   static String _plain(String path) {
-    const prefix = 'file://';
+    final prefix = LpScheme.filePrefix;
     if (!path.startsWith(prefix)) return path;
     final rest = path.substring(prefix.length);
     // `file:///C:/x` 这种三元斜杠，去掉前缀后还剩 `/C:/x`。
@@ -108,7 +108,7 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
   /// 而常用位置与盘符这些根是裸路径。两种都要接住，否则会拼出
   /// `file://file://D:/x`，内核报「not found」。
   Future<DirectoryListing> _list(String path) {
-    final url = path.startsWith('file://') ? path : 'file://$path';
+    final url = LpScheme.isFileUrl(path) ? path : LpScheme.fileUrl(path);
     const options = {'list_all': 1};
     final lister = widget.lister;
     if (lister != null) return lister(url, options);

@@ -401,23 +401,98 @@ int lp_io_attach_avio(LpIo *io, AVFormatContext **out, char *err, size_t errlen)
     return LP_OK;
 }
 
-const LpTransport *lp_transport_find(const char *scheme)
+/* ---------------------------------------------------------- registry --- */
+
+/* 各传输实现自己定义的那几份 const 表；只有注册表需要看见它们，
+ * 所以声明留在这个文件里，头文件只暴露 lp_transport_* 查询函数。 */
+extern const LpTransport lp_transport_file;
+#if defined(LP_HAVE_SMB2)
+extern const LpTransport lp_transport_smb;
+#endif
+#if defined(LP_ENABLE_HTTP)
+extern const LpTransport lp_transport_http;
+extern const LpTransport lp_transport_https;
+extern const LpTransport lp_transport_tcp;
+#endif
+
+/* 传输层注册表。新增一种源类型只需写一个 .c 定义 const LpTransport，
+ * 再把指针追加到这张表；scheme 列表、URL 形态、默认端口、要不要自己挂
+ * AVIO 全部从这里读，别处不用改。 */
+static const LpTransport *const lp_transports[] = {
+    &lp_transport_file,
+#if defined(LP_HAVE_SMB2)
+    &lp_transport_smb,
+#endif
+#if defined(LP_ENABLE_HTTP)
+    &lp_transport_http,
+    &lp_transport_https,
+    &lp_transport_tcp,
+#endif
+};
+
+#define LP_TRANSPORT_COUNT ((int)(sizeof(lp_transports) / sizeof(lp_transports[0])))
+
+/* scheme 别名：历史 URL 里 smb2:// 与新写的 smb:// 等价。 */
+static const char *canonical_scheme(const char *scheme)
 {
-    if (!scheme) {
+    static const char *const aliases[][2] = {
+        {"smb2", "smb"},
+    };
+    for (size_t i = 0; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
+        if (strcmp(scheme, aliases[i][0]) == 0) {
+            return aliases[i][1];
+        }
+    }
+    return scheme;
+}
+
+static const LpTransport *registry_lookup(const char *scheme)
+{
+    if (!scheme || !scheme[0]) {
         return NULL;
     }
-    if (strcmp(scheme, "smb") == 0 || strcmp(scheme, "smb2") == 0) {
-#if defined(LP_HAVE_SMB2)
-        return &lp_transport_smb;
-#else
-        return NULL; /* build without libsmb2: reported as unsupported */
-#endif
-    }
-    if (strcmp(scheme, "file") == 0) {
-        return &lp_transport_file;
+    const char *canonical = canonical_scheme(scheme);
+    for (int i = 0; i < LP_TRANSPORT_COUNT; i++) {
+        if (strcmp(lp_transports[i]->scheme, canonical) == 0) {
+            return lp_transports[i];
+        }
     }
     return NULL;
 }
+
+const LpTransport *lp_transport_find(const char *scheme)
+{
+    return registry_lookup(scheme);
+}
+
+int lp_transport_custom_io(const char *scheme)
+{
+    const LpTransport *tp = registry_lookup(scheme);
+    return tp ? tp->custom_io : 0;
+}
+
+int lp_transport_default_port(const char *scheme)
+{
+    const LpTransport *tp = registry_lookup(scheme);
+    return tp ? tp->default_port : -1;
+}
+
+int lp_transport_hosted(const char *scheme)
+{
+    const LpTransport *tp = registry_lookup(scheme);
+    return tp ? tp->hosted : 0;
+}
+
+int lp_transport_count(void)
+{
+    return LP_TRANSPORT_COUNT;
+}
+
+const LpTransport *lp_transport_at(int index)
+{
+    return index >= 0 && index < LP_TRANSPORT_COUNT ? lp_transports[index] : NULL;
+}
+
 
 /* ------------------------------------------------------------- public --- */
 
@@ -565,13 +640,18 @@ int32_t lp_source_schemes(char **out_json)
     LpStr s;
     lp_str_init(&s);
     lp_str_append(&s, "[");
-#if defined(LP_HAVE_SMB2)
-    lp_str_append(&s, "\"smb\",");
-#endif
-    lp_str_append(&s, "\"file\"");
-#if defined(LP_ENABLE_HTTP)
-    lp_str_append(&s, ",\"http\",\"https\"");
-#endif
+    int first = 1;
+    for (int i = 0; i < lp_transport_count(); i++) {
+        const LpTransport *tp = lp_transport_at(i);
+        if (!tp || !tp->public_scheme) {
+            continue;
+        }
+        if (!first) {
+            lp_str_append(&s, ",");
+        }
+        lp_str_append_json_str(&s, tp->scheme);
+        first = 0;
+    }
     lp_str_append(&s, "]");
     *out_json = lp_str_take(&s);
     return LP_OK;

@@ -140,18 +140,11 @@ static void auto_load_subtitles(LpPlayer *p)
     LpUrl parent = u;
     lp_path_parent(u.path, parent.path, sizeof(parent.path));
     char parent_url[2048];
-    char base[1200];
-    if (u.is_smb) {
-        if (u.user[0]) {
-            snprintf(base, sizeof(base), "smb://%s:%s@%s/%s%s", u.user, u.password, u.host,
-                     u.share, parent.path);
-        } else {
-            snprintf(base, sizeof(base), "smb://%s/%s%s", u.host, u.share, parent.path);
-        }
-    } else {
-        snprintf(base, sizeof(base), "file://%s", parent.path);
-    }
-    snprintf(parent_url, sizeof(parent_url), "%s", base);
+    /* authority 与 scheme 名由 url.c 统一拼（以前手写 "smb://%s:%s@%s/%s%s"
+     * 与 "file://%s" 两个分支，加一种源类型就得改这里）。 */
+    char parent_base[1200];
+    lp_url_build(&parent, parent_base, sizeof(parent_base));
+    lp_url_insert_credentials(&u, parent_base, parent_url, sizeof(parent_url));
 
     if (getenv("LP_NO_SUB_SCAN")) {  /* debug switch: isolate the nested listing */
         LP_DEBUG("demux", "subtitle auto-load disabled by LP_NO_SUB_SCAN");
@@ -173,9 +166,13 @@ static void auto_load_subtitles(LpPlayer *p)
      * fails with STATUS_INVALID_PARAMETER instead of reading the subtitle. */
     char *cred_paths[64] = {0};
     for (int i = 0; i < n; i++) {
-        if (u.is_smb && u.user[0] && strncmp(paths[i], "smb://", 6) == 0 &&
-            !strchr(paths[i] + 6, '@')) {
-            cred_paths[i] = lp_str_printf("smb://%s:%s@%s", u.user, u.password, paths[i] + 6);
+        if (!u.is_hosted || !u.user[0]) {
+            continue;
+        }
+        char buffer[LP_URL_MAX];
+        lp_url_insert_credentials(&u, paths[i], buffer, sizeof(buffer));
+        if (strcmp(buffer, paths[i]) != 0) {
+            cred_paths[i] = lp_str_printf("%s", buffer);
         }
     }
     LP_DEBUG("demux", "subtitle scan: %d path(s) in listing; json=%.300s", n, json);
@@ -234,7 +231,7 @@ static int open_input(LpPlayer *p, char *err, size_t errlen)
 
     AVFormatContext *fmt = NULL;
     int r;
-    int custom_io = u.is_smb || strcmp(u.scheme, "file") == 0;
+    int custom_io = lp_transport_custom_io(u.scheme);
     if (custom_io) {
         p->io = lp_io_open(p->url, &p->sopts, err, errlen);
         if (!p->io) {

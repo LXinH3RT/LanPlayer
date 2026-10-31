@@ -400,6 +400,10 @@ static int smb_transport_probe(const LpUrl *u, const LpSourceOptions *opts,
 
 const LpTransport lp_transport_smb = {
     .scheme = "smb",
+    .hosted = 1,
+    .default_port = 445,
+    .custom_io = 1,
+    .public_scheme = 1,
     .open = smb_transport_open,
     .close = smb_transport_close,
     .read = smb_transport_read,

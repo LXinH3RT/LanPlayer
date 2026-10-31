@@ -38,7 +38,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.py -Cl
 
 ```
 abi=1
-schemes=\["smb","file","http","https"]
+schemes=\["file","smb","http","https"]
 no media given: library smoke test passed
 ```
 

@@ -168,7 +168,7 @@ Future<void> _openLocation(String url) async {
     // 拍进去），根目录标题取最后一层目录名；共享地址则保留原样，因为
     // `smb://host/share` 本身就是用户填进去的那一行。
     final segments = url.split('/').where((s) => s.isNotEmpty).toList();
-    final label = url.startsWith('file://')
+    final label = LpScheme.isFileUrl(url)
         ? (segments.isEmpty ? url : segments.last)
         : url;
     final location = MediaLocation(
@@ -186,10 +186,11 @@ Future<void> _openLocation(String url) async {
 }
 
 void _openLocalFile(String target) {
-  final isNetwork = target.startsWith('smb://');
+  final isNetwork = LpScheme.isSmbUrl(target);
   final name = target.split(RegExp(r'[\\/]')).last;
-  final url =
-      isNetwork ? target : 'file://${target.replaceAll(RegExp(r'\\'), '/')}';
+  final url = isNetwork
+      ? target
+      : LpScheme.fileUrl(target.replaceAll(RegExp(r'\\'), '/'));
   final entry = MediaEntry(
     name: name,
     path: url,

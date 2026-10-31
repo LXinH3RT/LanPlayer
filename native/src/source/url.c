@@ -53,7 +53,7 @@ int lp_url_parse(const char *url, LpUrl *out)
         return LP_ERR_ARGUMENT;
     }
     memset(out, 0, sizeof(*out));
-    out->port = 445;
+    out->port = -1;
 
     const char *rest = url;
     const char *sep = strstr(url, "://");
@@ -87,20 +87,16 @@ int lp_url_parse(const char *url, LpUrl *out)
             memmove(out->path, out->path + 1, strlen(out->path));
         }
 #endif
-        out->is_smb = 0;
+        out->is_hosted = 0;
         snprintf(out->host, sizeof(out->host), "localhost");
         return LP_OK;
     }
 
-    if (strcmp(out->scheme, "smb") == 0 || strcmp(out->scheme, "smb2") == 0) {
-        out->is_smb = 1;
-        out->port = 445;
-    } else if (strcmp(out->scheme, "https") == 0) {
-        out->port = 443;
-    } else if (strcmp(out->scheme, "http") == 0) {
-        out->port = 80;
-    } else if (strcmp(out->scheme, "tcp") == 0) {
-        out->port = 0;
+    /* 默认端口、URL 形态都从传输层注册表来：新增一种源类型不再改这里。 */
+    out->is_hosted = lp_transport_hosted(out->scheme);
+    int default_port = lp_transport_default_port(out->scheme);
+    if (default_port >= 0) {
+        out->port = default_port;
     }
 
     const char *authority = rest;
@@ -147,7 +143,7 @@ int lp_url_parse(const char *url, LpUrl *out)
         snprintf(out->path, sizeof(out->path), "/");
     }
 
-    if (out->is_smb) {
+    if (out->is_hosted) {
         /* The first segment is the share name; the rest is the path inside it. */
         const char *p = out->path;
         while (*p == '/') {
@@ -175,26 +171,39 @@ int lp_url_parse(const char *url, LpUrl *out)
     return LP_OK;
 }
 
-void lp_url_join(const LpUrl *u, const char *name, char *out, size_t outlen)
+void lp_url_authority(const LpUrl *u, char *out, size_t outlen)
 {
-    char base[1200];
-    int n = 0;
-    if (u->is_smb) {
-        n = snprintf(base, sizeof(base), "smb://%s%s%s", u->host,
-                     u->port && u->port != 445 ? ":" : "", u->port && u->port != 445 ? "" : "");
-        if (u->port && u->port != 445) {
-            snprintf(base + n, sizeof(base) - (size_t)n, "%d", u->port);
-            n = (int)strlen(base);
-        }
-        n += snprintf(base + n, sizeof(base) - (size_t)n, "/%s%s", u->share, u->path);
-    } else {
-        n = snprintf(base, sizeof(base), "file://%s", u->path);
+    if (!u || !out || outlen == 0) {
+        return;
     }
-    if (strcmp(u->path, "/") != 0) {
-        snprintf(out, outlen, "%s%s%s", base, (*name && base[strlen(base) - 1] == '/') ? "" : "/", name);
-    } else {
-        snprintf(out, outlen, "%s%s%s", base, u->is_smb ? "/" : "", name);
+    if (!u->is_hosted) {
+        snprintf(out, outlen, "%s://", u->scheme);
+        return;
     }
+    int with_port = u->port > 0 && u->port != lp_transport_default_port(u->scheme);
+    snprintf(out, outlen, "%s://%s%s%d", u->scheme, u->host, with_port ? ":" : "",
+             with_port ? u->port : 0);
+}
+
+void lp_url_insert_credentials(const LpUrl *u, const char *url, char *out, size_t outlen)
+{
+    if (!out || outlen == 0) {
+        return;
+    }
+    const char *src = url ? url : "";
+    if (!u || !u->is_hosted || !u->user[0]) {
+        snprintf(out, outlen, "%s", src);
+        return;
+    }
+    char prefix[32];
+    snprintf(prefix, sizeof(prefix), "%s://", u->scheme);
+    size_t plen = strlen(prefix);
+    /* 已经带了 userinfo 的 URL 不再插一次（否则 "a:b@h" → "a:b@a:b@h"）。 */
+    if (strncmp(src, prefix, plen) != 0 || strchr(src + plen, '@')) {
+        snprintf(out, outlen, "%s", src);
+        return;
+    }
+    snprintf(out, outlen, "%s%s:%s@%s", prefix, u->user, u->password, src + plen);
 }
 
 const char *lp_kind_for_name(const char *name)
@@ -361,16 +370,16 @@ int lp_path_parent(const char *path, char *out, size_t outlen)
     return 0;
 }
 
-static void url_build(const LpUrl *u, char *out, size_t outlen)
+/* 把解析后的 URL 拼回去（不含凭据）。形态由 LpUrl::is_hosted 决定，
+ * scheme 名不再写死在 url.c 里。 */
+void lp_url_build(const LpUrl *u, char *out, size_t outlen)
 {
-    if (u->is_smb) {
-        if (u->port && u->port != 445) {
-            snprintf(out, outlen, "smb://%s:%d/%s%s", u->host, u->port, u->share, u->path);
-        } else {
-            snprintf(out, outlen, "smb://%s/%s%s", u->host, u->share, u->path);
-        }
+    char auth[1200];
+    lp_url_authority(u, auth, sizeof(auth));
+    if (u->is_hosted) {
+        snprintf(out, outlen, "%s/%s%s", auth, u->share, u->path);
     } else {
-        snprintf(out, outlen, "file://%s", u->path);
+        snprintf(out, outlen, "%s%s", auth, u->path);
     }
 }
 
@@ -383,8 +392,8 @@ void lp_entries_begin(LpStr *out, const LpUrl *u)
     snprintf(parent.path, sizeof(parent.path), "%s", parent_path);
 
     char parent_url[2048];
-    url_build(u, self, sizeof(self));
-    url_build(&parent, parent_url, sizeof(parent_url));
+    lp_url_build(u, self, sizeof(self));
+    lp_url_build(&parent, parent_url, sizeof(parent_url));
 
     lp_str_append(out, "{\"url\":");
     lp_str_append_json_str(out, self);
@@ -419,7 +428,7 @@ void lp_entries_add(LpStr *out, const LpUrl *u, const LpDirItem *items, int coun
         join_child_path(u->path, it->name, child.path, sizeof(child.path));
         /* For entries the share must be preserved; only the path changes. */
         char child_url[2048];
-        url_build(&child, child_url, sizeof(child_url));
+        lp_url_build(&child, child_url, sizeof(child_url));
 
         const char *dot = strrchr(it->name, '.');
         char ext[16] = "";

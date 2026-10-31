@@ -1,7 +1,9 @@
+import 'scheme.dart';
 import 'shortcuts.dart';
 import 'subtitle_match.dart';
 import 'track_prefs.dart';
 
+export 'scheme.dart';
 export 'shortcuts.dart';
 export 'subtitle_match.dart';
 export 'track_prefs.dart';
@@ -203,7 +205,7 @@ class ServerProfile {
   }) : createdAt = createdAt ?? DateTime.now();
 
   /// Root URL of the share, without credentials.
-  String get rootUrl => 'smb://$host${port == 445 ? '' : ':$port'}/$share';
+  String get rootUrl => LpScheme.smbRoot(host, port, share);
 
   /// Title of the server card.
   ///
@@ -214,11 +216,13 @@ class ServerProfile {
   String get displayName => name.trim().isEmpty ? share.trim() : name.trim();
 
   /// URL with userinfo, used for FFmpeg/transport calls.
-  String get urlWithCredentials {
-    final encodedUser = Uri.encodeComponent(user);
-    final encodedPass = Uri.encodeComponent(password);
-    return 'smb://$encodedUser:$encodedPass@$host${port == 445 ? '' : ':$port'}/$share';
-  }
+  String get urlWithCredentials => LpScheme.smbRootWithCredentials(
+        host,
+        port,
+        share,
+        user: user,
+        password: password,
+      );
 
   Map<String, dynamic> toJson() => {
         'id': id,

@@ -321,6 +321,10 @@ static int file_transport_probe(const LpUrl *u, const LpSourceOptions *opts,
 
 const LpTransport lp_transport_file = {
     .scheme = "file",
+    .hosted = 0,
+    .default_port = -1,
+    .custom_io = 1,
+    .public_scheme = 1,
     .open = file_transport_open,
     .close = file_transport_close,
     .read = file_transport_read,

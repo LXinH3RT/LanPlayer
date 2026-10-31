@@ -16,15 +16,28 @@ typedef struct LpUrl {
     char user[128];
     char password[256];
     char host[160];
-    int port;
-    char share[160];   /* SMB only, first path segment */
-    char path[1024];   /* path inside the share, always starts with '/' */
-    int is_smb;
+    int port;          /* -1 = 该 scheme 没有端口概念（见 lp_transport_default_port） */
+    char share[160];   /* 托管型 URL 的第一段路径（smb://host/<share>/...） */
+    char path[1024];   /* 剩下的路径，总以 '/' 开头 */
+    /* 1 = "<scheme>://host/share/path" 形态：authority 之后的第一段是共享名。
+     * 0 = "<scheme>://path" 形态（file），整条 URL 就是一个路径。
+     * 哪一种是哪种由传输层注册表决定，url.c 不再逐个 scheme 判断。 */
+    int is_hosted;
 } LpUrl;
 
 int lp_url_parse(const char *url, LpUrl *out);
-/* Builds "<scheme>://[user@]host/share/path/name" without credentials. */
-void lp_url_join(const LpUrl *u, const char *name, char *out, size_t outlen);
+
+/* "<scheme>://[user:pass@]host[:port]" —— 不含 path。非托管型（file）只
+ * 给 "<scheme>://"。拼 URL 的地方一律走它，不再手写 "smb://" / "file://"。 */
+void lp_url_authority(const LpUrl *u, char *out, size_t outlen);
+
+/* 给一条不带凭据的 URL 补上 u 里的登录信息。u 没有用户名、或者 url 自己
+ * 已经带了 '@' 时按原样复制。 */
+void lp_url_insert_credentials(const LpUrl *u, const char *url, char *out, size_t outlen);
+
+/* 把解析后的 URL 拼回去（不含凭据）。托管型走 "<scheme>://host[:port]/share/path"，
+ * 其余走 "<scheme>://path"；scheme 名一律取自 LpUrl，不再手写。 */
+void lp_url_build(const LpUrl *u, char *out, size_t outlen);
 
 /* 记录「调用线程上一次失败的原因」，供 lp_source_last_error() 取。
  * 和 lp_source_list / lp_source_probe 共用同一份线程局部缓冲。 */
@@ -39,6 +52,17 @@ typedef struct LpIo LpIo;
 
 typedef struct LpTransport {
     const char *scheme;
+    /* "<scheme>://host/share/path"（1）还是 "<scheme>://path"（0）。
+     * url.c 靠它决定要不要切出共享名、以及怎么把 URL 拼回去。 */
+    int hosted;
+    /* 该 scheme 的默认端口；-1 = 没有端口概念，0 = 端口必填。 */
+    int default_port;
+    /* 1 = 由本层用 LpIo 打开（file/smb）；0 = 交给 FFmpeg 原生协议（http）。
+     * demux.c / thumb.c 靠它决定要不要自己挂 AVIO。 */
+    int custom_io;
+    /* 1 = 出现在 lp_source_schemes() 的列表里。 */
+    int public_scheme;
+    /* 实现本 scheme 的函数指针；交给 FFmpeg 的条目留空。 */
     int (*open)(LpIo *io, const LpUrl *u, const LpSourceOptions *opts, char *err, size_t errlen);
     void (*close)(LpIo *io);
     int (*read)(LpIo *io, uint8_t *buf, int size);
@@ -48,9 +72,22 @@ typedef struct LpTransport {
     int (*probe)(const LpUrl *u, const LpSourceOptions *opts, LpStr *out, char *err, size_t errlen);
 } LpTransport;
 
-extern const LpTransport lp_transport_smb;
-extern const LpTransport lp_transport_file;
+/* 传输层注册表。
+ *
+ * 新增一种源类型 = 写一个 .c 定义 const LpTransport，再在 io.c 的
+ * lp_transports[] 里加一行；其余地方（scheme 列表、URL 形态、自定义 AVIO
+ * 判定、默认端口）全部由这张表推导。 */
 const LpTransport *lp_transport_find(const char *scheme);
+/* 该 scheme 是否需要本层自己挂 AVIO（http/tcp 这类交给 FFmpeg 的返回 0）。 */
+int lp_transport_custom_io(const char *scheme);
+/* 该 scheme 的默认端口；-1 = 没有端口概念。 */
+int lp_transport_default_port(const char *scheme);
+/* 该 scheme 是不是 "<scheme>://host/share/path" 形态。 */
+int lp_transport_hosted(const char *scheme);
+/* 已注册的条目数 / 逐条访问；lp_transport_at 按注册顺序返回，用于拼
+ * lp_source_schemes() 与文档里的一致性检查。 */
+int lp_transport_count(void);
+const LpTransport *lp_transport_at(int index);
 
 struct LpIo {
     const LpTransport *tp;

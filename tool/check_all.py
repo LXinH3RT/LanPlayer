@@ -1960,6 +1960,172 @@ def check_source_manifest() -> None:
         notes.append(f"source manifest: {len(listed)} native source(s) in one "
                      f"list shared by CMake and both build scripts")
 
+def strip_c_comments(text: str) -> str:
+    """Drop // and /* */ comments so literal checks only see real code.
+
+    Several checks assert that a string is gone from a translation unit, but
+    the same string can legitimately appear in a comment that explains the
+    format (url.c documents `"smb://host/share/电影/"`).  Comparing raw text
+    would then fail on a correct file.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_line = False
+    in_block = False
+    in_string = False
+    while i < n:
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if in_line:
+            if ch == "\n":
+                in_line = False
+                out.append(ch)
+            i += 1
+            continue
+        if in_block:
+            if ch == "*" and nxt == "/":
+                in_block = False
+                i += 2
+                continue
+            if ch == "\n":
+                out.append(ch)  # keep line numbering intact
+            i += 1
+            continue
+        if in_string:
+            out.append(ch)
+            if ch == "\\" and nxt:
+                out.append(nxt)
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == "/" and nxt == "/":
+            in_line = True
+            i += 2
+            continue
+        if ch == "/" and nxt == "*":
+            in_block = True
+            i += 2
+            continue
+        if ch == '"':
+            in_string = True
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def check_transport_registry() -> None:
+    """Keep "add a protocol" a one-line change.
+
+    Before this the transport layer was a struct plus a hand-written if-chain:
+    adding a scheme meant editing the extern block in source_internal.h, the
+    if-chain in lp_transport_find, the #if ladder inside lp_source_schemes, two
+    build scripts, and a literal `smb://` in Dart.  Every one of those could be
+    forgotten silently, and the symptom was a URL that parsed but never opened.
+
+    Now a scheme is one const LpTransport plus one row in io.c's table, and
+    everything else -- the scheme list, the URL shape, the "does this scheme
+    need its own AVIO" decision, the default port -- is derived from that table.
+    This check asserts that derivation actually stays derived.
+    """
+    source = ROOT / "native" / "src" / "source"
+    io_c = (source / "io.c").read_text(encoding="utf-8")
+    internal = (source / "source_internal.h").read_text(encoding="utf-8")
+    url_c = (source / "url.c").read_text(encoding="utf-8")
+
+    # 1. 注册表本身：一张表 + 一次查表，不允许再长出 if 链。
+    if "static const LpTransport *const lp_transports[]" not in io_c:
+        problems.append("native/src/source/io.c has no lp_transports[] table; a "
+                        "new scheme would have to be wired up by hand again")
+    find_body = re.search(r"const LpTransport \*lp_transport_find\(const char \*scheme\)\s*\{(.*?)\n\}",
+                          io_c, re.S)
+    if not find_body:
+        problems.append("native/src/source/io.c: lp_transport_find() is gone "
+                        "or no longer matches the registry shape")
+    else:
+        body = find_body.group(1)
+        if "registry_lookup(" not in body:
+            problems.append("lp_transport_find() must delegate to "
+                            "registry_lookup(); an inline chain means every new "
+                            "scheme edits this function")
+        if body.count("strcmp(") > 1:
+            problems.append("lp_transport_find() still compares scheme strings "
+                            "by hand; scheme aliases belong in canonical_scheme()")
+
+    # 2. scheme 列表必须从表里推导，不能再是一段 #if 手工拼装。
+    schemes_body = re.search(r"int32_t lp_source_schemes\(char \*\*out_json\)\s*\{(.*?)\n\}",
+                             io_c, re.S)
+    if not schemes_body:
+        problems.append("native/src/source/io.c: lp_source_schemes() is gone")
+    else:
+        body = schemes_body.group(1)
+        for needle, why in (
+            ("lp_transport_at(", "the scheme list must walk the registry"),
+            ("public_scheme", "the scheme list must honour the transport's "
+                              "public_scheme flag instead of #if ladders"),
+        ):
+            if needle not in body:
+                problems.append(f"lp_source_schemes(): {why} ({needle} missing)")
+        if "#if" in body:
+            problems.append("lp_source_schemes() is back to an #if ladder; the "
+                            "registry table already knows which schemes exist")
+
+    # 3. 头文件不再逐个 extern 每份 transport：那是注册表要消灭的东西。
+    if "extern const LpTransport lp_transport_" in internal:
+        problems.append("source_internal.h still externs individual transports; "
+                        "only io.c's table needs to know their names")
+
+    # 4. 「要不要自己挂 AVIO」必须问注册表，不能在 demux/thumb 里重新判断。
+    for rel, label in (("core/demux.c", "demux"), ("core/thumb.c", "thumbnail")):
+        text = (ROOT / "native" / "src" / rel).read_text(encoding="utf-8")
+        if "lp_transport_custom_io(" not in text:
+            problems.append(f"native/src/{rel}: the {label} path no longer asks "
+                            f"lp_transport_custom_io(), so a new scheme would "
+                            f"silently get no AVIO")
+        if re.search(r'strcmp\(\s*[a-z_.>-]*scheme[^,]*,\s*"file"\s*\)', text):
+            problems.append(f"native/src/{rel}: back to comparing the scheme "
+                            f"against \"file\" by hand")
+
+    # 5. URL 拼装也只能依靠注册表：url.c 里不该再出现 "smb://" 字面量。
+    #    注释里举的例子（`"smb://host/share/电影/"`）不算，先剥掉注释。
+    code_only = strip_c_comments(url_c)
+    for prefix in ('"smb://', '"file://'):
+        if prefix in code_only:
+            problems.append("native/src/source/url.c still hard-codes a scheme "
+                            f"prefix ({prefix}); lp_url_authority() builds it "
+                            "from LpTransport")
+
+    # 6. FFmpeg-only 的 scheme 也要在清单里有位置。
+    manifest = (ROOT / "native" / "sources.cmake").read_text(encoding="utf-8")
+    if "src/source/ffmpeg.c" not in manifest:
+        problems.append("native/sources.cmake lost src/source/ffmpeg.c; http(s) "
+                        "would drop out of the scheme list")
+
+    # 7. Dart 侧：scheme 字面量只允许出现在 scheme.dart 里。
+    data = ROOT / "app" / "lib"
+    offenders = []
+    for path in data.rglob("*.dart"):
+        if path.name == "scheme.dart":
+            continue
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("//"):
+                continue
+            if "'smb://" in line or "'file://" in line:
+                offenders.append(f"{path.relative_to(ROOT).as_posix()}: "
+                                 f"{stripped[:80]}")
+    for entry in offenders:
+        problems.append(f"{entry} hard-codes a URL scheme; use LpScheme from "
+                        f"app/lib/data/scheme.dart")
+
+    if not problems:
+        notes.append("transport registry: one table drives scheme list, URL "
+                     "shape, AVIO choice and default ports")
+
 def check_dart_tests() -> None:
     """Run the Dart test suite (share key + subtitle rendering).
 
@@ -4279,9 +4445,9 @@ def check_local_picker() -> None:
             # while the roots (drives, home, downloads) are bare paths.  Adding
             # the prefix unconditionally produced `file://file://D:/x` and every
             # directory below a drive failed with "not found".
-            ("path.startsWith('file://')", "the picker no longer tolerates both "
-                                           "bare paths and file:// URLs, so "
-                                           "descending past a drive breaks"),
+            ("LpScheme.isFileUrl(path)", "the picker no longer tolerates both "
+                                         "bare paths and file:// URLs, so "
+                                         "descending past a drive breaks"),
             # The app theme sets every FilledButton to minimumSize
             # Size.fromHeight(48) -- an *infinite* minimum width.  In a Row that
             # squeezes the flexible text to zero and paints the button outside
@@ -4336,6 +4502,7 @@ def main() -> int:
     check_dart_duplicates()
     check_required_files()
     check_source_manifest()
+    check_transport_registry()
     check_symbols()
     check_native_runtime()
     check_dart_syntax()

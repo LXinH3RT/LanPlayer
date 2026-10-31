@@ -29,6 +29,7 @@ set(LP_CORE_SOURCES
     src/source/url.c
     src/source/io.c
     src/source/smb.c
+    src/source/ffmpeg.c
     src/source/file.c
 )
 

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data' show BytesBuilder;
 
+import 'scheme.dart';
 import 'stores.dart';
 
 /// Where the user stopped in one file.
@@ -141,10 +142,15 @@ class ProgressStore {
   /// `file:///D:/x` and `file://D:/x` are the same file; the browser builds
   /// the second form and hand-written/older records may carry the first.
   static String _normalizeFileUrl(String s) {
-    const prefix = 'file:///';
-    if (!s.startsWith(prefix) || s.length <= prefix.length) return s;
-    final rest = s.substring(prefix.length);
-    if (rest.length >= 2 && rest[1] == ':') return 'file://$rest';
+    final prefix = LpScheme.filePrefix;
+    final triplePrefix = '$prefix/';
+    if (!s.startsWith(triplePrefix) || s.length <= triplePrefix.length) {
+      return s;
+    }
+    final rest = s.substring(triplePrefix.length);
+    if (rest.length >= 2 && rest[1] == ':') {
+      return '$prefix$rest';
+    }
     return s;
   }
 

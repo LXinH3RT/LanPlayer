@@ -9,6 +9,10 @@
 /* native/src/source/source_internal.h */
 typedef struct LpTransport {
     const char *scheme;
+    int hosted;        /* 1 = "<scheme>://host/share/path"，0 = "<scheme>://path" */
+    int default_port;  /* 该 scheme 的默认端口；-1 = 没有端口概念，0 = 必填 */
+    int custom_io;     /* 1 = 本层用 LpIo 打开，0 = 交给 FFmpeg 原生协议 */
+    int public_scheme; /* 1 = 出现在 lp_source_schemes() 的列表里 */
     int  (*open)(LpIo *io, const LpUrl *u, const LpSourceOptions *opts, char *err, size_t n);
     void (*close)(LpIo *io);
     int  (*read)(LpIo *io, uint8_t *buf, int size);
@@ -19,17 +23,23 @@ typedef struct LpTransport {
 } LpTransport;
 ```
 
-`lp_io_open()` 按 URL scheme 选择实现；`lp_io_attach_avio()` 把 `LpIo` 包装成
+`lp_io_open()` 按 URL scheme 查注册表选实现；`lp_io_attach_avio()` 把 `LpIo` 包装成
 `AVIOContext`（自定义 `read_packet`/`seek`），然后 `avformat_open_input` 完全不知道
-底下是 SMB 还是别的。**新增协议 = 新增一个 .c 文件 + 注册一行**，播放内核零改动。
+底下是 SMB 还是别的。
+
+**新增协议 = 新增一个 .c 文件定义一份 `const LpTransport`，再在 `io.c` 的
+`lp_transports[]` 里加一行。** scheme 列表、URL 形态（要不要切共享名）、默认端口、
+「这一层要不要自己挂 AVIO」全部由那张表推导，播放内核与 Dart 侧都不需要改动。
 
 现有实现：
 
-| scheme | 文件 | 说明 |
-|--------|------|------|
-| `smb://` | `source/smb.c` | libsmb2，SMB2/3，认证、目录、断点读取 |
-| `file://` | `source/file.c` | 本地文件与目录（模块 5） |
-| `http(s)://`、`tcp://` | 交给 FFmpeg 原生协议层 | 设了 abort 回调与超时 |
+| scheme | 文件 | hosted | 默认端口 | custom_io | 说明 |
+|--------|------|--------|----------|-----------|------|
+| `smb://`（`smb2://` 是别名） | `source/smb.c` | 1 | 445 | 1 | libsmb2，SMB2/3，认证、目录、断点读取 |
+| `file://` | `source/file.c` | 0 | 无 | 1 | 本地文件与目录（模块 5） |
+| `http://` | `source/ffmpeg.c` | 1 | 80 | 0 | 交给 FFmpeg 原生协议层 |
+| `https://` | `source/ffmpeg.c` | 1 | 443 | 0 | 同上，设了 abort 回调与超时 |
+| `tcp://` | `source/ffmpeg.c` | 1 | 必填 | 0 | 占位条目，`public_scheme = 0`，暂不进列表 |
 
 ## 2. 读放大与 seek
 
@@ -86,17 +96,30 @@ static int tcp_read(LpIo *io, uint8_t *buf, int size) { /* recv，处理 EINTR/E
 static int64_t tcp_seek(LpIo *io, int64_t off, int whence) { /* 发送 seek 请求帧 */ }
 
 const LpTransport lp_transport_tcp = {
-    .scheme = "tcp", .open = tcp_open, .close = tcp_close,
+    .scheme = "tcp",
+    .hosted = 1,          /* "tcp://host:port/path" */
+    .default_port = 0,    /* 端口必填 */
+    .custom_io = 1,       /* 本层自己挂 AVIO */
+    .public_scheme = 1,   /* 进 lp_source_schemes() */
+    .open = tcp_open, .close = tcp_close,
     .read = tcp_read, .seek = tcp_seek, .size = tcp_size,
     .list = tcp_list, .probe = tcp_probe,
 };
 ```
 
-然后在 `lp_transport_find()` 加：
+然后把 `source/tcp.c` 加进 `native/sources.cmake` 的 `LP_CORE_SOURCES`，并在
+`io.c` 的注册表里加一行：
 
 ```c
-if (strcmp(scheme, "tcp") == 0) return &lp_transport_tcp;
+static const LpTransport *const lp_transports[] = {
+    &lp_transport_file,
+    /* ... */
+    &lp_transport_tcp,      /* 唯一需要改的注册点 */
+};
 ```
+
+`source/ffmpeg.c` 里已有一份 `tcp` 的占位条目（`custom_io = 0`，交给 FFmpeg），
+真正实现时把它换成上面这份即可。
 
 要点：
 
@@ -109,9 +132,12 @@ if (strcmp(scheme, "tcp") == 0) return &lp_transport_tcp;
 
 新增协议时确认：
 
+- [ ] 新 transport 已加入 `native/sources.cmake`，且在 `io.c` 的 `lp_transports[]` 里
+- [ ] `hosted` / `default_port` / `custom_io` / `public_scheme` 四个标志位填对
 - [ ] `lp_source_list` 能列出目录，`parent` 正确
 - [ ] `lp_io_read` 在文件末尾返回 0（不是错误）
 - [ ] `lp_io_seek(SEEK_END)` 在 `size` 未知时返回 `-1` 而不是崩溃
 - [ ] abort（退出播放）能在 100 ms 内打断阻塞读
 - [ ] 认证失败映射到 `LP_ERR_AUTH`，并写入 `lp_source_last_error`
 - [ ] 凭据只在 `options_json` 或 URL userinfo 里，不出现在路径与日志
+- [ ] `tool/check_all.py` 的 `check_transport_registry()` 与 `check_source_manifest()` 通过

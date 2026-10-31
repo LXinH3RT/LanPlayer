@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import 'scheme.dart';
 import 'stores.dart';
 
 /// 一个被收进首页的本机路径：一块目录，或者单个文件。
@@ -26,7 +27,7 @@ class LocalFolder {
   DateTime createdAt;
   DateTime? lastUsedAt;
 
-  String get rootUrl => 'file://$path';
+  String get rootUrl => LpScheme.fileUrl(path);
 
   Map<String, dynamic> toJson() => {
         'id': id,

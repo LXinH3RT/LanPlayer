@@ -110,7 +110,7 @@ class MediaRepository {
   /// 只校验账号密码：真的连一次服务器，连上了就返回，不列共享。
   Future<SourceProbe> probeServer(ServerProfile profile) async {
     final result = await probeServerInBackground(
-      'smb://${profile.host}${profile.port == 445 ? '' : ':${profile.port}'}/${profile.share}',
+      profile.rootUrl,
       profile.transportOptions(),
     );
     if (!result.ok) {
@@ -136,7 +136,8 @@ class MediaRepository {
     final cut = path.lastIndexOf(RegExp(r'[\\/]'));
     final parent = cut > 0 ? path.substring(0, cut) : path;
     final name = cut >= 0 ? path.substring(cut + 1) : path;
-    final dir = await browseUrl('file://$parent', const {'list_all': 1});
+    final dir =
+        await browseUrl(LpScheme.fileUrl(parent), const {'list_all': 1});
     final own = dir.entries.where((e) => !e.isDir && e.name == name).toList();
     if (own.isEmpty) {
       throw MediaSourceException('这个文件已经不在了：$path');
@@ -155,7 +156,7 @@ class MediaRepository {
 
   /// Entry point for module 5: local storage.
   Future<DirectoryListing> browseLocal(String path) async {
-    final listing = await _fetch('file://$path', const {});
+    final listing = await _fetch(LpScheme.fileUrl(path), const {});
     if (!listing.ok) {
       final why =
           listing.failure?.code == SourceFailure.notFound ? '不存在' : '读不出来';

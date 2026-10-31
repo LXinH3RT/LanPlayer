@@ -27,7 +27,7 @@ class MediaLocation {
 
   factory MediaLocation.local(String label, String path) => MediaLocation(
         label: label,
-        rootUrl: 'file://$path',
+        rootUrl: LpScheme.fileUrl(path),
         options: const {},
         isLocal: true,
       );
@@ -37,13 +37,13 @@ class MediaLocation {
   String credentialized(String path) {
     final p = profile;
     if (p == null || isLocal) return path;
-    const marker = 'smb://';
+    const marker = LpScheme.smbPrefix;
     if (!path.startsWith(marker)) return path;
     final rest = path.substring(marker.length);
     if (rest.contains('@')) return path;
     final user = Uri.encodeComponent(p.user);
     final pass = Uri.encodeComponent(p.password);
-    return 'smb://$user:$pass@$rest';
+    return '$marker$user:$pass@$rest';
   }
 
   /// Options handed to lp_player_open: credentials + user preferences are merged
