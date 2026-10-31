@@ -161,6 +161,29 @@ AVPacket *lp_pq_get(LpPacketQueue *q, int *serial, int block)
     }
 }
 
+/* 解码线程的「再等等」：真的睡在条件变量上，而不是每 2 ms 醒一次加解锁。
+ * put / abort / flush / start / signal_eof 都会广播，所以正常播放时这条路径
+ * 每次被唤醒都立刻返回；`timeout_ms` 只是兜底（漏广播时不至于把线程睡死）。 */
+void lp_pq_wait_more(LpPacketQueue *q, int timeout_ms)
+{
+    if (timeout_ms <= 0) {
+        timeout_ms = 200;
+    }
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += timeout_ms / 1000;
+    ts.tv_nsec += (long)(timeout_ms % 1000) * 1000 * 1000L;
+    if (ts.tv_nsec >= 1000000000L) {
+        ts.tv_sec++;
+        ts.tv_nsec -= 1000000000L;
+    }
+    pthread_mutex_lock(&q->mutex);
+    if (!q->abort_request && !q->head) {
+        pthread_cond_timedwait(&q->cond, &q->mutex, &ts);
+    }
+    pthread_mutex_unlock(&q->mutex);
+}
+
 void lp_pq_signal_eof(LpPacketQueue *q, int serial)
 {
     pthread_mutex_lock(&q->mutex);

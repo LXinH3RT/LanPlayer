@@ -203,6 +203,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
+  /// 低频事件（开关/换轨/报错/缓冲/统计）到手时的处理。
+  ///
+  /// 位置与字幕走的是各自的 [ValueNotifier] 通道，不再经过这里 —— 它们每秒
+  /// 各来 5 次和 50 次，整页重排一遍顶栏底栏的代价远大于收益。能走到这里
+  /// 的事件都是「界面确实变了」，整页重建是合理的。
   void _onPlayerChanged() {
     if (!mounted) return;
     _applyPendingResume();
@@ -307,27 +312,55 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// 因为移动画面就是「我要看控制条」的明确意图。
   static const Duration _autoHideDelay = Duration(seconds: 2);
 
+  /// 最后一次用户动静的时刻。
+  ///
+  /// 光标划过画面是高频事件（一秒几十上百次）。原来每来一次就 cancel 掉
+  /// 旧定时器再建一个新的，等于每秒重建成百个 Timer。现在只记时刻，定时器
+  /// 到点发现自己不是「最后一次动静之后 2 秒」就顺延，全程只有一个 Timer，
+  /// 而「最后一次移动后 2 秒收起」这个行为不变。
+  DateTime _lastActivity = DateTime.now();
+
+  /// 记一次用户动静，并保证定时器在跑。
+  ///
+  /// 光标划过画面是高频事件（一秒几十上百次）。原来每来一次就 cancel 掉
+  /// 旧定时器再建一个新的，等于每秒重建成百个 Timer。现在只更新时刻，
+  /// 全生命周期最多一个 Timer；它到点发现自己不是「最后一次动静之后
+  /// 2 秒」就顺延，收起时机与原来一致。
+  void _noteActivity() {
+    _lastActivity = DateTime.now();
+    if (_hideTimer == null || !_hideTimer!.isActive) {
+      _scheduleHide();
+    }
+  }
+
   void _scheduleHide() {
     _hideTimer?.cancel();
-    _hideTimer = Timer(_autoHideDelay, () {
-      if (!mounted || !_controls) return;
-      setState(() => _controls = false);
-      // 验证用日志：scripts\send_keys.py 靠这一行断言「鼠标静止 2 秒后控件收起」。
-      // 只在真正发生变化时打印，鼠标移动过程中不会刷屏。
-      // ignore: avoid_print
-      print('LanPlayer controls: hidden (idle ${_autoHideDelay.inSeconds}s)');
-    });
+    _hideTimer = Timer(_autoHideDelay, _hideWhenIdle);
+  }
+
+  void _hideWhenIdle() {
+    if (!mounted || !_controls) return;
+    final idle = DateTime.now().difference(_lastActivity);
+    if (idle < _autoHideDelay) {
+      _hideTimer = Timer(_autoHideDelay - idle, _hideWhenIdle);
+      return;
+    }
+    _hideTimer = null;
+    setState(() => _controls = false);
+    // 验证用日志：scripts\send_keys.py 靠这一行断言「鼠标静止 2 秒后控件收起」。
+    // 只在真正发生变化时打印，鼠标移动过程中不会刷屏。
+    // ignore: avoid_print
+    print('LanPlayer controls: hidden (idle ${_autoHideDelay.inSeconds}s)');
   }
 
   void _showControls() {
-    _hideTimer?.cancel();
+    _noteActivity();
     if (!_controls) {
       setState(() => _controls = true);
       // 与上面的 hidden 配对：证明鼠标一移动控件就重新出现。
       // ignore: avoid_print
       print('LanPlayer controls: shown');
     }
-    _scheduleHide();
     _maybePrintLayoutProbe();
   }
 
@@ -379,9 +412,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   /// 鼠标只要在画面上移动就重新显示控件，并重新开始 2 秒倒计时；
-  /// 静止 2 秒后由 [_scheduleHide] 收起，不需要再点一下画面。
+  /// 静止 2 秒后由 [_hideWhenIdle] 收起，不需要再点一下画面。
+  ///
+  /// hover 是高频事件（鼠标划过一秒就是几十上百次），所以这里只记时刻，
+  /// 不 cancel/新建定时器，也不无条件 setState。
   void _onPointerHover(PointerHoverEvent event) {
-    _showControls();
+    _noteActivity();
+    if (!_controls) _showControls();
   }
 
   /// 滚轮调音量：往上滚变大，一格走 [VolumeSheet.wheelStep] 个显示刻度。
@@ -810,8 +847,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   Widget build(BuildContext context) {
     final duration = _player.durationUs > 0 ? _player.durationUs : 1;
-    final position =
-        _dragValue ?? _player.positionUs.clamp(0, duration).toDouble();
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -869,12 +904,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   ),
                 // 字幕按**画面**而不是窗口定位：画面留黑边时，字幕的位置和
                 // 字号都该跟着画面走，不然窗口一拉宽字幕就飞了。
-                SubtitleOverlay(
-                  cue: _player.cue,
-                  scale: _settings.subtitleScale,
-                  safeArea: _controls ? 110 : 28,
-                  videoAspectRatio: _videoAspectRatio,
-                  scaleMode: _settings.scaleMode,
+                //
+                // 只订阅字幕通道：带 `\t` 的字幕每 20 ms 来一条，整页重建
+                // 会把顶栏、底栏、按钮全跟着重排一遍。
+                ValueListenableBuilder<SubtitleCue>(
+                  valueListenable: _player.cueNotifier,
+                  builder: (context, cue, _) => SubtitleOverlay(
+                    cue: cue,
+                    scale: _settings.subtitleScale,
+                    safeArea: _controls ? 110 : 28,
+                    videoAspectRatio: _videoAspectRatio,
+                    scaleMode: _settings.scaleMode,
+                  ),
                 ),
                 if (_player.buffering && !_starting)
                   const Center(
@@ -902,7 +943,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     ignoring: !_controls,
                     child: Align(
                       alignment: Alignment.bottomCenter,
-                      child: _bottomBar(duration, position),
+                      // 进度每 200 ms 更新一次，只重建底栏这一条，不动整页。
+                      child: ValueListenableBuilder<int>(
+                        valueListenable: _player.positionUsNotifier,
+                        builder: (context, positionUs, _) {
+                          final position = _dragValue ??
+                              positionUs.clamp(0, duration).toDouble();
+                          return _bottomBar(duration, position);
+                        },
+                      ),
                     ),
                   ),
                 ),

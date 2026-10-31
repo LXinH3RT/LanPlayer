@@ -527,6 +527,94 @@ def check_lan_scan() -> None:
                         "share) so cards stay readable when name is empty")
 
 
+def check_listing_index() -> None:
+    """目录页的派生列表只能算一次。
+
+    `DirectoryListing` 的 `videos`/`folders`/`subtitles` 原来是每次读都
+    `entries.where(...).toList()`；`subtitlesFor(video)` 每次都重扫全部字幕并
+    逐条配对；`orphanSubtitles` 是 `V×S`；`browsable` 里再对每行跑
+    `orphans.any(...)` 变成 `O(n²)`。行里的字幕标签又是
+    `videos.firstWhere((v) => subtitlesFor(v).any(...))` —— 一个目录几百个
+    文件时滚动就是 `O(n³)`。
+
+    这个退化不会报错也不会崩，只是越滚越卡，所以用静态断言钉住：派生列表
+    必须是 `late final` 的缓存，配对必须走一次建好的索引表，行里不许再
+    `firstWhere` 现找归属。
+    """
+    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    if not models.exists():
+        problems.append("app/lib/data/models.dart missing")
+        return
+    mc = models.read_text(encoding="utf-8")
+    listing = mc.split("class DirectoryListing {", 1)[-1].split("\n}", 1)[0]
+    # 只看代码：注释里会提到旧写法（「原来是 `orphans.any(...)`」），那正是
+    # 要说明的背景，不能当成回归。
+    listing_code = "\n".join(line for line in listing.splitlines()
+                             if not line.lstrip().startswith("//"))
+    for token, why in (
+        ("late final List<MediaEntry> videos =",
+         "videos must be computed once; the row for every entry reads it"),
+        ("late final List<MediaEntry> folders =",
+         "folders must be computed once; the empty-state check reads it"),
+        ("late final List<MediaEntry> subtitles =",
+         "subtitles must be computed once"),
+        ("late final List<MediaEntry> orphanSubtitles =",
+         "orphanSubtitles must be computed once; it is O(V×S)"),
+        ("late final List<MediaEntry> browsable =",
+         "browsable must be computed once; it is rebuilt on every scroll tick"),
+    ):
+        if token not in listing:
+            problems.append(f"DirectoryListing: {why} (expected `{token}`)")
+    # 负向对照：派生列表不能退回成 getter。
+    for name in ("videos", "folders", "subtitles", "orphanSubtitles",
+                 "browsable"):
+        if f"List<MediaEntry> get {name} =>" in listing:
+            problems.append(f"DirectoryListing.{name} is a getter again; it "
+                            f"re-walks entries on every read")
+    if "_subtitleIndex" not in listing:
+        problems.append("DirectoryListing must build one subtitle index; "
+                        "re-pairing on every subtitlesFor call is O(V×S) per "
+                        "row")
+    if "subtitleBelongsTo(v.name, s.name)" not in listing:
+        problems.append("DirectoryListing must still pair through "
+                        "subtitleBelongsTo; a second rule set would drift from "
+                        "subtitle_match.dart")
+    if "ownerOfSubtitle(" not in listing:
+        problems.append("DirectoryListing must expose ownerOfSubtitle so the "
+                        "row label does not scan every video again")
+    if "orphans.any(" in listing_code:
+        problems.append("DirectoryListing.browsable is back to scanning the "
+                        "orphan list per row; collect the paths into a Set")
+
+    row = ROOT / "app" / "lib" / "ui" / "widgets" / "media_row.dart"
+    if row.exists():
+        rc = row.read_text(encoding="utf-8")
+        label = rc.split("String subtitleLabel(", 1)[-1]
+        if "listing.videos.firstWhere(" in label:
+            problems.append("media_row.subtitleLabel is back to scanning every "
+                            "video for the owner; use listing.ownerOfSubtitle")
+        if "ownerOfSubtitle(" not in label:
+            problems.append("media_row.subtitleLabel must take the owner from "
+                            "the listing index")
+
+    progress = ROOT / "app" / "lib" / "data" / "progress.dart"
+    if not progress.exists():
+        problems.append("app/lib/data/progress.dart missing")
+        return
+    pc = progress.read_text(encoding="utf-8")
+    if "_keyCache" not in pc:
+        problems.append("progress.dart must memoise sanitizeKey; every row "
+                        "asks for a resume point on every frame and the "
+                        "percent-decode is pure work done again and again")
+    if "_sanitizeKeyUncached(" not in pc:
+        problems.append("progress.dart: sanitizeKey must delegate to the "
+                        "uncached implementation, otherwise the cache either "
+                        "recurses or is bypassed")
+
+    notes.append("listing index: derived lists are computed once, subtitles "
+                 "pair through a single index, and progress keys are memoised")
+
+
 def check_seek_step() -> None:
     """快进/快退步长：1..10 的整数，设置可改，播放页读设置。
 
@@ -972,6 +1060,42 @@ def check_thumbnails() -> None:
     if "ThumbnailCache.instance.clear()" not in settings_text:
         problems.append("settings_screen.dart must offer 清空封面缓存; clear() "
                         "had no caller, so stale covers stayed on disk")
+
+    # 封面缓存的两个「只增不减」：内存里的 ui.Image 无上限、磁盘上的 .thumb
+    # 文件只写不删。前者滑完一个剧集目录就吃掉几十 MB（一张 128×128 RGBA
+    # 约 64 KB），后者库越滚越大，装久了就是几百 MB 的死重量。
+    if "memoryLimit" not in code or "ImageLru" not in code:
+        problems.append("thumbs.dart must cap the decoded-cover cache with an "
+                        "LRU; an unbounded Map keeps every cover the user ever "
+                        "scrolled past (about 64 KB each)")
+    if "diskLimitBytes" not in code or "pruneDisk(" not in code:
+        problems.append("thumbs.dart must evict old .thumb files (pruneDisk); "
+                        "the cache had a diskUsage() ruler but nothing ever "
+                        "deleted, so it only grew")
+    if "setLastModified(" not in code:
+        problems.append("thumbs.dart must touch a cover file when it is read; "
+                        "without that the eviction cannot tell a hot cover "
+                        "from one nobody opened in months")
+
+    # 首页整块塞进 Column 时，一块来源摊开有几行就建几个 MediaRow，每行一个
+    # ThumbnailTile —— 进首页就排起两百个串行封面请求。改成展平 + builder
+    # 之后，只有视口内的行会被建出来。
+    home = ROOT / "app" / "lib" / "ui" / "home_screen.dart"
+    if home.exists():
+        home_code = "\n".join(
+            l for l in home.read_text(encoding="utf-8").splitlines()
+            if not l.strip().startswith("//"))
+        if "ListView.builder(" not in home_code:
+            problems.append("home_screen must build its list with "
+                            "ListView.builder; a plain ListView(children:) "
+                            "creates every row of every source up front")
+        if "abstract class _HomeItem" not in home_code:
+            problems.append("home_screen must defer row construction through "
+                            "_HomeItem; flattening into ready-made widgets "
+                            "still mounts every MediaRow on the first frame")
+        if "class _RowItem implements _HomeItem" not in home_code:
+            problems.append("home_screen lost _RowItem; the media rows must "
+                            "only be built when the builder asks for them")
 
     # OS metadata must never be listed. Both transports have to apply the same
     # filter, otherwise .DS_Store shows up over SMB but not locally (or worse,
@@ -2030,6 +2154,122 @@ def check_player_layout() -> None:
         problems.append("opening 媒体信息 must turn wantsStats on for the duration "
                         "and restore it afterwards; otherwise the panel would "
                         "show frozen numbers")
+
+
+def check_player_rebuild_scope() -> None:
+    """播放页的重建范围：位置与字幕只重建该重建的那一小块。
+
+    内核每 200 ms 推一次 POSITION、带 `\\t` 的字幕每 20 ms 推一次 SUBTITLE。
+    这两类事件原来都走 `notifyListeners()`，而播放页的监听器是
+    `setState(() {})` —— 整页控件树（顶栏、底栏、按钮行列）跟着 50 Hz 重排。
+    界面上看不出差别，代价却是一整个核。现在它们各走一条 ValueNotifier
+    通道，只有底栏和字幕层订阅。
+
+    这类退化不会报错、不会崩溃，只是在慢一点的机器上掉帧，所以只能用静态
+    断言钉住：谁把 `notifyListeners()` 加回 `case 2` / `case 6`，谁就得看到
+    这条红。
+    """
+    controller = ROOT / "app" / "lib" / "core" / "player_controller.dart"
+    if not controller.exists():
+        problems.append("app/lib/core/player_controller.dart missing")
+        return
+    cc = controller.read_text(encoding="utf-8")
+    for token, why in (
+        ("final ValueNotifier<int> positionUsNotifier",
+         "the position channel that keeps POSITION out of the page rebuild"),
+        ("final ValueNotifier<SubtitleCue> cueNotifier",
+         "the subtitle channel that keeps animated cues out of the page rebuild"),
+    ):
+        if token not in cc:
+            problems.append(f"player_controller.dart lost {token} ({why})")
+
+    # 负向对照：位置分支必须在更新通道后直接返回。落到末尾那行
+    # `notifyListeners()` 就等于整页重建，等于这次改动没做。
+    position = cc.split("case 2: // position", 1)[-1].split("case 3:", 1)[0]
+    if "positionUsNotifier.value" not in position:
+        problems.append("player_controller.dart: the POSITION branch no longer "
+                        "feeds positionUsNotifier; the progress bar would be "
+                        "frozen because nothing else listens to it")
+    if "return;" not in position:
+        problems.append("player_controller.dart: the POSITION branch falls "
+                        "through to notifyListeners(); the whole player page "
+                        "would rebuild five times a second")
+    subtitle = cc.split("case 6: // subtitle", 1)[-1].split("case 7:", 1)[0]
+    if "cueNotifier.value = cue;" not in subtitle:
+        problems.append("player_controller.dart: the SUBTITLE branch no longer "
+                        "feeds cueNotifier; subtitles would stop updating")
+    if "return;" not in subtitle:
+        problems.append("player_controller.dart: the SUBTITLE branch falls "
+                        "through to notifyListeners(); an animated cue rebuilds "
+                        "the whole page at 50 Hz")
+    if "positionUsNotifier.dispose()" not in cc or "cueNotifier.dispose()" not in cc:
+        problems.append("player_controller.dart must dispose the two notifiers; "
+                        "a listener added by ValueListenableBuilder keeps the "
+                        "State alive after the page is gone")
+
+    screen = ROOT / "app" / "lib" / "ui" / "player_screen.dart"
+    if not screen.exists():
+        problems.append("player_screen.dart missing")
+        return
+    text = screen.read_text(encoding="utf-8")
+    if "valueListenable: _player.cueNotifier" not in text:
+        problems.append("player_screen.dart no longer subscribes SubtitleOverlay "
+                        "to cueNotifier; dropping the subscription either "
+                        "freezes subtitles or forces the page back to a full "
+                        "rebuild")
+    if "valueListenable: _player.positionUsNotifier" not in text:
+        problems.append("player_screen.dart no longer subscribes the transport "
+                        "row to positionUsNotifier; the progress bar would only "
+                        "move on unrelated rebuilds")
+    # 负向对照：整页不能再直接读 cue / positionUs —— 读了就说明它还在靠
+    # notifyListeners 驱动。
+    bare = text.replace("_player.cueNotifier", "").replace(
+        "_player.positionUsNotifier", "")
+    if "_player.cue," in bare or "_player.cue)" in bare:
+        problems.append("player_screen.dart still reads _player.cue directly; "
+                        "the subtitle layer must come from cueNotifier or the "
+                        "page rebuilds on every animation frame")
+    if "final position =\n        _dragValue ?? _player.positionUs" in text:
+        problems.append("player_screen.dart is back to computing the transport "
+                        "position in build(); it belongs inside the "
+                        "positionUsNotifier listener")
+
+    overlay = ROOT / "app" / "lib" / "ui" / "widgets" / "subtitle_overlay.dart"
+    if not overlay.exists():
+        problems.append("widgets/subtitle_overlay.dart missing")
+        return
+    ot = overlay.read_text(encoding="utf-8")
+    if "items: _drawingsWithPlacement()" in ot:
+        problems.append("subtitle_overlay.dart calls _drawingsWithPlacement() a "
+                        "second time inside the painter; that walk resolves "
+                        "every animation again for nothing")
+    if "oldDelegate.items != items" in ot:
+        problems.append("subtitle_overlay.dart: _DrawingsPainter.shouldRepaint "
+                        "compares the items list, which is rebuilt every frame, "
+                        "so it is always true and the canvas repaints at the "
+                        "display rate")
+    if "identical(oldDelegate.cue, cue)" not in ot:
+        problems.append("subtitle_overlay.dart: _DrawingsPainter must key its "
+                        "repaint decision on the cue identity; comparing lists "
+                        "makes shouldRepaint a constant true")
+    if "_resolved.putIfAbsent(" not in ot:
+        problems.append("subtitle_overlay.dart lost the per-build animation "
+                        "cache; each run would be resolved once per text layer "
+                        "(shadow + outline + body + clip)")
+
+    if "void _noteActivity()" not in text or "void _hideWhenIdle()" not in text:
+        problems.append("player_screen.dart lost the single-timer auto-hide; "
+                        "re-creating a Timer on every hover event churns "
+                        "hundreds of timers a second while the pointer moves")
+    hover = text.split("void _onPointerHover(", 1)[-1].split("///", 1)[0]
+    if "_hideTimer?.cancel()" in hover:
+        problems.append("_onPointerHover cancels the auto-hide timer directly; "
+                        "route it through _noteActivity so the timer is only "
+                        "re-armed when it has actually stopped")
+
+    notes.append("player rebuild scope: position and subtitles have their own "
+                 "channels, only the transport row and the subtitle layer "
+                 "rebuild, and one timer covers the whole hover burst")
 
 
 def check_script_encoding() -> None:
@@ -3775,6 +4015,7 @@ def main() -> int:
     check_windows_plugin()
     check_texture_colors()
     check_lan_scan()
+    check_listing_index()
     check_thumbnails()
     check_backspace_guard()
     check_seek_step()
@@ -3782,6 +4023,7 @@ def main() -> int:
     check_installers()
     check_release_policy()
     check_player_layout()
+    check_player_rebuild_scope()
     check_script_encoding()
     check_track_selection()
     check_subtitle_fonts()

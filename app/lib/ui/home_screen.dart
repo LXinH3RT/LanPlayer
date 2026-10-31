@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../data/folders.dart';
 import '../data/home_sources.dart';
+import '../data/location.dart';
 import '../data/models.dart';
 import '../data/repository.dart';
 import '../data/source_health.dart';
@@ -371,8 +372,8 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
 
     final choice = await pickLocalPath(context, _repo.localRoots(),
-        backKey: SettingsStore.instance.value.shortcuts
-            .keyFor(ShortcutAction.back));
+        backKey:
+            SettingsStore.instance.value.shortcuts.keyFor(ShortcutAction.back));
     if (choice == null || !mounted) return;
     await LocalFolderStore.instance.add(
       label: choice.label,
@@ -460,11 +461,63 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// 把每一块来源摊平成一串列表项：标题栏、若干行、收尾按钮、分隔线。
+  ///
+  /// 这里只造描述体（[_HomeItem]），真正的 `MediaRow` 要等
+  /// `ListView.builder` 滚到那一行才建。整块塞进一个 `Column` 的写法会把
+  /// 一块来源的所有行一次挂载，每行一个 `ThumbnailTile`，于是进首页就排起
+  /// 两百个封面请求。
+  List<_HomeItem> _homeItems(List<HomeSource> visible) {
+    final items = <_HomeItem>[];
+    for (final s in visible) {
+      final load = _loads[s.id];
+      final listing = load?.listing;
+      final rows = listing == null ? const <MediaEntry>[] : homeRows(listing);
+      final expanded = _expanded.contains(s.id);
+      final shown = !expanded && rows.length > _maxRows
+          ? rows.take(_maxRows).toList(growable: false)
+          : rows;
+      items.add(_FixedItem(_SourceSection(
+        key: ValueKey('section-${s.id}'),
+        source: s,
+        load: load,
+        empty: listing != null && rows.isEmpty,
+        onRetry: () => _load(s),
+        onOpenRoot: () => _openRoot(s),
+        onEdit: () => _editSource(s),
+        onRemove: () => _confirmRemove(s),
+      )));
+      if (listing == null) continue;
+      for (final e in shown) {
+        items.add(_RowItem(
+          entry: e,
+          listing: listing,
+          location: s.location,
+          onEnter: (entry) => _enterSubdir(s, entry),
+          onPlay: (entry, subs) => _play(s, entry, subs),
+        ));
+      }
+      if (rows.length > shown.length || (expanded && rows.length > _maxRows)) {
+        items.add(_FixedItem(_SectionFooter(
+          key: ValueKey('footer-${s.id}'),
+          hidden: rows.length - shown.length,
+          expanded: expanded,
+          onExpand: () => setState(() => _expanded.add(s.id)),
+          onCollapse: () => setState(() => _expanded.remove(s.id)),
+        )));
+      }
+      items.add(const _FixedItem(Divider(height: 1)));
+    }
+    return items;
+  }
+
   @override
   Widget build(BuildContext context) {
     final sources = _sources;
     final visible =
         _only == null ? sources : sources.where((s) => s.id == _only).toList();
+    // 先摊平成「行」，Widget 本身留给 builder 按需创建。见 [_HomeItem]。
+    final items = _homeItems(visible);
     return Scaffold(
       appBar: AppBar(
         title: const Column(
@@ -523,28 +576,14 @@ class _HomeScreenState extends State<HomeScreen> {
                     onPick: (id) => setState(() => _only = id),
                   ),
                 Expanded(
-                  child: ListView(
+                  // 展平成一条条「行」交给 builder：一份来源摊开后有几百行，
+                  // 如果按小节整块建出来，`children:` 会把每个 `MediaRow`
+                  // 都造一遍，每行都起一次封面请求 —— 几百个请求排在闸门后面，
+                  // 滚动时看到的就是一路转圈。展平之后只建视口内的那些行。
+                  child: ListView.builder(
                     padding: const EdgeInsets.only(top: 4, bottom: 24),
-                    children: [
-                      for (final s in visible)
-                        _SourceSection(
-                          key: ValueKey(s.id),
-                          source: s,
-                          load: _loads[s.id],
-                          maxRows: _maxRows,
-                          expanded: _expanded.contains(s.id),
-                          onExpand: () =>
-                              setState(() => _expanded.add(s.id)),
-                          onCollapse: () =>
-                              setState(() => _expanded.remove(s.id)),
-                          onRetry: () => _load(s),
-                          onOpenRoot: () => _openRoot(s),
-                          onEnter: (e) => _enterSubdir(s, e),
-                          onPlay: (e, subs) => _play(s, e, subs),
-                          onEdit: () => _editSource(s),
-                          onRemove: () => _confirmRemove(s),
-                        ),
-                    ],
+                    itemCount: items.length,
+                    itemBuilder: (ctx, i) => items[i].build(),
                   ),
                 ),
               ],
@@ -639,46 +678,79 @@ class _SourceFilter extends StatelessWidget {
   }
 }
 
-/// 一块来源：标题栏 + 根目录里的若干行。
+/// 首页列表里的一项。真正建 Widget 的动作推迟到 `ListView.builder` 请求它时。
+///
+/// 只要「摊平」这一步不顺手把 `MediaRow` 建出来，滚出屏幕的行就会被正常
+/// 回收，封面请求也就跟着停在那里，不会继续排队。
+abstract class _HomeItem {
+  Widget build();
+}
+
+/// 已经建好的 Widget（标题栏、收尾按钮、分隔线）。
+class _FixedItem implements _HomeItem {
+  const _FixedItem(this.child);
+
+  final Widget child;
+
+  @override
+  Widget build() => child;
+}
+
+/// 媒体行：只记住数据与回调，等被请求时再建 [MediaRow]。
+class _RowItem implements _HomeItem {
+  const _RowItem({
+    required this.entry,
+    required this.listing,
+    required this.location,
+    required this.onEnter,
+    required this.onPlay,
+  });
+
+  final MediaEntry entry;
+  final DirectoryListing listing;
+  final MediaLocation location;
+  final ValueChanged<MediaEntry> onEnter;
+  final void Function(MediaEntry entry, List<MediaEntry> subtitles) onPlay;
+
+  @override
+  Widget build() => MediaRow(
+        key: ValueKey('row-${entry.path}'),
+        entry: entry,
+        listing: listing,
+        location: location,
+        onEnter: onEnter,
+        onPlay: onPlay,
+      );
+}
+
+/// 一块来源的标题栏：图标、名称、全部/编辑/移除，以及加载与错误提示。
+///
+/// 它**不再**负责画行：行已经由 [HomeScreen._homeItems] 摊平成独立的列表项，
+/// 这样 `ListView.builder` 才能只为视口内的行建 Widget。
 class _SourceSection extends StatelessWidget {
   const _SourceSection({
     super.key,
     required this.source,
     required this.load,
-    required this.maxRows,
-    required this.expanded,
-    required this.onExpand,
-    required this.onCollapse,
+    required this.empty,
     required this.onRetry,
     required this.onOpenRoot,
-    required this.onEnter,
-    required this.onPlay,
     required this.onEdit,
     required this.onRemove,
   });
 
   final HomeSource source;
   final _SourceLoad? load;
-  final int maxRows;
 
-  /// 这一块是否已经在首页上摊开全部。摊开后「还有 N 项」变成「收起」。
-  final bool expanded;
-  final VoidCallback onExpand;
-  final VoidCallback onCollapse;
+  /// 这一块的根目录里没有任何可播放的东西。
+  final bool empty;
   final VoidCallback onRetry;
   final VoidCallback onOpenRoot;
-  final ValueChanged<MediaEntry> onEnter;
-  final void Function(MediaEntry entry, List<MediaEntry> subtitles) onPlay;
   final VoidCallback onEdit;
   final VoidCallback onRemove;
 
   @override
   Widget build(BuildContext context) {
-    final listing = load?.listing;
-    final rows = listing == null ? const <MediaEntry>[] : homeRows(listing);
-    final collapsed = !expanded && rows.length > maxRows;
-    final shown = collapsed ? rows.take(maxRows).toList() : rows;
-    final hidden = rows.length - shown.length;
     final loading = load?.loading ?? true;
     final error = load?.error;
     final scheme = Theme.of(context).colorScheme;
@@ -756,41 +828,52 @@ class _SourceSection extends StatelessWidget {
               ],
             ),
           ),
-        if (listing != null && rows.isEmpty)
+        if (empty && error == null && !loading)
           const Padding(
             padding: EdgeInsets.fromLTRB(20, 4, 20, 14),
             child: Text('这个目录里没有视频', style: TextStyle(fontSize: 12)),
-          )
-        else if (listing != null) ...[
-          for (final e in shown)
-            MediaRow(
-              entry: e,
-              listing: listing,
-              location: source.location,
-              onEnter: onEnter,
-              onPlay: onPlay,
-            ),
-          if (hidden > 0)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-              child: TextButton.icon(
-                onPressed: onExpand,
-                icon: const Icon(Icons.expand_more, size: 18),
-                label: Text('还有 $hidden 项'),
-              ),
-            )
-          else if (expanded && rows.length > maxRows)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-              child: TextButton.icon(
-                onPressed: onCollapse,
-                icon: const Icon(Icons.expand_less, size: 18),
-                label: const Text('收起'),
-              ),
-            ),
-        ],
-        const Divider(height: 1),
+          ),
       ],
+    );
+  }
+}
+
+/// 小节末尾的「还有 N 项」/「收起」。同样是一个独立的列表项。
+class _SectionFooter extends StatelessWidget {
+  const _SectionFooter({
+    super.key,
+    required this.hidden,
+    required this.expanded,
+    required this.onExpand,
+    required this.onCollapse,
+  });
+
+  /// 还没列出来的行数；0 表示已经全部摊开。
+  final int hidden;
+  final bool expanded;
+  final VoidCallback onExpand;
+  final VoidCallback onCollapse;
+
+  @override
+  Widget build(BuildContext context) {
+    if (hidden > 0) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+        child: TextButton.icon(
+          onPressed: onExpand,
+          icon: const Icon(Icons.expand_more, size: 18),
+          label: Text('还有 $hidden 项'),
+        ),
+      );
+    }
+    if (!expanded) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+      child: TextButton.icon(
+        onPressed: onCollapse,
+        icon: const Icon(Icons.expand_less, size: 18),
+        label: const Text('收起'),
+      ),
     );
   }
 }

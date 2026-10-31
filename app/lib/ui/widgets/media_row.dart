@@ -161,11 +161,9 @@ class MediaRow extends StatelessWidget {
 String subtitleLabel(MediaEntry sub, DirectoryListing listing) {
   final dot = sub.name.lastIndexOf('.');
   final subStem = (dot > 0 ? sub.name.substring(0, dot) : sub.name);
-  // 找到它归属的视频，减掉主干前缀。
-  final owner = listing.videos.firstWhere(
-    (v) => listing.subtitlesFor(v).any((s) => s.path == sub.path),
-    orElse: () => sub,
-  );
+  // 找到它归属的视频，减掉主干前缀。归属关系由 listing 一次建表算好，
+  // 不在这里逐个视频重配对。
+  final owner = listing.ownerOfSubtitle(sub) ?? sub;
   final ownerDot = owner.name.lastIndexOf('.');
   final ownerStem =
       ownerDot > 0 ? owner.name.substring(0, ownerDot) : owner.name;

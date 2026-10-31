@@ -76,12 +76,10 @@ LpIo *lp_io_open(const char *url, const LpSourceOptions *opts, char *err, size_t
     io->pos = 0;
     io->timeout_ms = opts->timeout_ms > 0 ? opts->timeout_ms : 8000;
     atomic_init(&io->abort, 0);
-    io->cache_cap = (opts->readahead_kb > 0 ? opts->readahead_kb : 1024) * 1024;
-    io->cache = malloc((size_t)io->cache_cap);
-    if (!io->cache) {
-        free(io);
-        return NULL;
-    }
+    io->readahead_cap = (opts->readahead_kb > 0 ? opts->readahead_kb : 1024) * 1024;
+    io->cache_cap = 0;
+    io->cache = NULL;
+    io->tp_pos = 0; /* 刚 open 完，传输层停在开头 */
     if (opts->user[0] && !parsed.user[0]) {
         snprintf(io->url.user, sizeof(io->url.user), "%s", opts->user);
     }
@@ -123,6 +121,27 @@ void lp_io_close(LpIo *io)
     free(io);
 }
 
+/* 全局缓存容量配置（见 source_internal.h 里 readahead_cap 的注释）。 */
+static int io_cache_alloc(LpIo *io, int want)
+{
+    if (want <= io->cache_cap && io->cache) {
+        return LP_OK;
+    }
+    if (want < 4096) {
+        want = 4096;
+    }
+    uint8_t *grown = realloc(io->cache, (size_t)want);
+    if (!grown) {
+        if (io->cache) {
+            return LP_OK; /* 还有一份能用的，退回去继续用小缓存 */
+        }
+        return LP_ERR_NOMEM;
+    }
+    io->cache = grown;
+    io->cache_cap = want;
+    return LP_OK;
+}
+
 static int io_refill(LpIo *io, int64_t pos)
 {
     /* 注意边界用 <= ：pos 正好等于 cache_start + cache_len 时缓存里
@@ -134,16 +153,26 @@ static int io_refill(LpIo *io, int64_t pos)
         io->eof = 1;
         return LP_ERR_END_OF_STREAM;
     }
-    if (io->tp->seek(io, pos, SEEK_SET) < 0) {
+    /* 顺序读的下一次填充分两种情况：pos 正好接在上一段缓存末尾时，传输层
+     * 的文件位置本来就在那里，直接 read 即可；只有真正跳读才要 seek。
+     * 以前每次填充都无条件 seek 一次，SMB 上等于每个 1 MiB 多花一个来回。 */
+    int sequential = io->tp_pos == pos;
+    if (!sequential && io->tp->seek(io, pos, SEEK_SET) < 0) {
         return LP_ERR_IO;
     }
-    int want = io->cache_cap;
+    int want = io->readahead_cap;
     if (io->size >= 0 && io->size - pos < want) {
         want = (int)(io->size - pos);
     }
     if (want <= 0) {
         io->eof = 1;
         return LP_ERR_END_OF_STREAM;
+    }
+    if (io_cache_alloc(io, want) != LP_OK) {
+        return LP_ERR_NOMEM;
+    }
+    if (want > io->cache_cap) {
+        want = io->cache_cap;
     }
     int got = io->tp->read(io, io->cache, want);
     if (io->dbg_reads <= 5 || io->dbg_reads % 1000 == 0) {
@@ -153,6 +182,7 @@ static int io_refill(LpIo *io, int64_t pos)
         io->cache_valid = 0;
         return LP_ERR_IO;
     }
+    io->tp_pos = pos + got;
     io->cache_start = pos;
     io->cache_len = got;
     io->cache_valid = got > 0;
@@ -253,6 +283,7 @@ int64_t lp_io_seek(LpIo *io, int64_t offset, int whence)
     io->cache_valid = 0;
     io->eof = 0;
     io->pos = target;
+    io->tp_pos = target;
     return target;
 }
 

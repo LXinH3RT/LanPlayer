@@ -22,6 +22,16 @@ class PlayerController extends ChangeNotifier {
   late final NativeCallable<_EventCbNative> _eventCb =
       NativeCallable<_EventCbNative>.listener(_handleEvent);
 
+  /// 播放位置与字幕的高频通道。
+  ///
+  /// 内核每 200 ms 推一次 POSITION；带 `\t` 动画或 `\k` 的片子每 20 ms 推
+  /// 一次 SUBTITLE。这两个事件只影响进度条和字幕层，走 [notifyListeners]
+  /// 会让整页控件树（顶栏、底栏、按钮行列）跟着 50 Hz 重建 —— 界面上看不
+  /// 出差别，白白烧掉一个核。监听方按需订阅这两个 notifier 即可。
+  final ValueNotifier<int> positionUsNotifier = ValueNotifier<int>(0);
+  final ValueNotifier<SubtitleCue> cueNotifier =
+      ValueNotifier<SubtitleCue>(SubtitleCue.empty);
+
   PlayerState state = PlayerState.idle;
   int positionUs = 0;
   int durationUs = 0;
@@ -108,6 +118,8 @@ class PlayerController extends ChangeNotifier {
     media = MediaInfo.empty;
     cue = SubtitleCue.empty;
     speed = settings.speed;
+    positionUsNotifier.value = 0;
+    cueNotifier.value = SubtitleCue.empty;
     final options = <String, dynamic>{
       // Transport credentials first: the core needs them to auto-load sidecar
       // subtitles from the same SMB directory.
@@ -144,6 +156,7 @@ class PlayerController extends ChangeNotifier {
     final p = _player;
     if (p == null) return;
     positionUs = micros.clamp(0, durationUs == 0 ? micros : durationUs);
+    positionUsNotifier.value = positionUs;
     _core.seek(p, positionUs);
     notifyListeners();
   }
@@ -234,10 +247,17 @@ class PlayerController extends ChangeNotifier {
         }
         break;
       case 2: // position
-        positionUs = (map['pos'] as num?)?.toInt() ?? 0;
+        // 进度条与时间标签自己订阅 positionUsNotifier，不走整页重建。
+        // 只有时长第一次确定（或换片后变了）时才需要通知整页。
+        final pos = (map['pos'] as num?)?.toInt() ?? 0;
         final dur = (map['dur'] as num?)?.toInt() ?? 0;
-        if (dur > 0) durationUs = dur;
-        break;
+        positionUs = pos;
+        positionUsNotifier.value = pos;
+        if (dur > 0 && dur != durationUs) {
+          durationUs = dur;
+          notifyListeners();
+        }
+        return;
       case 3: // media info
       case 10: // tracks
         // An empty payload means "the core had nothing to say", not "this file
@@ -265,7 +285,9 @@ class PlayerController extends ChangeNotifier {
         break;
       case 6: // subtitle
         cue = SubtitleCue.fromJson(map);
-        break;
+        // 字幕层自己订阅这个通道，别再触发整页重建。
+        cueNotifier.value = cue;
+        return;
       case 7: // stats
         fps = (map['fps'] as num?)?.toDouble() ?? 0;
         dropped = (map['dropped'] as num?)?.toInt() ?? 0;
@@ -298,6 +320,8 @@ class PlayerController extends ChangeNotifier {
       _core.destroyPlayer(p);
     }
     _eventCb.close();
+    positionUsNotifier.dispose();
+    cueNotifier.dispose();
     super.dispose();
   }
 
@@ -311,6 +335,8 @@ class PlayerController extends ChangeNotifier {
       _core.destroyPlayer(p);
     }
     _eventCb.close();
+    positionUsNotifier.dispose();
+    cueNotifier.dispose();
     super.dispose();
   }
 }

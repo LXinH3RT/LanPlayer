@@ -159,4 +159,55 @@ void main() {
       expect(l.subtitlesFor(audio), isEmpty);
     });
   });
+
+  group('派生列表只算一次', () {
+    test('下标表与逐个扫描给出同一结果', () {
+      final v1 = file('Show.S01E01.mkv');
+      final v2 = file('Show.S01E02.mkv');
+      final s1 = file('Show.S01E01.zh.srt');
+      final s2 = file('Show.S01E02.zh.srt');
+      final stray = file('a013.ass');
+      final l = listing([dir('季'), v1, v2, s1, s2, stray, file('song.mp3')]);
+
+      // 与「每次重新扫一遍」的朴素实现逐项对齐 —— 缓存不许改变结果。
+      List<MediaEntry> naive(MediaEntry v) =>
+          l.entries.where((e) => e.isSubtitle &&
+              subtitleBelongsTo(v.name, e.name)).toList();
+      for (final v in [v1, v2]) {
+        expect(l.subtitlesFor(v).map((e) => e.path),
+            naive(v).map((e) => e.path));
+      }
+      expect(l.orphanSubtitles.map((e) => e.name), ['a013.ass']);
+      expect(l.subtitlesFor(s1), isEmpty);
+    });
+
+    test('重复读拿到同一个 List 实例（真的是缓存，不是每次重建）', () {
+      final v = file('movie.mkv');
+      final l = listing([v, file('movie.zh.srt')]);
+      expect(identical(l.browsable, l.browsable), isTrue);
+      expect(identical(l.videos, l.videos), isTrue);
+      expect(identical(l.orphanSubtitles, l.orphanSubtitles), isTrue);
+      expect(identical(l.subtitlesFor(v), l.subtitlesFor(v)), isTrue);
+    });
+
+    test('ownerOfSubtitle 指出归属，无主字幕返回 null', () {
+      final v = file('movie.mkv');
+      final owned = file('movie.zh.srt');
+      final stray = file('a013.ass');
+      final l = listing([v, owned, stray]);
+      expect(l.ownerOfSubtitle(owned)?.path, v.path);
+      expect(l.ownerOfSubtitle(stray), isNull);
+    });
+
+    test('多个视频都能认领同一份字幕时，归属取列表里靠前的那个', () {
+      // `电影.mkv` 与 `电影.CD2.mkv` 都可能匹配 `电影.zh.srt`；列表顺序决定
+      // 谁先认领，和改缓存之前的行为一致。
+      final a = file('电影.mkv');
+      final b = file('电影.CD2.mkv');
+      final shared = file('电影.zh.srt');
+      final l = listing([a, b, shared]);
+      expect(l.subtitlesFor(a).map((e) => e.name), ['电影.zh.srt']);
+      expect(l.ownerOfSubtitle(shared)?.path, a.path);
+    });
+  });
 }

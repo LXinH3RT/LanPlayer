@@ -77,6 +77,18 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
   /// 事件（只在有动画/卡拉 OK 时），所以这里直接用内核给的时刻。
   double get _nowMs => cue.nowUs / 1000.0;
 
+  /// 同一次 build 里每个 run 只解算一次动画。
+  ///
+  /// 一行要画三层（阴影、描边、正文），每层都过一遍 [_runStyle]；再加上
+  /// 裁剪矩形和矢量绘图也要 `resolve`。带 `\t` 的字幕每 20 ms 就重画一次，
+  /// 同一个 run 反复算 4~5 遍纯属浪费。解算结果只依赖 `nowMs` 与 run 本身，
+  /// 一次 build 内复用是安全的；build 开头清空即可。
+  final Map<SubtitleSpan, ResolvedSpan> _resolved =
+      <SubtitleSpan, ResolvedSpan>{};
+
+  ResolvedSpan _resolve(SubtitleSpan run) => _resolved.putIfAbsent(
+      run, () => SubtitleAnimator.resolve(run, _nowMs));
+
   /// 视频画面在给定区域里实际占据的矩形（与 [VideoSurface] 的贴合规则一致）。
   static Rect videoRect(Size area, double aspectRatio, int mode) {
     final ratio =
@@ -254,7 +266,7 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
     ResolvedSpan? resolved,
   }) {
     final style = styleOverride ?? cue.style;
-    final res = resolved ?? SubtitleAnimator.resolve(r, _nowMs);
+    final res = resolved ?? _resolve(r);
     // A run's {\fs..} overwrites the size outright: the core normalises it to
     // a fraction of video height, so divide by the line style's fraction.
     final cueFraction = style.fontScale > 0 ? style.fontScale : 0.05;
@@ -311,7 +323,7 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
   ({List<double> rect, bool inverse})? _clipOf(SubtitleLine line) {
     for (final run in line.runs) {
       if (run.drawingScale > 0) continue;
-      final r = SubtitleAnimator.resolve(run, _nowMs);
+      final r = _resolve(run);
       if (!r.clipOn || r.clip.length != 4) continue;
       return (rect: r.clip, inverse: r.clipInverse);
     }
@@ -699,6 +711,8 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
     if (cue.isEmpty) {
       return const SizedBox.shrink();
     }
+    // 每条 cue 的 nowMs 是新的，上一帧的解算结果不再有效。
+    _resolved.clear();
     return IgnorePointer(
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -711,6 +725,9 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
           if (videoHeight <= 0) {
             return const SizedBox.shrink();
           }
+          // 一帧只算一次：这个函数会把 cue 里所有 run 遍历一遍并 resolve
+          // 每个动画，带 `\t` 的字幕每 20 ms 重建一次，算两遍等于白烧一半。
+          final drawings = _drawingsWithPlacement();
           return Stack(
             children: [
               Positioned(
@@ -720,12 +737,13 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
                 height: video.height,
                 child: Stack(children: [
                   ..._placed(context, videoHeight, video),
-                  if (_drawingsWithPlacement().isNotEmpty)
+                  if (drawings.isNotEmpty)
                     Positioned.fill(
                       child: CustomPaint(
                         painter: _DrawingsPainter(
-                          items: _drawingsWithPlacement(),
+                          items: drawings,
                           nowMs: _nowMs,
+                          cue: cue,
                         ),
                       ),
                     ),
@@ -863,11 +881,19 @@ class _RenderClipRelative extends RenderProxyBox {
 /// `\pos` / `\an` / 边距决定它的原点，坐标本身是脚本单位。所以它单独画在
 /// 画面矩形这一层，而不是塞进某一行文字的 Widget 树里。
 class _DrawingsPainter extends CustomPainter {
-  _DrawingsPainter({required this.items, required this.nowMs});
+  _DrawingsPainter({required this.items, required this.nowMs, this.cue});
 
   final List<({SubtitleSpan run, SubtitleStyle style, SubtitleLine line})>
       items;
   final double nowMs;
+
+  /// 这批绘图来自哪条 cue。
+  ///
+  /// [shouldRepaint] 用它判断要不要重绘。原来比的是 `items`，而这个列表
+  /// 每帧都是新建的，`!=` 永远成立 —— 即使字幕一个字都没变，带 `\p` 的
+  /// 片子也会按 60 Hz 重画整幅画布。内核在字幕没有动画时不会重发 SUBTITLE
+  /// 事件，所以 `identical(cue)` 能真实反映「内容变了没有」。
+  final SubtitleCue? cue;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -944,5 +970,7 @@ class _DrawingsPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_DrawingsPainter oldDelegate) =>
-      oldDelegate.nowMs != nowMs || oldDelegate.items != items;
+      oldDelegate.nowMs != nowMs ||
+      !identical(oldDelegate.cue, cue) ||
+      oldDelegate.items.length != items.length;
 }

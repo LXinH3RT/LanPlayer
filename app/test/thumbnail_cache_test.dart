@@ -210,4 +210,65 @@ void main() {
       expect(ThumbnailCache.failureTtl.inHours, lessThanOrEqualTo(24));
     });
   });
+
+  group('ImageLru 的淘汰顺序', () {
+    // 内存缓存以前是个没有上限的 Map：滑完一整个剧集目录，解码过的封面
+    // 一张都不会被释放，一千个文件就是六十多 MB。
+    test('超出上限就丢最久没被访问的那张', () {
+      final lru = ImageLru<String>(limit: 3);
+      lru['a'] = 'A';
+      lru['b'] = 'B';
+      lru['c'] = 'C';
+      expect(lru.length, 3);
+
+      lru['d'] = 'D';
+      expect(lru.containsKey('a'), isFalse, reason: 'a 最老，应该先被丢');
+      expect(lru.containsKey('b'), isTrue);
+      expect(lru.length, 3);
+    });
+
+    test('读过一次就算「最近用过」，不会马上被淘汰', () {
+      final lru = ImageLru<String>(limit: 2);
+      lru['a'] = 'A';
+      lru['b'] = 'B';
+      // 再读一次 a：它在链表里的位置要挪到末尾。
+      expect(lru['a'], 'A');
+      lru['c'] = 'C';
+      expect(lru.containsKey('a'), isTrue, reason: '刚读过，不该先淘汰它');
+      expect(lru.containsKey('b'), isFalse);
+    });
+
+    test('重复写同一个键不会撑大缓存', () {
+      final lru = ImageLru<String>(limit: 2);
+      lru['a'] = 'A';
+      lru['a'] = 'A2';
+      expect(lru.length, 1);
+      expect(lru['a'], 'A2');
+    });
+
+    test('clear 只在给了回收函数时才释放值', () {
+      final disposed = <String>[];
+      final lru = ImageLru<String>(limit: 4, disposeValue: disposed.add);
+      lru['a'] = 'A';
+      lru['b'] = 'B';
+      lru.clear();
+      expect(lru.length, 0);
+      expect(disposed, <String>['A', 'B']);
+
+      // 封面缓存**故意**不传 disposeValue：淘汰只丢引用，正在绘制的那一帧
+      // 手里还握着像素，提前 dispose 会画出「已释放的图片」。
+      final plain = ImageLru<String>(limit: 2);
+      plain['x'] = 'X';
+      plain.clear();
+      expect(plain.length, 0);
+    });
+
+    test('上限是 240 张、磁盘 128 MB，都不是随手写的量级', () {
+      expect(ThumbnailCache.memoryLimit, greaterThanOrEqualTo(64));
+      expect(ThumbnailCache.memoryLimit, lessThanOrEqualTo(1024));
+      expect(ThumbnailCache.diskLimitBytes, greaterThan(16 * 1024 * 1024));
+      expect(
+          ThumbnailCache.diskLimitBytes, lessThanOrEqualTo(512 * 1024 * 1024));
+    });
+  });
 }

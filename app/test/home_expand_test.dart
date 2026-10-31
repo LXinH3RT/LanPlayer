@@ -68,9 +68,14 @@ void main() {
   testWidgets('12 项只在首页列 8 行，余下收在「还有 4 项」', (tester) async {
     await pumpHome(tester, listingJson(videos: 12));
 
-    expect(find.text('video-7.mp4'), findsOneWidget);
-    expect(find.text('video-8.mp4'), findsNothing);
+    // 首页现在是 ListView.builder，没滚到的行不会建出来 —— 这本身就是要
+    // 解决的问题（进首页不该一次造两百个封面请求），所以断言要先滚过去。
+    expect(find.text('video-0.mp4'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('还有 4 项'), 200);
+    await tester.pump();
+
     expect(find.text('还有 4 项'), findsOneWidget);
+    expect(find.text('video-8.mp4'), findsNothing);
   });
 
   testWidgets('点「还有 4 项」把剩下的接在下面，不推进新页面', (tester) async {
@@ -78,23 +83,23 @@ void main() {
     final before = tester.state<NavigatorState>(find.byType(Navigator));
 
     // 8 行列表加标题已经超出一屏，按钮要先滚进视口才点得到。
-    await tester.ensureVisible(find.text('还有 4 项'));
+    await tester.scrollUntilVisible(find.text('还有 4 项'), 200);
     await tester.pump();
     await tester.tap(find.text('还有 4 项'));
     await tester.pump();
-    // 先确认展开动作生效（按钮换成「收起」），再滚到新增的行。
-    expect(find.text('收起'), findsOneWidget,
-        reason: '点了「还有 4 项」就该变成本地展开');
-    await tester.drag(find.byType(ListView), const Offset(0, -600));
+    // 展开后 footer 被推到 12 行下面去了，builder 还没建到那里 ——
+    // 要滚过去才看得到「收起」。
+    await tester.scrollUntilVisible(find.text('收起'), 200);
+    await tester.pump();
+    expect(find.text('收起'), findsOneWidget, reason: '点了「还有 4 项」就该变成本地展开');
+    await tester.scrollUntilVisible(find.text('video-11.mp4'), 200);
     await tester.pump();
 
     // 就地展开：剩下四行出现在首页上。
-    expect(find.text('video-8.mp4'), findsOneWidget);
     expect(find.text('video-11.mp4'), findsOneWidget);
     // 没有新页面：还能找到首页标题，且按钮变成「收起」。
     expect(find.text('LanPlayer'), findsOneWidget);
     expect(find.text('还有 4 项'), findsNothing);
-    expect(find.text('收起'), findsOneWidget);
     // 导航栈没变 —— 这是需求的核心：不新进入一个次级界面。
     expect(tester.state<NavigatorState>(find.byType(Navigator)), same(before));
   });
@@ -102,17 +107,20 @@ void main() {
   testWidgets('展开后再点「收起」回到 8 行', (tester) async {
     await pumpHome(tester, listingJson(videos: 12));
 
-    await tester.ensureVisible(find.text('还有 4 项'));
+    await tester.scrollUntilVisible(find.text('还有 4 项'), 200);
     await tester.pump();
     await tester.tap(find.text('还有 4 项'));
     await tester.pump();
-    await tester.ensureVisible(find.text('收起'));
+    await tester.scrollUntilVisible(find.text('收起'), 200);
     await tester.pump();
     await tester.tap(find.text('收起'));
     await tester.pump();
+    await tester.pump();
 
-    expect(find.text('video-8.mp4'), findsNothing);
+    await tester.scrollUntilVisible(find.text('还有 4 项'), 200);
+    await tester.pump();
     expect(find.text('还有 4 项'), findsOneWidget);
+    expect(find.text('video-8.mp4'), findsNothing);
   });
 
   testWidgets('不超过 8 行时不出现任何展开按钮', (tester) async {

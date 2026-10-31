@@ -64,12 +64,20 @@ struct LpIo {
     int64_t timeout_ms;
 
     /* Sequential read-ahead cache.  A single SMB read of 1 MiB costs a few
-     * milliseconds, far cheaper than one round trip per 32 KiB AVIO read. */
+     * milliseconds, far cheaper than one round trip per 32 KiB AVIO read.
+     *
+     * 缓冲区是懒分配的：打开目录里 200 个文件时每个 LpIo 都要一份 1 MiB
+     * 直接就是 200 MiB 常驻，而绝大多数 LpIo 只读头部几 KiB（探测、封面）。
+     * readahead_cap 是配置值，cache_cap 是实际分配到的容量。 */
     uint8_t *cache;
+    int readahead_cap;
     int cache_cap;
     int cache_len;
     int64_t cache_start;
     int cache_valid;
+    /* 传输层当前文件位置（-1 = 未知，下次填充必须先 seek）。
+     * 顺序读时能省掉一次 SMB/HTTP 往返。 */
+    int64_t tp_pos;
 
     AVIOContext *avio;
     uint8_t *avio_buf;

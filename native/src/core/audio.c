@@ -19,6 +19,8 @@ static void audio_graph_free(LpPlayer *p)
         p->audio.graph = NULL;
         p->audio.filt_src = p->audio.filt_sink = NULL;
     }
+    av_frame_free(&p->audio.graph_in);
+    av_frame_free(&p->audio.graph_out);
 }
 
 /* Builds "abuffer -> atempo(speed) -> abuffersink".  With speed == 1 the graph
@@ -79,6 +81,15 @@ static int audio_graph_build(LpPlayer *p, double speed)
     }
     p->audio.graph = g;
     p->audio.applied_speed = speed;
+    if (!p->audio.graph_in) {
+        p->audio.graph_in = av_frame_alloc();
+        p->audio.graph_out = av_frame_alloc();
+    }
+    if (!p->audio.graph_in || !p->audio.graph_out) {
+        LP_ERROR("audio", "atempo graph frames could not be allocated");
+        audio_graph_free(p);
+        return LP_ERR_NOMEM;
+    }
     LP_INFO("audio", "atempo graph built at %.2fx", speed);
     return LP_OK;
 }
@@ -88,30 +99,28 @@ static int audio_graph_build(LpPlayer *p, double speed)
 static int audio_push_through_graph(LpPlayer *p, const float *pcm, int samples,
                                     double content_start)
 {
-    AVFrame *in = av_frame_alloc();
-    AVFrame *out = av_frame_alloc();
-    if (!in || !out) {
-        av_frame_free(&in);
-        av_frame_free(&out);
-        return LP_ERR_NOMEM;
+    /* 两个 AVFrame 与它们的缓冲区都常驻在 LpAudioStream 里。以前每个音频帧
+     * 都要 av_frame_alloc 两次、av_frame_get_buffer 一次、再 free 两次，
+     * 变调播放时这段开销直接落在解码线程的实时路径上。 */
+    if (!p->audio.graph_in || !p->audio.graph_out) {
+        return LP_ERR_STATE;
     }
+    AVFrame *in = p->audio.graph_in;
+    AVFrame *out = p->audio.graph_out;
+    av_frame_unref(in);
     in->format = AV_SAMPLE_FMT_FLT;
     in->sample_rate = p->audio.out_rate;
     av_channel_layout_default(&in->ch_layout, 2);
     in->nb_samples = samples;
     int r = av_frame_get_buffer(in, 0);
     if (r < 0) {
-        av_frame_free(&in);
-        av_frame_free(&out);
         return LP_ERR_NOMEM;
     }
     memcpy(in->data[0], pcm, (size_t)samples * 2 * sizeof(float));
     in->pts = (int64_t)(content_start * p->audio.out_rate);
 
     r = av_buffersrc_add_frame(p->audio.filt_src, in);
-    av_frame_free(&in);
     if (r < 0) {
-        av_frame_free(&out);
         return LP_ERR_CODEC;
     }
     double cursor = content_start;
@@ -120,13 +129,11 @@ static int audio_push_through_graph(LpPlayer *p, const float *pcm, int samples,
                                     cursor, p->audio.applied_speed);
         if (written < 0) {
             av_frame_unref(out);
-            av_frame_free(&out);
             return LP_ERR_INTERRUPTED;
         }
         cursor += (double)out->nb_samples * p->audio.applied_speed / (double)p->audio.out_rate;
         av_frame_unref(out);
     }
-    av_frame_free(&out);
     return LP_OK;
 }
 
@@ -135,7 +142,7 @@ static int audio_flush_graph(LpPlayer *p)
     if (!p->audio.graph) {
         return LP_OK;
     }
-    AVFrame *out = av_frame_alloc();
+    AVFrame *out = p->audio.graph_out;
     if (!out) {
         return LP_ERR_NOMEM;
     }
@@ -223,15 +230,21 @@ static int convert_and_write(LpPlayer *p, AVFrame *frame)
     if (cap <= 0) {
         return 0;
     }
-    float *pcm = malloc((size_t)cap * 2 * sizeof(float));
-    if (!pcm) {
-        return LP_ERR_NOMEM;
+    /* PCM 暂存区常驻在 LpAudioStream 里，按需扩容。以前每个音频帧都
+     * malloc/free 一次（AAC 一帧 1024 采样，一小时片子约 17 万次）。 */
+    if (p->audio.pcm_cap < cap) {
+        float *grown = realloc(p->audio.pcm, (size_t)cap * 2 * sizeof(float));
+        if (!grown) {
+            return LP_ERR_NOMEM;
+        }
+        p->audio.pcm = grown;
+        p->audio.pcm_cap = cap;
     }
+    float *pcm = p->audio.pcm;
     uint8_t *out_planes[1] = {(uint8_t *)pcm};
     int got = swr_convert(p->audio.swr, out_planes, cap, (const uint8_t **)frame->extended_data,
                           frame->nb_samples);
     if (got <= 0) {
-        free(pcm);
         return 0;
     }
     double tb = av_q2d(p->audio.avctx->pkt_timebase);
@@ -248,7 +261,6 @@ static int convert_and_write(LpPlayer *p, AVFrame *frame)
         int written = lp_ring_write(&p->audio.ring, pcm, got, content_start, 1.0);
         rc = written < 0 ? LP_ERR_INTERRUPTED : LP_OK;
     }
-    free(pcm);
     p->audio.frames_decoded++;
     return rc;
 }
@@ -294,7 +306,7 @@ void *lp_audio_thread_fn(void *arg)
             } else if (lp_pq_eof(&p->audio.pq)) {
                 p->audio.draining = 1;
             } else {
-                av_usleep(2000);
+                lp_pq_wait_more(&p->audio.pq, 0);
                 continue;
             }
         }
@@ -409,6 +421,9 @@ void lp_audio_stop(LpPlayer *p)
         avcodec_free_context(&p->audio.avctx);
     }
     audio_graph_free(p);
+    free(p->audio.pcm);
+    p->audio.pcm = NULL;
+    p->audio.pcm_cap = 0;
     if (p->audio.ring.buf) {
         lp_ring_destroy(&p->audio.ring);
     }

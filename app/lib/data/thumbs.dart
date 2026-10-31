@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
@@ -79,10 +80,36 @@ class ThumbnailCache {
   static bool markerExpired(DateTime failureAt, DateTime now) =>
       now.difference(failureAt) >= failureTtl;
 
-  final Map<String, ui.Image> _memory = <String, ui.Image>{};
+  /// 内存里最多留多少张已解码的封面。
+  ///
+  /// 一张 128×128 的 RGBA 图约 64 KB，240 张约 15 MB —— 足够盖住一屏加上
+  /// 上下各几屏的回滚，又不会因为「列表刷过一千个文件」把内存吃满。以前没有
+  /// 上限：滑完一整个剧集目录，这些 `ui.Image` 只会增加、从不释放。
+  static const int memoryLimit = 240;
+
+  /// 磁盘缓存的上限，超过就按最后访问时间淘汰。
+  ///
+  /// 一个封面文件约 64 KB，128 MB 大致是两千个。以前只有 `diskUsage()`
+  /// 这一个尺子，没有任何地方会删：库越滚越大，装久了就是几百 MB 的死重量。
+  static const int diskLimitBytes = 128 * 1024 * 1024;
+
+  /// 每写这么多个缓存文件，回头看一次磁盘用量。逐个写都去 `list()` 一遍
+  /// 目录代价太高，攒一批再扫既省事又不会让占用翻倍太多。
+  static const int _pruneEvery = 16;
+
+  /// 已解码封面的内存缓存，超出 [memoryLimit] 就丢掉最久没被用过的那张。
+  ///
+  /// 淘汰时**只丢引用、不 `dispose()`**：正在显示这张图的行手里还握着它，
+  /// 提前释放会让下一帧画出「已释放的图片」。丢掉引用之后，`ui.Image` 的
+  /// 终结器会在没人用时把底下的像素还回去。
+  final ImageLru<ui.Image> _memory = ImageLru<ui.Image>(limit: memoryLimit);
+
+  /// 自上次清理以来写了多少个缓存文件。
+  int _writesSincePrune = 0;
 
   /// 正在解码的请求，避免同一行被 build 多次时重复解码。
-  final Map<String, Future<ui.Image?>> _inflight = <String, Future<ui.Image?>>{};
+  final Map<String, Future<ui.Image?>> _inflight =
+      <String, Future<ui.Image?>>{};
 
   /// 全局解码闸门：取值 1..[maxConcurrent]。所有封面共用，跨页面也共用，
   /// 因为底层争抢的是同一台 NAS 的 SMB 会话，不是某个页面的资源。
@@ -169,6 +196,10 @@ class ThumbnailCache {
 
       var bytes = await _readCache(file);
       final fromDisk = bytes != null;
+      if (bytes != null) {
+        // 把「最后访问时间」推到现在，磁盘淘汰才分得清冷热。失败不影响显示。
+        unawaited(_touch(file));
+      }
       if (bytes == null) {
         // 「这个文件解不出封面」也要记住，否则每次滚回来都重新走一遍
         // SMB + 解码。目录里混着 .flv / 坏文件 / .docx 改名成 .mp4 时，
@@ -208,6 +239,7 @@ class ThumbnailCache {
         bytes = encodeThumb(decoded);
         // 写盘失败不影响这次显示，下次再试。
         unawaited(_writeCache(file, bytes));
+        _noteDiskWrite();
       }
 
       final image = await decodeThumb(bytes);
@@ -229,6 +261,17 @@ class ThumbnailCache {
     final env = Platform.environment['LANPLAYER_THUMBS'];
     if (env == '1') return true;
     return const String.fromEnvironment('LANPLAYER_THUMBS') == '1';
+  }
+
+  /// 命中磁盘缓存时把文件的修改时间推到现在。
+  ///
+  /// Dart 的 `File` 没有 `utimes`，读写一遍是最省事的等价物；封面本来就只有
+  /// 几十 KB，比再走一次 SMB 便宜得多。写不进去也无所谓 —— 那只是让这个文件
+  /// 在淘汰时排得靠前一些。
+  static Future<void> _touch(File file) async {
+    try {
+      await file.setLastModified(DateTime.now());
+    } catch (_) {}
   }
 
   static Future<Uint8List?> _readCache(File file) async {
@@ -263,6 +306,56 @@ class ThumbnailCache {
       final now = DateTime.now().millisecondsSinceEpoch;
       await marker.writeAsString('$now', flush: true);
     } catch (_) {}
+  }
+
+  /// 每写一批缓存文件就回头看一次磁盘占用，超了 [diskLimitBytes] 就淘汰。
+  void _noteDiskWrite() {
+    if (++_writesSincePrune < _pruneEvery) return;
+    _writesSincePrune = 0;
+    unawaited(pruneDisk());
+  }
+
+  /// 按最后访问时间淘汰磁盘缓存，直到回到 [diskLimitBytes] 以下。
+  ///
+  /// 「最后访问时间」用文件的 `lastModified`：命中缓存时 [_touch] 会把它
+  /// 推到现在，于是长期没再出现的文件自然排到队首被删。失败标记
+  /// （`.none`）也一起算年龄，它们同样是会过期的缓存。
+  ///
+  /// 返回删掉的字节数，设置页/单测可以直接用它判断有没有真的动手。
+  Future<int> pruneDisk() async {
+    try {
+      final dir = await _cacheDir();
+      if (!await dir.exists()) return 0;
+      final files = <({File file, int size, DateTime at})>[];
+      var total = 0;
+      await for (final entity in dir.list()) {
+        if (entity is! File) continue;
+        try {
+          final stat = await entity.stat();
+          total += stat.size;
+          files.add((file: entity, size: stat.size, at: stat.modified));
+        } catch (_) {
+          // 正被别的进程动过的文件，这次先跳过。
+        }
+      }
+      if (total <= diskLimitBytes) return 0;
+      files.sort((a, b) => a.at.compareTo(b.at));
+      var freed = 0;
+      for (final entry in files) {
+        if (total - freed <= diskLimitBytes) break;
+        try {
+          await entry.file.delete();
+          freed += entry.size;
+        } catch (_) {}
+      }
+      if (freed > 0 && _verbose) {
+        // ignore: avoid_print
+        print('LanPlayer thumb: pruned ${freed ~/ 1024} KiB of covers');
+      }
+      return freed;
+    } catch (_) {
+      return 0;
+    }
   }
 
   static bool _hasMagic(Uint8List bytes) {
@@ -327,6 +420,7 @@ class ThumbnailCache {
   /// 清空磁盘与内存缓存（设置里的「清空封面缓存」用）。
   Future<void> clear() async {
     _memory.clear();
+    _writesSincePrune = 0;
     try {
       final dir = await _cacheDir();
       if (await dir.exists()) {
@@ -398,5 +492,58 @@ class ConcurrencyGate {
       return;
     }
     _active--;
+  }
+}
+
+/// 有上限的 LRU 缓存：超过 [limit] 就丢掉最久没被读取的那一项。
+///
+/// 只做「丢引用」这一件事，**不负责释放值**。`ui.Image` 这类对象一旦被
+/// 提前 dispose，正握着它绘制的那一帧就会画到已释放的像素；让 GC 在没人
+/// 用的时候回收才安全。需要显式回收的值可以传 [disposeValue]，但它只会在
+/// `clear()` 里被调用 —— 那是「确认整批都不要了」的场合。
+///
+/// 用 [LinkedHashMap] 的插入顺序当访问顺序：每次 [operator []] 命中就把键
+/// 挪到队尾，于是队首永远是最冷的那个。这样做比给每项记时间戳简单，也不比
+/// 它差 —— 缓存命中的次数就是我们要的热度。
+class ImageLru<V extends Object> {
+  ImageLru({required this.limit, this.disposeValue}) : assert(limit > 0);
+
+  final int limit;
+  final void Function(V value)? disposeValue;
+  final LinkedHashMap<String, V> _entries = LinkedHashMap<String, V>();
+
+  @visibleForTesting
+  int get length => _entries.length;
+
+  @visibleForTesting
+  bool containsKey(String key) => _entries.containsKey(key);
+
+  V? operator [](String key) {
+    final value = _entries.remove(key);
+    if (value == null) return null;
+    // 重新插到队尾 = 标记为最近使用。
+    _entries[key] = value;
+    return value;
+  }
+
+  void operator []=(String key, V value) {
+    _entries.remove(key);
+    _entries[key] = value;
+    while (_entries.length > limit) {
+      final oldest = _entries.keys.first;
+      _entries.remove(oldest);
+    }
+  }
+
+  void remove(String key) => _entries.remove(key);
+
+  /// 全部丢弃。只有「整个缓存都不要了」时才调用 [disposeValue]。
+  void clear() {
+    if (disposeValue != null) {
+      for (final value in _entries.values) {
+        disposeValue!(value);
+      }
+    }
+    _entries.clear();
   }
 }

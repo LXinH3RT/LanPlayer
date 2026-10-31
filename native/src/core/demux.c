@@ -344,6 +344,8 @@ void *lp_demux_thread_fn(void *arg)
     }
     int waiting_eof = 0;
     long long read_ok = 0;
+    int discard_checked = 0;
+    int discard_only = 0;
 
     while (!lp_is_abort(p)) {
         if (atomic_exchange(&p->seek_req, 0)) {
@@ -385,7 +387,14 @@ void *lp_demux_thread_fn(void *arg)
             break;
         }
 
-        if (getenv("LP_DEMUX_DISCARD")) {  /* debug: read-only loop, no queues */
+        /* 调试开关只在第一次进循环时读一次环境变量。以前这里每读一个包都
+         * 调 getenv()，而 getenv 是对 environ 的线性扫描 —— 4K 片源一次播放
+         * 就是几百万次字符串比较，白白占掉 demux 线程的时间。 */
+        if (!discard_checked) {
+            discard_checked = 1;
+            discard_only = getenv("LP_DEMUX_DISCARD") != NULL;
+        }
+        if (discard_only) {  /* debug: read-only loop, no queues */
             av_packet_unref(pkt);
             continue;
         }

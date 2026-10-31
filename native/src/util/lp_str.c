@@ -43,6 +43,22 @@ void lp_str_reset(LpStr *s)
     }
 }
 
+/* Straight memcpy append for a known-length or NUL-terminated string.  The
+ * format-based lp_str_append has to run vsnprintf twice (measure + format),
+ * which shows up when pasting many short pieces together. */
+void lp_str_append_raw(LpStr *s, const char *v, size_t n)
+{
+    if (!v || n == 0) {
+        return;
+    }
+    if (lp_str_reserve(s, n) != 0) {
+        return;
+    }
+    memcpy(s->p + s->len, v, n);
+    s->len += n;
+    s->p[s->len] = '\0';
+}
+
 void lp_str_append(LpStr *s, const char *fmt, ...)
 {
     va_list ap, ap2;
@@ -65,27 +81,46 @@ void lp_str_append(LpStr *s, const char *fmt, ...)
 
 void lp_str_append_json_str(LpStr *s, const char *v)
 {
-    lp_str_append(s, "\"");
+    static const char hex[] = "0123456789abcdef";
+    size_t n = v ? strlen(v) : 0;
+    /* 最坏情况每个字节展开成 \u00XX（6 字节），加上两端引号。一次 reserve
+     * 之后直接往缓冲区里写；以前每个字节都要走一遍 lp_str_append，而
+     * lp_str_append 每次又要 vsnprintf 两遍，一条带样式的字幕行能因此
+     * 付出上千次格式化开销。 */
+    if (lp_str_reserve(s, n * 6 + 2) != 0) {
+        return;
+    }
+    char *out = s->p + s->len;
+    size_t w = 0;
+    out[w++] = '"';
     if (v) {
         for (const unsigned char *p = (const unsigned char *)v; *p; p++) {
-            switch (*p) {
-            case '"': lp_str_append(s, "\\\""); break;
-            case '\\': lp_str_append(s, "\\\\"); break;
-            case '\n': lp_str_append(s, "\\n"); break;
-            case '\r': lp_str_append(s, "\\r"); break;
-            case '\t': lp_str_append(s, "\\t"); break;
-            case '\b': lp_str_append(s, "\\b"); break;
-            case '\f': lp_str_append(s, "\\f"); break;
+            unsigned char c = *p;
+            switch (c) {
+            case '"': out[w++] = '\\'; out[w++] = '"'; break;
+            case '\\': out[w++] = '\\'; out[w++] = '\\'; break;
+            case '\n': out[w++] = '\\'; out[w++] = 'n'; break;
+            case '\r': out[w++] = '\\'; out[w++] = 'r'; break;
+            case '\t': out[w++] = '\\'; out[w++] = 't'; break;
+            case '\b': out[w++] = '\\'; out[w++] = 'b'; break;
+            case '\f': out[w++] = '\\'; out[w++] = 'f'; break;
             default:
-                if (*p < 0x20) {
-                    lp_str_append(s, "\\u%04x", *p);
+                if (c < 0x20) {
+                    out[w++] = '\\';
+                    out[w++] = 'u';
+                    out[w++] = '0';
+                    out[w++] = '0';
+                    out[w++] = hex[(c >> 4) & 0x0F];
+                    out[w++] = hex[c & 0x0F];
                 } else {
-                    lp_str_append(s, "%c", *p);
+                    out[w++] = (char)c;
                 }
             }
         }
     }
-    lp_str_append(s, "\"");
+    out[w++] = '"';
+    out[w] = '\0';
+    s->len += w;
 }
 
 char *lp_str_take(LpStr *s)

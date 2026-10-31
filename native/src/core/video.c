@@ -126,6 +126,7 @@ static void filter_close(LpPlayer *p)
         p->video.fg = NULL;
         p->video.fg_src = p->video.fg_sink = NULL;
     }
+    av_frame_free(&p->video.filtered);
 }
 
 /* Returns a borrowed frame, possibly the filtered one. */
@@ -140,15 +141,19 @@ static AVFrame *maybe_deinterlace(LpPlayer *p, AVFrame *frame)
     if (av_buffersrc_add_frame(p->video.fg_src, frame) < 0) {
         return frame;
     }
-    AVFrame *out = av_frame_alloc();
-    if (!out) {
-        return frame;
+    /* 复用同一个输出帧：以前每帧 av_frame_alloc / av_frame_free，30 fps 下
+     * 一年多就是上亿次分配。帧缓冲本身由 unref 归还，不需要重新申请。 */
+    if (!p->video.filtered) {
+        p->video.filtered = av_frame_alloc();
+        if (!p->video.filtered) {
+            return frame;
+        }
     }
+    AVFrame *out = p->video.filtered;
+    av_frame_unref(out);
     if (av_buffersink_get_frame(p->video.fg_sink, out) < 0) {
-        av_frame_free(&out);
         return frame;
     }
-    p->video.filtered = out;
     return out;
 }
 
@@ -302,7 +307,10 @@ void *lp_video_thread_fn(void *arg)
             } else if (lp_pq_eof(&p->video.pq)) {
                 draining = 1;
             } else {
-                av_usleep(2000);
+                /* 队列空：睡在条件变量上等解复用线程广播。以前是
+                 * av_usleep(2000) 每 2 ms 醒一次轮询，既白烧 500 次/秒的
+                 * 加解锁，也把 queue.c 里的 cond_wait 分支架空了。 */
+                lp_pq_wait_more(&p->video.pq, 0);
                 continue;
             }
         }
@@ -395,9 +403,6 @@ void *lp_video_thread_fn(void *arg)
             AVFrame *shown = maybe_deinterlace(p, frame);
             int drop = wait_for_presentation(p, pts_us, serial);
             if (drop < 0) {
-                if (p->video.filtered) {
-                    av_frame_free(&p->video.filtered);
-                }
                 av_frame_unref(frame);
                 break;
             }
@@ -410,9 +415,6 @@ void *lp_video_thread_fn(void *arg)
                 p->stats_frames++;
                 p->video.last_pts_us = pts_us;
                 lp_note_position(p, pts_us);
-            }
-            if (p->video.filtered) {
-                av_frame_free(&p->video.filtered);
             }
             last_pts_us = pts_us;
             av_frame_unref(frame);
@@ -484,9 +486,6 @@ void lp_video_stop(LpPlayer *p)
     }
     if (p->video.avctx) {
         avcodec_free_context(&p->video.avctx);
-    }
-    if (p->video.filtered) {
-        av_frame_free(&p->video.filtered);
     }
     filter_close(p);
     lp_pq_flush(&p->video.pq);

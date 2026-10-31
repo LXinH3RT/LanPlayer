@@ -61,12 +61,39 @@ static int has_drawing_runs(const LpSubCue *cue)
 /* The overlay owns copies of the rects so that history trimming, a seek or a
  * track switch can free cues without the render thread ever reading freed
  * memory.  subtitle.c updates it under p->subs.mutex; the renderer takes the
- * same lock, reads what it needs and blends outside of it. */
+ * same lock, grabs references to what it needs, and blends outside of it.
+ *
+ * 引用计数是为了省掉渲染线程每帧的深拷贝：一张 PGS 位图几百 KB，
+ * 1080p 双行字幕每帧要 memcpy 一遍，纯粹的浪费。 */
+static void overlay_rect_unref(LpSubOverlayRect *r)
+{
+    if (!r->rgba) {
+        return;
+    }
+    if (atomic_fetch_sub(&r->refs, 1) == 1) {
+        free(r->rgba);
+        r->rgba = NULL;
+    }
+}
+
+static void overlay_rect_ref(LpSubOverlayRect *r)
+{
+    atomic_fetch_add(&r->refs, 1);
+}
+
+static void overlay_rect_set(LpSubOverlayRect *r, const LpSubBitmap *b)
+{
+    atomic_store(&r->refs, 1);
+    r->x = b->x;
+    r->y = b->y;
+    r->w = b->w;
+    r->h = b->h;
+}
+
 static void overlay_reset(LpSubOverlay *ov)
 {
     for (int i = 0; i < ov->nb; i++) {
-        free(ov->rects[i].rgba);
-        ov->rects[i].rgba = NULL;
+        overlay_rect_unref(&ov->rects[i]);
     }
     ov->nb = 0;
     ov->first = -1;
@@ -114,10 +141,7 @@ static int overlay_add(LpSubOverlay *ov, LpSubCue *c)
         }
         memcpy(copy, b->rgba, bytes);
         LpSubOverlayRect *r = &ov->rects[ov->nb];
-        r->x = b->x;
-        r->y = b->y;
-        r->w = b->w;
-        r->h = b->h;
+        overlay_rect_set(r, b);
         r->rgba = copy;
         ov->nb++;
         added++;
@@ -226,15 +250,12 @@ void lp_sub_overlay_blend(LpPlayer *p, uint8_t *bgra, int w, int h, int stride)
         nb = ov->nb < LP_SUB_OVERLAY_MAX ? ov->nb : LP_SUB_OVERLAY_MAX;
         ref_w = ov->ref_w;
         ref_h = ov->ref_h;
+        /* 只加引用，不复制像素：一块 PGS 位图动辄几百 KB，以前每个渲染帧
+         * 都要 malloc + memcpy 一遍所有矩形。持有引用之后，overlay 那边
+         * 重置也只是把引用放掉，我们手上这块内存照样有效。 */
         for (int i = 0; i < nb; i++) {
-            snap[i] = ov->rects[i]; /* deep copy by hand below */
-            snap[i].rgba = malloc((size_t)ov->rects[i].w * ov->rects[i].h * 4);
-            if (!snap[i].rgba) {
-                nb = i;
-                break;
-            }
-            memcpy(snap[i].rgba, ov->rects[i].rgba,
-                   (size_t)ov->rects[i].w * ov->rects[i].h * 4);
+            overlay_rect_ref(&ov->rects[i]);
+            snap[i] = ov->rects[i]; /* 连同刚加上去的引用一起抄走 */
         }
     }
     pthread_mutex_unlock(&p->subs.mutex);
@@ -250,46 +271,59 @@ void lp_sub_overlay_blend(LpPlayer *p, uint8_t *bgra, int w, int h, int stride)
         int dx = (int)(r->x * sx + 0.5);
         int dy = (int)(r->y * sy + 0.5);
         if (dw <= 0 || dh <= 0) {
-            free(r->rgba);
+            overlay_rect_unref(r);
             continue;
         }
-        for (int y = 0; y < dh; y++) {
-            int ty = dy + y;
-            if (ty < 0 || ty >= h) {
-                continue;
+        /* 目标列 -> 源列 的映射表：以前每像素算一次
+         * (int64_t)x * r->w / dw，除数是变量，编译器没法用乘移位代替，
+         * 一张 1080p 的 PGS 位图要因此做上百万次整数除法。按 512 列一段
+         * 预算好映射，整段列只算一次。 */
+        int map_x[512];
+        for (int x0 = 0; x0 < dw; x0 += 512) {
+            int n = dw - x0;
+            if (n > 512) {
+                n = 512;
             }
-            int syi = (int)((int64_t)y * r->h / dh);
-            if (syi >= r->h) syi = r->h - 1;
-            uint8_t *dst_row = bgra + (size_t)ty * stride;
-            const uint8_t *src_row = r->rgba + (size_t)syi * r->w * 4;
-            for (int x = 0; x < dw; x++) {
-                int tx = dx + x;
-                if (tx < 0 || tx >= w) {
+            for (int i = 0; i < n; i++) {
+                int sxi = (int)((int64_t)(x0 + i) * r->w / dw);
+                map_x[i] = sxi < r->w ? sxi : r->w - 1;
+            }
+            for (int y = 0; y < dh; y++) {
+                int ty = dy + y;
+                if (ty < 0 || ty >= h) {
                     continue;
                 }
-                int sxi = (int)((int64_t)x * r->w / dw);
-                if (sxi >= r->w) sxi = r->w - 1;
-                const uint8_t *s = src_row + (size_t)sxi * 4;
-                unsigned a = s[3];
-                if (a == 0) {
-                    continue;
-                }
-                painted++;
-                uint8_t *d = dst_row + (size_t)tx * 4;
-                if (a == 255) {
-                    d[0] = s[2];
-                    d[1] = s[1];
-                    d[2] = s[0];
-                    d[3] = 255;
-                } else {
-                    d[0] = (uint8_t)((s[2] * a + d[0] * (255 - a)) / 255);
-                    d[1] = (uint8_t)((s[1] * a + d[1] * (255 - a)) / 255);
-                    d[2] = (uint8_t)((s[0] * a + d[2] * (255 - a)) / 255);
-                    d[3] = (uint8_t)(a + (d[3] * (255 - a)) / 255);
+                int syi = (int)((int64_t)y * r->h / dh);
+                if (syi >= r->h) syi = r->h - 1;
+                uint8_t *dst_row = bgra + (size_t)ty * stride;
+                const uint8_t *src_row = r->rgba + (size_t)syi * r->w * 4;
+                for (int i = 0; i < n; i++) {
+                    int tx = dx + x0 + i;
+                    if (tx < 0 || tx >= w) {
+                        continue;
+                    }
+                    const uint8_t *s = src_row + (size_t)map_x[i] * 4;
+                    unsigned a = s[3];
+                    if (a == 0) {
+                        continue;
+                    }
+                    painted++;
+                    uint8_t *d = dst_row + (size_t)tx * 4;
+                    if (a == 255) {
+                        d[0] = s[2];
+                        d[1] = s[1];
+                        d[2] = s[0];
+                        d[3] = 255;
+                    } else {
+                        d[0] = (uint8_t)((s[2] * a + d[0] * (255 - a)) / 255);
+                        d[1] = (uint8_t)((s[1] * a + d[1] * (255 - a)) / 255);
+                        d[2] = (uint8_t)((s[0] * a + d[2] * (255 - a)) / 255);
+                        d[3] = (uint8_t)(a + (d[3] * (255 - a)) / 255);
+                    }
                 }
             }
         }
-        free(r->rgba);
+        overlay_rect_unref(r);
     }
     LP_DEBUG("subtitle", "blended %d rect(s), %lld px onto %dx%d", nb,
              (long long)painted, w, h);
@@ -2955,7 +2989,7 @@ static void append_style_json(LpStr *s, const LpSubStyle *st)
 }
 
 static void emit_subtitle(LpPlayer *p, const char *text, int64_t start_us, int64_t end_us,
-                          int64_t now_cue_us, const LpSubStyle *st, const char *runs_json)
+                          int64_t now_cue_us, const LpSubStyle *st, const LpStr *runs_json)
 {
     LpStr s;
     lp_str_init(&s);
@@ -2965,11 +2999,18 @@ static void emit_subtitle(LpPlayer *p, const char *text, int64_t start_us, int64
                   (long long)start_us, (long long)end_us, (long long)now_cue_us);
     append_style_json(&s, st);
     lp_str_append(&s, "}");
-    if (runs_json && *runs_json) {
-        lp_str_append(&s, ",\"runs\":[%s]", runs_json);
+    /* runs 直接接进同一个缓冲区，不再先用 %s 把整段 runs 拷进事件串。 */
+    if (runs_json && runs_json->len > 0) {
+        lp_str_append_raw(&s, ",\"runs\":[", 9);
+        lp_str_append_raw(&s, runs_json->p, runs_json->len);
+        lp_str_append_raw(&s, "]", 1);
     }
     lp_str_append(&s, "}");
-    lp_emit_event(p, LP_EVENT_SUBTITLE, "%s", s.p);
+    /* 直接把 LpStr 的缓冲区交出去：以前走 lp_emit_event(p, LP_EVENT_SUBTITLE,
+     * "%s", s.p)，lp_emit_event 内部先 vsnprintf 量长度再 vsnprintf 一遍
+     * 格式化，等于把整串（带样式时几 KB）复制两次。动画字幕 50 Hz 发事件，
+     * 这两次拷贝纯属浪费。 */
+    lp_emit_event_owned(p, LP_EVENT_SUBTITLE, lp_str_take(&s));
     lp_str_free(&s);
 }
 
@@ -3199,8 +3240,8 @@ void lp_subtitle_tick(LpPlayer *p, int64_t now_us)
         }
         if (t_now < c->end_us) {
             found = i;
-            if (text.len) lp_str_append(&text, "\n");
-            lp_str_append(&text, "%s", c->text);
+            if (text.len) lp_str_append_raw(&text, "\n", 1);
+            lp_str_append_raw(&text, c->text, strlen(c->text));
             if (start_us == 0) {
                 start_us = c->start_us;
             }
@@ -3251,8 +3292,7 @@ void lp_subtitle_tick(LpPlayer *p, int64_t now_us)
     pthread_mutex_unlock(&p->subs.mutex);
 
     if (changed) {
-        emit_subtitle(p, text.p ? text.p : "", start_us, end_us, cue_now_us, &style,
-                      runs.p ? runs.p : NULL);
+        emit_subtitle(p, text.p ? text.p : "", start_us, end_us, cue_now_us, &style, &runs);
         pthread_mutex_lock(&p->subs.mutex);
         p->subs.dirty = 0;
         pthread_mutex_unlock(&p->subs.mutex);

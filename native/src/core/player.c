@@ -25,6 +25,16 @@ static void emit_owned_json(LpPlayer *p, int event, int64_t value, char *json)
     p->event_cb(p->event_user, event, json, value);
 }
 
+/* Takes ownership of an already-formatted JSON payload.  Callers that build
+ * their payload in an LpStr can hand the buffer over directly instead of
+ * formatting it through a "%s" placeholder, which costs two extra full copies
+ * of the string (one to measure, one to format). Subtitle events run at 50 Hz
+ * while an animated cue is on screen, so those copies are not free. */
+void lp_emit_event_owned(LpPlayer *p, int event, char *json)
+{
+    emit_owned_json(p, event, 0, json);
+}
+
 void lp_emit_event(LpPlayer *p, int event, const char *fmt, ...)
 {
     if (!p || !p->event_cb) {

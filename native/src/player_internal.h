@@ -98,6 +98,7 @@ void lp_str_init(LpStr *s);
 void lp_str_free(LpStr *s);
 void lp_str_reset(LpStr *s);
 void lp_str_append(LpStr *s, const char *fmt, ...);
+void lp_str_append_raw(LpStr *s, const char *v, size_t n); /* no formatting */
 void lp_str_append_json_str(LpStr *s, const char *v); /* NULL -> "" */
 char *lp_str_take(LpStr *s);                          /* ownership moves out */
 char *lp_str_dup(const char *v);
@@ -163,6 +164,11 @@ void lp_pq_start(LpPacketQueue *q);
 int lp_pq_put(LpPacketQueue *q, AVPacket *pkt, int serial);
 /* Blocking unless `block` is 0.  Returns NULL on abort/EOF-empty. */
 AVPacket *lp_pq_get(LpPacketQueue *q, int *serial, int block);
+/* 解码线程没拿到包时用这个睡，不要 av_usleep 轮询：每 2 ms 醒一次意味着每秒
+ * 500 次加解锁，而且 queue.c 里那条 pthread_cond_wait 永远走不到。这里在条件
+ * 变量上等，put/abort/flush/signal_eof 都会立刻唤醒；`timeout_ms` 只是兜底，
+ * 防止某个分支漏了广播就把线程睡死。返回后调用方应当直接重试 lp_pq_get。 */
+void lp_pq_wait_more(LpPacketQueue *q, int timeout_ms);
 void lp_pq_signal_eof(LpPacketQueue *q, int serial);
 int lp_pq_size(LpPacketQueue *q);
 int lp_pq_eof(LpPacketQueue *q);
@@ -534,6 +540,9 @@ typedef struct LpSubOverlayRect {
     int w;
     int h;
     uint8_t *rgba; /* owned, w*h*4 */
+    /* 引用计数：overlay 自己持一份，渲染线程取快照时再 +1。这样渲染线程
+     * 不必每帧把整块位图 memcpy 出来，只要还有引用，内存就还在。 */
+    atomic_int refs;
 } LpSubOverlayRect;
 
 typedef struct LpSubOverlay {
@@ -600,6 +609,13 @@ typedef struct LpAudioStream {
     AVFilterContext *filt_sink;
     atomic_int graph_dirty;
     double applied_speed;
+    /* swr 输出的常驻 PCM 暂存区（交错 float32 立体声）。容量按需扩容，
+     * 避免每个音频帧一次 malloc/free。 */
+    float *pcm;
+    int pcm_cap;
+    /* atempo 图的进出口帧，随图一起建/毁，避免每个音频帧两次 alloc。 */
+    AVFrame *graph_in;
+    AVFrame *graph_out;
     atomic_int eof;
     int draining;
     int64_t frames_decoded;
@@ -700,6 +716,8 @@ struct LpPlayer {
 
 /* player.c helpers used by the other modules */
 void lp_emit_event(LpPlayer *p, int event, const char *json_fmt, ...);
+/* Takes ownership of an already-built JSON payload (free()d on every path). */
+void lp_emit_event_owned(LpPlayer *p, int event, char *json);
 
 void lp_set_state(LpPlayer *p, LpState state);
 LpState lp_get_state(LpPlayer *p);

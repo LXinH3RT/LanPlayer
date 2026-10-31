@@ -95,6 +95,27 @@ class ProgressStore {
 
   ProgressEntry? entry(String key) => _entries[sanitizeKey(key)];
 
+  /// `sanitizeKey` 的结果缓存。
+  ///
+  /// 列表里每个视频行都要查一次续播点（`media_row.dart` 里对每行调
+  /// `ProgressStore.instance.resumablePosition`），每次都跑一遍百分号解码加
+  /// 文件 URL 归一化 —— 一个目录几百个文件就是几百次 `utf8.encode`。
+  /// 这个映射是纯函数：同一个输入永远同一个输出，可以放心缓存。
+  ///
+  /// 表满时整张清掉，不做 LRU —— 条目数量级就是「一个目录的文件数」，清空后
+  /// 重建的代价比维护淘汰记账还低。
+  static const int _keyCacheMax = 4096;
+  static final Map<String, String> _keyCache = <String, String>{};
+
+  static String sanitizeKey(String key) {
+    final hit = _keyCache[key];
+    if (hit != null) return hit;
+    final out = _sanitizeKeyUncached(key);
+    if (_keyCache.length >= _keyCacheMax) _keyCache.clear();
+    _keyCache[key] = out;
+    return out;
+  }
+
   /// URLs may carry `user:pass@` (playback needs it, storage must not keep
   /// it). Stripping userinfo here means one file always maps to one history
   /// record and the password never lands in `progress.json`.
@@ -102,7 +123,7 @@ class ProgressStore {
   /// Percent escapes are decoded (except `%2F`) because the core reports
   /// listing paths as raw UTF-8 while a playback URL may arrive
   /// percent-encoded — both must map to the same record.
-  static String sanitizeKey(String key) {
+  static String _sanitizeKeyUncached(String key) {
     var out = key;
     final schemeEnd = out.indexOf('://');
     if (schemeEnd >= 0) {
