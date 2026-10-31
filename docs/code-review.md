@@ -273,7 +273,9 @@ demux 是唯一写者，撕裂风险低，但这是标准的数据竞争（C11 �
 
 ```c
 case 'i':
-    b->st.flags = tag_number(&p, &num) == 0 && num == 0 ? (flags & ~ITALIC) : (flags | ITALIC);
+    b->st.flags = tag_number(&p, &num) == 0 && num == 0
+                      ? (b->st.flags & ~LP_SUB_ITALIC)
+                      : (b->st.flags | LP_SUB_ITALIC);
 ```
 
 只认 `\i0` / `\i1`，碰上 `\iclip(...)` 时 `tag_number()` 返回非 0，于是按「无参数即开启」处理——**把逆裁剪当成了斜体**。配套的 `clip_inverse` 字段在整个 `subtitle.c` 里没有任何赋值点（只有拷贝与比较），JSON 里恒输出 `false`，所以即使解析对了也没有下游能消费。
