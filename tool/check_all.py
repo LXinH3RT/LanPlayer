@@ -3210,6 +3210,91 @@ def check_apple_wiring() -> None:
         notes.append("apple audio: playback category + AudioQueue volume floor")
 
 
+def check_offline_shortcut() -> None:
+    """Do not dial a server again when we already know it is down.
+
+    Opening a folder used to call the repository unconditionally, so a server
+    that was off cost the user another full socket timeout (15 s) before the
+    error dialog appeared - even though that very source was already showing
+    an error row with a retry button.
+    """
+
+    health = ROOT / "app/lib/data/source_health.dart"
+    if not health.exists():
+        problems.append(
+            "app/lib/data/source_health.dart is missing; nothing remembers that "
+            "a source is offline, so every click would dial it again")
+        return
+
+    hs = health.read_text(encoding="utf-8", errors="replace")
+    for token, why in (
+            ("class SourceHealth extends ChangeNotifier",
+             "the health state has to be observable so the home screen can repaint"),
+            ("static final SourceHealth instance",
+             "callers share one instance; a per-widget copy would never agree"),
+            ("void markOffline(", "nothing can mark a source offline"),
+            ("void markOnline(", "a source could never come back online"),
+            ("void forget(", "removing a source would leave a stale offline entry"),
+    ):
+        if token not in hs:
+            problems.append(f"app/lib/data/source_health.dart: {why} ({token})")
+
+    if "请重新连接服务器或刷新后重试" not in hs:
+        problems.append(
+            "app/lib/data/source_health.dart: the offline hint lost its "
+            "'请重新连接服务器或刷新后重试' tail; users would not know what to do")
+
+    home = ROOT / "app/lib/ui/home_screen.dart"
+    hc = home.read_text(encoding="utf-8", errors="replace")
+
+    # `_openRoot` 与 `_enterSubdir` 都必须先查已知状态，命中就直接返回。
+    for name in ("_openRoot", "_enterSubdir"):
+        start = hc.find(f"Future<void> {name}(")
+        if start < 0:
+            problems.append(f"app/lib/ui/home_screen.dart: {name} is gone")
+            continue
+        body = hc[start:]
+        end = body.find("\n  }")
+        body = body[:end if end > 0 else 1200]
+        if "SourceHealth.instance.offlineReason(" not in body:
+            problems.append(
+                f"app/lib/ui/home_screen.dart: {name} does not consult the "
+                "known offline state; tapping it on a dead server would wait "
+                "for another socket timeout")
+        if "offlineHint(" not in body:
+            problems.append(
+                f"app/lib/ui/home_screen.dart: {name} no longer shows the "
+                "offline hint")
+
+    if "SourceHealth.instance.markOffline(" not in hc:
+        problems.append(
+            "app/lib/ui/home_screen.dart: a failed load no longer records the "
+            "source as offline")
+    if "SourceHealth.instance.markOnline(" not in hc:
+        problems.append(
+            "app/lib/ui/home_screen.dart: a successful load no longer clears "
+            "the offline flag")
+    if "SourceHealth.instance.forget(" not in hc:
+        problems.append(
+            "app/lib/ui/home_screen.dart: removing a source no longer forgets "
+            "its health entry")
+
+    browser = ROOT / "app/lib/ui/browser_screen.dart"
+    bc = browser.read_text(encoding="utf-8", errors="replace")
+    if "final String? sourceId;" not in bc:
+        problems.append(
+            "app/lib/ui/browser_screen.dart: the browser page lost its "
+            "sourceId, so failures inside it cannot be attributed to a source")
+    if "_markOffline(e.message)" not in bc:
+        problems.append(
+            "app/lib/ui/browser_screen.dart: a failed navigation no longer "
+            "records the source as offline")
+
+    notes.append(
+        "offline: a failed listing marks its source offline, and opening it "
+        "again shows the hint instead of dialling the dead server")
+
+
 def check_ui_thread() -> None:
     """Keep blocking native calls off the Flutter UI thread.
 
@@ -3587,6 +3672,7 @@ def main() -> int:
     check_local_picker()
     check_splash()
     check_ui_thread()
+    check_offline_shortcut()
     check_windows_playback_paths()
 
     for n in notes:

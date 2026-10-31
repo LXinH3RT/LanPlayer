@@ -8,6 +8,7 @@ import '../data/folders.dart';
 import '../data/home_sources.dart';
 import '../data/models.dart';
 import '../data/repository.dart';
+import '../data/source_health.dart';
 import '../data/stores.dart';
 import '../player/playlist.dart';
 import 'browser_screen.dart';
@@ -160,9 +161,14 @@ class _HomeScreenState extends State<HomeScreen> {
           ? await _repo.browseFile(folder.path)
           : await _repo.browseUrl(s.location.rootUrl, s.location.options);
       if (!mounted || _loadGen[s.id] != gen) return;
+      // 连上了：把上一次的离线标记清掉。这块来源接下来点「全部」可以照常进。
+      SourceHealth.instance.markOnline(s.id);
       setState(() => _loads[s.id] = _SourceLoad(listing: listing));
     } catch (e) {
       if (!mounted || _loadGen[s.id] != gen) return;
+      // 连不上：记下来。用户点「全部」时直接按这个结论给提示，不必再等
+      // 一次 socket 超时 —— 那十几秒里界面什么都不说，看起来就像卡死了。
+      SourceHealth.instance.markOffline(s.id, _errorText(e));
       setState(() => _loads[s.id] =
           _SourceLoad(listing: _loads[s.id]?.listing, error: _errorText(e)));
     }
@@ -172,11 +178,17 @@ class _HomeScreenState extends State<HomeScreen> {
   ///
   /// 浏览页需要初始列表，这样它首帧就有内容，不会先闪一下空白再填。
   Future<void> _enterSubdir(HomeSource s, MediaEntry dir) async {
+    final offline = SourceHealth.instance.offlineReason(s.id);
+    if (offline != null) {
+      await showError(context, offlineHint(dir.path, offline));
+      return;
+    }
     try {
       final listing = await _repo.browseUrl(dir.path, s.location.options);
       if (!mounted) return;
       await Navigator.of(context).push(MaterialPageRoute<void>(
-        builder: (_) => BrowserScreen(location: s.location, initial: listing),
+        builder: (_) => BrowserScreen(
+            location: s.location, initial: listing, sourceId: s.id),
       ));
       if (mounted) unawaited(_load(s));
     } catch (e) {
@@ -189,6 +201,13 @@ class _HomeScreenState extends State<HomeScreen> {
   /// 单文件来源没有「完整浏览页」可言：那块的根就是文件所在的目录，
   /// 直接播这个文件更贴近用户点「全部」时想干的事。
   Future<void> _openRoot(HomeSource s) async {
+    // 已知离线就直接给结论，不去连。这颗按钮以前每次都真的连一遍，服务器
+    // 不在线时要等满 socket 超时才弹窗 —— 而同一块来源上早就写着连不上了。
+    final offline = SourceHealth.instance.offlineReason(s.id);
+    if (offline != null) {
+      await showError(context, offlineHint(s.location.rootUrl, offline));
+      return;
+    }
     if (s.isFile) {
       final entry = _loads[s.id]?.listing?.entries.firstOrNull;
       if (entry != null) await _play(s, entry, const []);
@@ -209,7 +228,8 @@ class _HomeScreenState extends State<HomeScreen> {
       } catch (_) {}
       if (!mounted) return;
       await Navigator.of(context).push(MaterialPageRoute<void>(
-        builder: (_) => BrowserScreen(location: s.location, initial: listing),
+        builder: (_) => BrowserScreen(
+            location: s.location, initial: listing, sourceId: s.id),
       ));
       if (mounted) unawaited(_load(s));
     } catch (e) {
@@ -408,6 +428,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     _loads.remove(s.id);
     _loadGen.remove(s.id);
+    // 这块来源没了，它的离线标记也一起清掉：同 id 万一被新来源复用，
+    // 别让它一上来就带着上一个的「连不上」。
+    SourceHealth.instance.forget(s.id);
     // 正被过滤的那一块被移除后要回到「全部」，否则页面会空白。
     if (_only == s.id) _only = null;
     if (mounted) setState(() {});

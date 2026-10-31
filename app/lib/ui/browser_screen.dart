@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../data/location.dart';
 import '../data/models.dart';
 import '../data/repository.dart';
+import '../data/source_health.dart';
 import '../data/stores.dart';
 import '../player/playlist.dart';
 import 'feedback.dart';
@@ -22,7 +23,11 @@ import 'widgets/media_row.dart';
 /// 部件，两处才不会慢慢长成两种列表。
 class BrowserScreen extends StatefulWidget {
   const BrowserScreen(
-      {super.key, required this.location, required this.initial, this.repo});
+      {super.key,
+      required this.location,
+      required this.initial,
+      this.repo,
+      this.sourceId});
 
   /// 当前正在浏览的媒体源，例如 SMB 共享或本地存储。
   final MediaLocation location;
@@ -33,6 +38,10 @@ class BrowserScreen extends StatefulWidget {
   /// 取数入口。默认真的去连共享；测试注入一个不碰网络的假实现。
   final MediaRepository? repo;
 
+  /// 属于首页的哪一块来源。连接成败会记到 [SourceHealth] 上，首页据此
+  /// 在离线时直接给提示、不再等一次超时。
+  final String? sourceId;
+
   @override
   State<BrowserScreen> createState() => _BrowserScreenState();
 }
@@ -40,6 +49,11 @@ class BrowserScreen extends StatefulWidget {
 class _BrowserScreenState extends State<BrowserScreen> {
   /// 负责处理所有媒体源的网络/文件系统浏览逻辑的仓库。
   late final MediaRepository _repo = widget.repo ?? MediaRepository();
+
+  /// 这一页属于哪块来源。用来查「上次连过没有」。
+  ///
+  /// 可为 null：浏览页也可能被别的路径推起来（目前只有首页会推）。
+  String? get _sourceId => widget.sourceId;
 
   /// 当前目录列表，这是用户正在查看的实时数据。
   late DirectoryListing _listing = widget.initial;
@@ -59,18 +73,30 @@ class _BrowserScreenState extends State<BrowserScreen> {
       key: SettingsStore.instance.value.shortcuts
           .keyFor(ShortcutAction.back));
 
+  void _markOnline() {
+    final id = _sourceId;
+    if (id != null) SourceHealth.instance.markOnline(id);
+  }
+
+  void _markOffline(String reason) {
+    final id = _sourceId;
+    if (id != null) SourceHealth.instance.markOffline(id, reason);
+  }
+
   /// 导航到指定路径，并在替换为新目录内容前可选择性地把当前列表
   /// 压入返回栈中，方便后退浏览。
   Future<void> _navigate(String url, {bool push = true}) async {
     setState(() => _loading = true);
     try {
       final listing = await _repo.browseUrl(url, widget.location.options);
+      _markOnline();
       setState(() {
         if (push) _stack.add(_listing);
         _listing = listing;
       });
     } on MediaSourceException catch (e) {
-      if (mounted) await showError(context, e.message);
+      _markOffline(e.message);
+      if (mounted) await showError(context, offlineHint(url, e.message));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -87,9 +113,13 @@ class _BrowserScreenState extends State<BrowserScreen> {
     try {
       final listing =
           await _repo.browseUrl(_listing.url, widget.location.options);
+      _markOnline();
       if (mounted) setState(() => _listing = listing);
     } on MediaSourceException catch (e) {
-      if (mounted) await showError(context, e.message);
+      _markOffline(e.message);
+      if (mounted) {
+        await showError(context, offlineHint(_listing.url, e.message));
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
