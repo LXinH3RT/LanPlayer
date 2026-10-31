@@ -33,6 +33,11 @@ Dart UI ──► PlayerController ──► dart:ffi ──► lp_player_*   �
    `monospace` / `Courier` / `Consolas` 这类写死的等宽家族——时间码与统计数字要对齐
    时用 `FontFeature.tabularFigures()`，而不是换字体。字幕例外：字幕的字族来自 ASS
    的 `Fontname` / `\fn`，属于内容而不是界面。
+6. **数据模型按职责分文件，出口只有一个**。`app/lib/data/models.dart` 只做转发，
+   定义落在四个文件里：`playback_settings.dart`（播放态与持久化偏好）、
+   `media_models.dart`（服务器、目录项、流信息与媒体信息）、`directory_view.dart`
+   （`DirectoryListing` 与目录页的派生列表）、`subtitle_models.dart`（解析后的字幕
+   行、样式与动画）。调用方仍然只 import `models.dart`，改一处职责不会牵动全仓。
 
 ## 2. 线程
 

@@ -36,6 +36,79 @@ LIB = APP / "lib"
 problems: list[str] = []
 notes: list[str] = []
 
+DATA = LIB / "data"
+
+# `data/models.dart` is a facade: it re-exports the model files, and every
+# call site still imports that one path.  The assertions below care about the
+# model definitions, not about which file happens to hold them, so they read
+# the whole group as one body.
+MODEL_FILES = (
+    "models.dart",
+    "playback_settings.dart",
+    "media_models.dart",
+    "directory_view.dart",
+    "subtitle_models.dart",
+)
+
+
+def model_text() -> str:
+    parts = []
+    for name in MODEL_FILES:
+        path = DATA / name
+        if path.exists():
+            parts.append(path.read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
+
+def check_model_split() -> None:
+    """数据模型按职责分四个文件，`models.dart` 只当出口。
+
+    评审指出 `models.dart` 一千多行、混了播放设置、目录视图、媒体信息和字幕
+    四个层次。拆开之后调用方仍然只 import `models.dart`，所以这里钉住三件事：
+    每个文件都得在、关键类型必须落在对应的文件里、facade 本身别再长回大文件。
+    """
+    facade = DATA / "models.dart"
+    if not facade.exists():
+        problems.append("app/lib/data/models.dart missing")
+        return
+    text = facade.read_text(encoding="utf-8")
+    for name in MODEL_FILES[1:]:
+        if not (DATA / name).exists():
+            problems.append(f"app/lib/data/{name} missing; models.dart re-exports "
+                            f"it, so the import would not resolve")
+            continue
+        if f"export '{name}';" not in text:
+            problems.append(f"models.dart must re-export {name}; every call site "
+                            f"imports models.dart and would lose the type")
+    if len(text.splitlines()) > 60:
+        problems.append("models.dart is growing back into a grab bag; model "
+                        f"definitions belong in the split files, not the facade")
+    for token in ("class PlaybackSettings {", "enum PlayerState {"):
+        if token in text:
+            problems.append(f"models.dart still defines `{token.rstrip(' {')}`; "
+                            f"the facade must only re-export the split files")
+    owned = {
+        "playback_settings.dart": ("class PlaybackSettings {", "enum PlayerState {"),
+        "media_models.dart": ("class MediaEntry {", "class MediaInfo {",
+                              "class ServerProfile {"),
+        "directory_view.dart": ("class DirectoryListing {",),
+        "subtitle_models.dart": ("class SubtitleCue {", "class SubtitleStyle {"),
+    }
+    for name, decls in owned.items():
+        path = DATA / name
+        if not path.exists():
+            continue
+        body = path.read_text(encoding="utf-8")
+        for decl in decls:
+            if decl in body:
+                continue
+            problems.append(f"app/lib/data/{name} lost `{decl.rstrip(' {')}`; "
+                            f"that is the responsibility this file owns")
+            break
+    notes.append("model split: preferences, media info, directory view and "
+                 "subtitle cues live in their own files behind models.dart")
+
+
 def check_dart_imports() -> None:
     if not LIB.exists():
         problems.append("app/lib is missing")
@@ -166,6 +239,10 @@ REQUIRED = [
     "app/assets/fonts/MiSans-LICENSE.txt",
     "app/assets/fonts/NOTICE.txt",
     "app/lib/data/models.dart",
+    "app/lib/data/playback_settings.dart",
+    "app/lib/data/media_models.dart",
+    "app/lib/data/directory_view.dart",
+    "app/lib/data/subtitle_models.dart",
     "app/lib/data/probe.dart",
     "app/lib/data/track_prefs.dart",
     "app/test/track_prefs_test.dart",
@@ -537,8 +614,8 @@ def check_lan_scan() -> None:
         problems.append(
             f"the add-server screen should have 5 inputs (host/port/share/"
             f"user/password), found {ui_code.count('TextFormField(')}")
-    models = ROOT / "app" / "lib" / "data" / "models.dart"
-    if models.exists() and "displayName" not in models.read_text(encoding="utf-8"):
+    models = DATA / "models.dart"
+    if models.exists() and "displayName" not in model_text():
         problems.append("ServerProfile must expose displayName (falls back to "
                         "share) so cards stay readable when name is empty")
 
@@ -557,11 +634,11 @@ def check_listing_index() -> None:
     必须是 `late final` 的缓存，配对必须走一次建好的索引表，行里不许再
     `firstWhere` 现找归属。
     """
-    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    models = DATA / "models.dart"
     if not models.exists():
         problems.append("app/lib/data/models.dart missing")
         return
-    mc = models.read_text(encoding="utf-8")
+    mc = model_text()
     listing = mc.split("class DirectoryListing {", 1)[-1].split("\n}", 1)[0]
     # 只看代码：注释里会提到旧写法（「原来是 `orphans.any(...)`」），那正是
     # 要说明的背景，不能当成回归。
@@ -639,11 +716,11 @@ def check_seek_step() -> None:
     是可以手改的 —— 读到 0 会让快进退原地不动，读到 999 一点就跳到片尾。
     所以断言同时盯住：模型里必须夹紧、默认值必须合法、播放页不得再写死 10。
     """
-    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    models = DATA / "models.dart"
     if not models.exists():
         problems.append("app/lib/data/models.dart is missing")
         return
-    md = models.read_text(encoding="utf-8")
+    md = model_text()
 
     # 断言字段声明本身，不是全文搜名字：名字还留在 toJson/fromJson 里，
     # 单纯删掉字段声明时全文搜索照样命中，护栏就成了摆设。
@@ -706,11 +783,11 @@ def check_speed_steps() -> None:
     或者反过来。另外 fromJson 必须走 clampSpeed —— 老配置里存过 1.3 这类
     非档位值，不吸附的话 RadioListTile 的 groupValue 精确匹配会全落空。
     """
-    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    models = DATA / "models.dart"
     if not models.exists():
         problems.append("app/lib/data/models.dart is missing")
         return
-    md = models.read_text(encoding="utf-8")
+    md = model_text()
 
     if "static const List<double> speedSteps = [" not in md:
         problems.append("PlaybackSettings lost speedSteps; the speed menu "
@@ -1150,10 +1227,10 @@ def check_thumbnails() -> None:
         if path.exists() and "lp_is_listable_media" not in path.read_text(encoding="utf-8"):
             problems.append(f"{label} listing must keep only video/subtitle/audio "
                             f"(lp_is_listable_media)")
-    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    models = DATA / "models.dart"
     browser = ROOT / "app" / "lib" / "ui" / "browser_screen.dart"
     if models.exists():
-        mc = models.read_text(encoding="utf-8")
+        mc = model_text()
         if "browsable" not in mc:
             problems.append("DirectoryListing.browsable missing; the browser "
                             "would fall back to listing every file")
@@ -3156,9 +3233,9 @@ def check_subtitle_fonts() -> None:
             problems.append("subtitle_overlay.dart no longer treats sans-serif as "
                             "the 'no preference' placeholder")
 
-    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    models = DATA / "models.dart"
     if models.exists():
-        mt = models.read_text(encoding="utf-8")
+        mt = model_text()
         if "final String font; // '' = inherit from the cue style" not in mt:
             problems.append("data/models.dart lost SubtitleSpan.font; the run "
                             "level \\fn would be dropped while parsing")
@@ -3355,7 +3432,7 @@ def check_subtitle_advanced() -> None:
                 "parsed; karaoke syllables would all start at the wrong "
                 "colour")
 
-    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    models = DATA / "models.dart"
     anim = ROOT / "app" / "lib" / "data" / "subtitle_anim.dart"
     overlay = ROOT / "app" / "lib" / "ui" / "widgets" / "subtitle_overlay.dart"
     if not anim.exists():
@@ -3374,7 +3451,7 @@ def check_subtitle_advanced() -> None:
                 problems.append(
                     f"app/lib/data/subtitle_anim.dart lost {token} ({why})")
     if models.exists():
-        mt = models.read_text(encoding="utf-8")
+        mt = model_text()
         for token, why in (
             ("class SubtitleAnim", "the animation model"),
             ("class SubtitlePathPoint", "the drawing model"),
@@ -3531,9 +3608,9 @@ def check_subtitle_sheet_selection() -> None:
                             "every track the core reports; an auto-loaded sidecar "
                             "subtitle would have no row at all")
 
-    models = ROOT / "app" / "lib" / "data" / "models.dart"
+    models = DATA / "models.dart"
     if models.exists():
-        mt = models.read_text(encoding="utf-8")
+        mt = model_text()
         for needle, why in (
             ("int externalSubtitleIndexOf(", "look up a loaded sidecar by name"),
             ("List<T> pendingSubtitleFiles<T>(", "list only not-yet-loaded files"),
@@ -4644,6 +4721,7 @@ def main() -> int:
     check_source_manifest()
     check_transport_registry()
     check_video_bridge_contract()
+    check_model_split()
     check_symbols()
     check_native_runtime()
     check_dart_syntax()
