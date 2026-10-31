@@ -47,43 +47,24 @@ message(STATUS "lanplayer: libsmb2 root = ${LP_SMB2_ROOT}")
 
 # ---------------------------------------------------------------------------
 # Core sources (platform independent)
+#
+# 清单在 sources.cmake 里，两个 Python 构建脚本解析的是同一份文本。以前这份
+# 清单被抄了三遍（这里、build_windows.py、build_apple_deps.py），新增一个 .c
+# 漏改一处就是「本地编得过、CI 里符号找不到」。
 # ---------------------------------------------------------------------------
-set(LP_CORE_SOURCES
-    src/util/lp_str.c
-    src/util/lp_log.c
-    src/core/queue.c
-    src/core/audio_ring.c
-    src/core/nal.c
-    src/core/demux.c
-    src/core/video.c
-    src/core/audio.c
-    src/core/subtitle.c
-    src/core/submatch.c
-    src/core/thumb.c
-    src/core/player.c
-    src/source/url.c
-    src/source/io.c
-    src/source/smb.c
-    src/source/file.c
-)
+include(${CMAKE_CURRENT_LIST_DIR}/sources.cmake)
 
 if(ANDROID)
-    set(LP_PLATFORM_SOURCES
-        src/platform/android/media_codec_decoder.c
-        src/platform/android/egl_renderer.c
-        src/platform/android/aaudio_sink.c
-        src/platform/android/jni_bridge.c
-    )
+    set(LP_PLATFORM_SOURCES ${LP_PLATFORM_ANDROID_SOURCES})
 elseif(APPLE)
-    set(LP_PLATFORM_SOURCES
-        src/platform/apple/videotoolbox_decoder.c
-        src/platform/apple/coreaudio_sink.c
-        src/platform/apple/apple_texture.c
-    )
+    set(LP_PLATFORM_SOURCES ${LP_PLATFORM_APPLE_SOURCES})
+elseif(WIN32)
+    # 以前这里没有 win32 分支，Windows 上走 else 拿到的是 stub 后端 ——
+    # 用 CMake 在 Windows 上构建得到的是一个永远返回「不支持」的 DLL，
+    # 而 scripts/build_windows.py 又另有一套编译规则，形成了双轨制。
+    set(LP_PLATFORM_SOURCES ${LP_PLATFORM_WIN32_SOURCES})
 else()
-    set(LP_PLATFORM_SOURCES
-        src/platform/stub/stub_platform.c
-    )
+    set(LP_PLATFORM_SOURCES ${LP_PLATFORM_STUB_SOURCES})
 endif()
 
 # Apple 上必须是 STATIC：Dart 侧对 iOS / macOS 用的是 DynamicLibrary.process()

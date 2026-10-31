@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tool"))
 import lpscript as lp  # noqa: E402
+from native_sources import load_sources  # noqa: E402
 
 BASE_FLAGS = [
     "-target", "x86_64-windows-gnu",
@@ -36,37 +37,18 @@ BASE_FLAGS = [
     "-Wno-unused-function",
 ]
 
-CORE_SOURCES = [
-    "src/util/lp_str.c",
-    "src/util/lp_log.c",
-    "src/core/queue.c",
-    "src/core/audio_ring.c",
-    "src/core/nal.c",
-    "src/core/demux.c",
-    "src/core/video.c",
-    "src/core/audio.c",
-    "src/core/subtitle.c",
-    "src/core/submatch.c",
-    "src/core/thumb.c",
-    "src/core/player.c",
-    "src/source/url.c",
-    "src/source/io.c",
-    "src/source/smb.c",
-    "src/source/file.c",
-]
+# 源文件清单来自 native/sources.cmake（CMake 也 include 同一份文件），
+# 不再在这里抄第二遍。路径相对 native/。
+_SOURCES = load_sources()
+CORE_SOURCES = _SOURCES["LP_CORE_SOURCES"]
 
-STUB_SOURCE = "src/platform/stub/stub_platform.c"
+STUB_SOURCE = _SOURCES["LP_PLATFORM_STUB_SOURCES"][0]
 
-# win32_platform.c is the framework adapter (renderer + audio); the D3D11VA
-# decoder is a second translation unit because it is the only one that touches
-# libavcodec's hardware path; d3d11_output.c owns the D3D11 device and the
-# shared BGRA surfaces the Flutter host samples without a CPU copy.
-WIN32_SOURCES = [
-    "src/platform/win32/win32_platform.c",
-    "src/platform/win32/d3d11va_decoder.c",
-    "src/platform/win32/d3d11_output.c",
-    "src/app/lp_preview.c",
-]
+# win32_platform.c 是框架适配层（渲染 + audio）；D3D11VA 解码器单独一个编译
+# 单元，因为只有它碰 libavcodec 的硬件路径；d3d11_output.c 持有 D3D11 设备
+# 与 Flutter 宿主直接采样的共享 BGRA 表面。lp_preview.c 不进 DLL，只给下面的
+# 预览可执行程序用 —— 所以它是最后一组，链接时按位置取。
+WIN32_SOURCES = _SOURCES["LP_PLATFORM_WIN32_SOURCES"] + _SOURCES["LP_TOOL_WIN32_SOURCES"]
 
 
 class Zig:

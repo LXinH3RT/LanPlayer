@@ -1887,6 +1887,79 @@ def check_symbols() -> None:
     else:
         notes.append(out.strip().splitlines()[-1])
 
+def check_source_manifest() -> None:
+    """Keep the one source list honest.
+
+    The list used to be copied into three places (native/CMakeLists.txt,
+    scripts/build_windows.py, scripts/build_apple_deps.py).  It now lives in
+    native/sources.cmake, which CMake includes and both Python build scripts
+    parse through tool/native_sources.py.
+
+    Two things can still go wrong without this check: a .c file appears under
+    native/src/ but nobody adds it to the manifest (it silently never gets
+    compiled, and only the link step notices -- on one platform only), or a
+    manifest entry outlives its file (every build fails with a cryptic missing
+    header).  Both are caught here, on every platform, before any compiler runs.
+    """
+    sys.path.insert(0, str(ROOT / "tool"))
+    try:
+        from native_sources import load_sources
+    except ImportError as exc:  # pragma: no cover - import failure is a problem
+        problems.append(f"tool/native_sources.py is missing or broken: {exc}")
+        return
+    try:
+        manifest = load_sources()
+    except (OSError, ValueError) as exc:
+        problems.append(f"native/sources.cmake: {exc}")
+        return
+
+    listed = set(manifest.all_sources())
+    native = ROOT / "native"
+
+    missing = sorted(rel for rel in listed if not (native / rel).is_file())
+    for rel in missing:
+        problems.append(f"native/sources.cmake lists native/{rel}, which does "
+                        f"not exist; every build fails on the missing file")
+
+    # The manifest must cover every library translation unit.  Executables and
+    # host-side helpers (app/, tests/, platform/desktop/) are built by name and
+    # are deliberately not listed.
+    wanted: set[str] = set()
+    for folder in ("util", "core", "source"):
+        wanted |= {f"src/{folder}/{p.name}"
+                   for p in (native / "src" / folder).glob("*.c")}
+    for family in ("stub", "win32", "apple", "android"):
+        wanted |= {f"src/platform/{family}/{p.name}"
+                   for p in (native / "src" / "platform" / family).glob("*.c")}
+    unlisted = sorted(wanted - listed)
+    for rel in unlisted:
+        problems.append(f"native/{rel} is not in native/sources.cmake; add it "
+                        f"there or the file is never compiled")
+
+    # A USB stick of a rule: both build scripts must go through the manifest
+    # instead of carrying their own copy of the list.
+    for script, marker in (
+        (ROOT / "scripts" / "build_windows.py", "load_sources()"),
+        (ROOT / "scripts" / "build_apple_deps.py", "load_sources()"),
+    ):
+        text = script.read_text(encoding="utf-8") if script.exists() else ""
+        if marker not in text:
+            problems.append(f"{script.name} must read native/sources.cmake via "
+                            f"native_sources.{marker[4:]} instead of listing "
+                            f"sources itself")
+    cmake = (ROOT / "native" / "CMakeLists.txt").read_text(encoding="utf-8")
+    # 只认真正的 include 行：注释里也提到过 sources.cmake，光比字符串会漏。
+    if "include(${CMAKE_CURRENT_LIST_DIR}/sources.cmake)" not in cmake:
+        problems.append("native/CMakeLists.txt must include(${CMAKE_CURRENT_LIST_DIR}"
+                        "/sources.cmake) so CMake and the scripts share one list")
+    if "elseif(WIN32)" not in cmake:
+        problems.append("native/CMakeLists.txt has no WIN32 branch; a CMake build "
+                        "on Windows would link the stub platform back end")
+
+    if not problems:
+        notes.append(f"source manifest: {len(listed)} native source(s) in one "
+                     f"list shared by CMake and both build scripts")
+
 def check_dart_tests() -> None:
     """Run the Dart test suite (share key + subtitle rendering).
 
@@ -3410,12 +3483,13 @@ def check_playback_profiles() -> None:
             problems.append(f"{name} in {rel} no longer calls lp_nal_is_annexb(); "
                             "length-prefixed packets that begin 00 00 01 would be "
                             "converted as if they were Annex-B and decode to nothing")
-    for rel in ("native/CMakeLists.txt", "scripts/build_windows.py",
-                "scripts/build_apple_deps.py"):
-        path = ROOT / rel
-        if path.exists() and "nal.c" not in path.read_text(encoding="utf-8"):
-            problems.append(f"{rel} no longer compiles native/src/core/nal.c; "
-                            "the decoders would fail to link")
+    # The three entry points no longer each carry their own copy of the list;
+    # they all reach native/src/core/nal.c through native/sources.cmake, which
+    # check_source_manifest() verifies contains it.
+    manifest = ROOT / "native" / "sources.cmake"
+    if not manifest.exists() or "src/core/nal.c" not in manifest.read_text(encoding="utf-8"):
+        problems.append("native/sources.cmake no longer compiles core/nal.c; "
+                        "the decoders would fail to link")
 
     notes.append("playback profiles: hwaccel refuses 10-bit H.264 on all three "
                  "platforms, 10-bit HEVC on Apple + Android only, d3d11va draws "
@@ -4261,6 +4335,7 @@ def main() -> int:
     check_dart_imports()
     check_dart_duplicates()
     check_required_files()
+    check_source_manifest()
     check_symbols()
     check_native_runtime()
     check_dart_syntax()

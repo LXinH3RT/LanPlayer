@@ -34,33 +34,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tool"))
 import lpscript as lp  # noqa: E402
+from native_sources import load_sources  # noqa: E402
 
 FFMPEG_LIBS = ["avformat", "avcodec", "avutil", "swresample", "swscale", "avfilter"]
 
 # Only the platform-independent core plus the Apple adapters.  platform/android
 # and platform/win32 need their own system headers, and platform/stub would
 # clash with the symbols platform/apple defines.
-CORE_SOURCES = [
-    "native/src/util/lp_str.c",
-    "native/src/util/lp_log.c",
-    "native/src/core/queue.c",
-    "native/src/core/audio_ring.c",
-    "native/src/core/nal.c",
-    "native/src/core/demux.c",
-    "native/src/core/video.c",
-    "native/src/core/audio.c",
-    "native/src/core/subtitle.c",
-    "native/src/core/submatch.c",
-    "native/src/core/thumb.c",
-    "native/src/core/player.c",
-    "native/src/source/url.c",
-    "native/src/source/io.c",
-    "native/src/source/smb.c",
-    "native/src/source/file.c",
-    "native/src/platform/apple/videotoolbox_decoder.c",
-    "native/src/platform/apple/coreaudio_sink.c",
-    "native/src/platform/apple/apple_texture.c",
-]
+#
+# 清单来自 native/sources.cmake（CMake 与 build_windows.py 读的是同一份），
+# 这里只把相对 native/ 的路径拼上仓库根前缀。
+_SOURCES = load_sources()
+CORE_SOURCES = [f"native/{rel}"
+                for rel in _SOURCES["LP_CORE_SOURCES"] +
+                _SOURCES["LP_PLATFORM_APPLE_SOURCES"]]
 
 
 def jobs() -> str:
