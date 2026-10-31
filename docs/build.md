@@ -442,7 +442,7 @@ cmake -S native -B /tmp/lpnative -DCMAKE_BUILD_TYPE=Release \
 cmake --build /tmp/lpnative -j8
 ```
 
-`native/CMakeLists.txt` 只注册了 `lp_smoke_test` 一个测试目标，`lp_subanim_test` / `lp_subcolor_test` / `lp_submatch_test` 用 clang 手工链：
+`native/CMakeLists.txt` 只注册了 `lp_smoke_test` 一个测试目标，`lp_subanim_test` / `lp_subcolor_test` / `lp_submatch_test` 用 clang 手工链。`lp_nal_test` 例外——它只用到 `src/core/nal.c` 与 `src/core/hwprofile.c` 里的纯函数，Windows 的 `scripts/build_windows.py` 会链它，`tool/check_all.py` 会跑它，因为分帧嗅探与硬解 profile 白名单只有在真机上才会暴露错误，而这两条规则本身与平台无关：
 
 ```bash
 INC="$PWD/native/third_party/ffmpeg/apple/macosx/include"
@@ -675,7 +675,7 @@ python tool/check_all.py            # 一把梭：C 语法/符号、Dart 解析�
 cd app && flutter analyze && flutter test # 有 Flutter SDK 时的完整检查
 ```
 
-`tool/check_all.py` 会自动跳过缺失的工具链（没有 Flutter 就不做 UI 检查），并顺带跑一遍 Windows 上已编译的 `build\win-x64\lp_smoke_test.exe`。
+`tool/check_all.py` 会自动跳过缺失的工具链（没有 Flutter 就不做 UI 检查），并顺带跑一遍 Windows 上已编译的 `build\win-x64\lp_smoke_test.exe`；`lp_nal_test.exe` 存在时也会跑，它验证的是规则而不是函数名（见 §4.9）。
 
 **Windows 上 `flutter analyze` / `flutter test` 要包一层**：`%APPDATA%` 与 `%LOCALAPPDATA%` 不可写时 flutter_tools 会失败在
 
@@ -709,8 +709,8 @@ Error: Flutter failed to write to a file at "C:\Users\...\AppData\Roaming\.flutt
 |`libavformat.so not found`|只打了 `liblanplayer.so`，FFmpeg `.so` 没随 APK 打包（检查 `abiFilters` 与 `jniLibs`）|
 |硬解直接回退软解|`lp_player_set_surface` 在 `open` 之后才调用；先创建纹理再 open（UI 已是这个顺序）|
 |4K 卡顿|APK 没开 `largeHeap`，或 SMB 读太慢：调大 `readahead_kb` 与 `timeout_ms`|
-|10-bit H.264（Hi10P / High 10）片源画面不动、进度条照走|正常：三端硬解都不实现这个 profile，`profile_needs_software()` 会把它挡在门外改走软解（日志里一条 `profile 110 is decoded better in software`）。别去「修」这条 WARN|
-|10-bit HEVC（Main10）在 Mac / Android 上画面不动|正常，同样是 `profile_needs_software()` 挡下来走软解（`profile 2 is decoded better in software`）。**Windows 例外**：D3D11VA 解 10-bit HEVC 是满帧的，那边故意不拦，改这一项时别三端照抄|
+|10-bit H.264（Hi10P / High 10）片源画面不动、进度条照走|正常：三端硬解都不实现这个 profile，`lp_hw_profile_needs_software()`（`native/src/core/hwprofile.c`）会把它挡在门外改走软解（日志里一条 `profile 110 is decoded better in software`）。别去「修」这条 WARN|
+|10-bit HEVC（Main10）在 Mac / Android 上画面不动|正常，同样是 `lp_hw_profile_needs_software()` 挡下来走软解（`profile 2 is decoded better in software`）。**Windows 例外**：D3D11VA 解 10-bit HEVC 是满帧的，那边传 `refuse_hevc = 0` 故意不拦；这条规则只写在一处，`lp_nal_test.exe` 会验证三种取值|
 |iOS 链接不到 `lp_*`|漏了 Bridging Header 或静态库没加到 Link Binary With Libraries|
 |字幕乱码|不是 UTF-8/UTF-16。Windows 上内核用 `MultiByteToWideChar` 依次试 GB18030/GBK/Big5/Shift-JIS/CP949；Android 需要 iconv 或先转 UTF-8|
 |`Building with plugins requires symlink support`|Windows 未开「开发者模式」或令牌无 `SeCreateSymbolicLink`：用 `scripts\fix_plugin_links.py` 建 junction，或直接 `scripts\build_windows_desktop.py`|

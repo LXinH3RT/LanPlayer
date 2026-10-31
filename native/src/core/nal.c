@@ -93,6 +93,102 @@ int lp_nal_is_annexb(const uint8_t *data, size_t size)
     return 1;
 }
 
+/* AVCC (4 byte big endian length in front of every NAL) -> Annex-B (00 00 00 01
+ * in front of every NAL).  MediaCodec only speaks the second form, and
+ * FFmpeg hands out the first one for MP4.
+ *
+ * Returns the number of bytes written, or 0 when the source is not a valid
+ * chain or `cap` is too small.  MediaCodec's caller sizes `dst` as
+ * size*3/2 + 64, which always fits because a start code is never longer than
+ * the length field it replaces.
+ *
+ * This lives next to the detector so the two cannot drift: a conversion that
+ * disagrees with lp_nal_is_annexb either mangles every frame or converts a
+ * packet twice.  Both platforms call it, and lp_nal_test.c drives it on
+ * Windows, where neither real decoder can run. */
+size_t lp_nal_avcc_to_annexb(const uint8_t *src, size_t size, uint8_t *dst, size_t cap)
+{
+    if (!src || !dst) {
+        return 0;
+    }
+    size_t out = 0;
+    size_t i = 0;
+    while (i + 4 <= size) {
+        size_t len = ((size_t)src[i] << 24) | ((size_t)src[i + 1] << 16) |
+                     ((size_t)src[i + 2] << 8) | (size_t)src[i + 3];
+        i += 4;
+        if (len == 0 || len > size - i || out + 4 + len > cap) {
+            return 0;
+        }
+        dst[out] = 0;
+        dst[out + 1] = 0;
+        dst[out + 2] = 0;
+        dst[out + 3] = 1;
+        memcpy(dst + out + 4, src + i, len);
+        out += 4 + len;
+        i += len;
+    }
+    return out;
+}
+
+/* The reverse: Annex-B -> AVCC, which is what VideoToolbox wants.  A three byte
+ * start code turns into a four byte length, so `dst` needs a little headroom
+ * (size + size/3 + 8 is always enough).
+ *
+ * Returns the number of bytes written, or 0 when the source holds no start
+ * code at all. */
+size_t lp_nal_annexb_to_avcc(const uint8_t *src, size_t size, uint8_t *dst, size_t cap)
+{
+    if (!src || !dst || size < 4) {
+        return 0;
+    }
+    size_t out = 0;
+    size_t i = 0;
+    while (i + 3 <= size) {
+        size_t sc = 0;
+        if (src[i] == 0 && src[i + 1] == 0 && src[i + 2] == 1) {
+            sc = 3;
+        } else if (i + 4 <= size && src[i] == 0 && src[i + 1] == 0 && src[i + 2] == 0 &&
+                   src[i + 3] == 1) {
+            sc = 4;
+        }
+        if (!sc) {
+            i++;
+            continue;
+        }
+        size_t start = i + sc;
+        /* Walk to the next start code, not merely to the last position where a
+         * three byte probe still fits: stopping early truncates the final NAL of
+         * every packet, which decoders accept silently and then lose the tail of
+         * the picture.  A zero byte followed by zero, zero and a 0-or-1 is only
+         * a start code when the 1 is really there. */
+        size_t end = start;
+        while (end < size) {
+            if (end + 3 <= size && src[end] == 0 && src[end + 1] == 0 && src[end + 2] <= 1) {
+                if (src[end + 2] == 1) {
+                    break;
+                }
+                if (end + 4 <= size && src[end + 3] == 1) {
+                    break;
+                }
+            }
+            end++;
+        }
+        size_t len = end - start;
+        if (len == 0 || out + 4 + len > cap) {
+            break;
+        }
+        dst[out++] = (uint8_t)(len >> 24);
+        dst[out++] = (uint8_t)(len >> 16);
+        dst[out++] = (uint8_t)(len >> 8);
+        dst[out++] = (uint8_t)len;
+        memcpy(dst + out, src + start, len);
+        out += len;
+        i = end;
+    }
+    return out;
+}
+
 /* Length (in bytes) of the NAL payload that starts at `start`, or 0 when it is
  * malformed.  Used by the converters so both platforms agree on where a NAL
  * ends. */

@@ -147,26 +147,17 @@ static const char *mime_for_codec(enum AVCodecID id)
 /* 这些 profile 厂商的 MediaCodec 要么直接报错、要么慢到跟不上时钟。
  * Android 手机（c2.qti.avc.decoder）实测 1280x720 Hi10P：hardware decode 后第一帧
  * 就 `hw receive: -6`，整路播放变成连续错误事件；同一文件软解 24 fps 正常。
- * 与其让它失败后再回退，不如按 profile 提前拒绝，open_decoder() 会走软解。 */
+ * 与其让它失败后再回退，不如按 profile 提前拒绝，open_decoder() 会走软解。
+ *
+ * 名单本身在 src/core/hwprofile.c，三份后端不再各抄一遍。这里传
+ * `refuse_hevc = 1`：本机的 c2.qti.hevc.decoder 对 10-bit 是「吃下去但不出
+ * 画面」——播放 1080p HEVC-10bit 时 MediaCodec 自己的统计是
+ *   Qin:456 DQin:456/456 Render:0 Drop:0 DQout:0/456
+ * 456 个输入缓冲全被收下，一个都没 dequeue 出来，屏幕上一直是黑帧、进度条
+ * 照走；同一个文件软解 24 fps 正常。 */
 static int profile_needs_software(enum AVCodecID id, int profile)
 {
-    if (id == AV_CODEC_ID_H264) {
-        return profile == AV_PROFILE_H264_HIGH_10 || profile == AV_PROFILE_H264_HIGH_10_INTRA ||
-               profile == AV_PROFILE_H264_HIGH_422 || profile == AV_PROFILE_H264_HIGH_422_INTRA ||
-               profile == AV_PROFILE_H264_HIGH_444_PREDICTIVE ||
-               profile == AV_PROFILE_H264_HIGH_444_INTRA;
-    }
-    if (id == AV_CODEC_ID_HEVC) {
-        /* Android 手机 的 c2.qti.hevc.decoder 对 10-bit 是「吃下去但不出画面」：
-         * 播放 1080p HEVC-10bit 时 `MediaCodec` 自己的统计是
-         *   Qin:456 DQin:456/456 Render:0 Drop:0 DQout:0/456
-         * 也就是 456 个输入缓冲全被收下，却一个都没 dequeue 出来，
-         * 屏幕上一直是黑帧、进度条照走（用户看到的就是「卡住」）。
-         * 同一个文件软解 24 fps 正常，所以按 profile 提前拒绝。 */
-        return profile == AV_PROFILE_HEVC_MAIN_10 || profile == AV_PROFILE_HEVC_MAIN_STILL_PICTURE ||
-               profile == AV_PROFILE_HEVC_REXT;
-    }
-    return 0;
+    return lp_hw_profile_needs_software((int)id, profile, 1);
 }
 
 LpVideoDecoder *lp_hw_decoder_create(void)
@@ -282,27 +273,12 @@ static int needs_annexb(const AVPacket *pkt, const uint8_t *extra, int extralen)
     return !lp_nal_is_annexb(pkt->data, (size_t)pkt->size);
 }
 
-/* 返回转换后写入的长度；0 表示无需/无法转换。dst 至少要有 size*3/2+64 字节。 */
+/* 返回转换后写入的长度；0 表示无需/无法转换。dst 至少要有 size*3/2+64 字节。
+ * 转换本身在 src/core/nal.c，与嗅探器同一个编译单元 —— 两边各写一份的话，
+ * 一旦分帧规则改了，转换就会和判断打架（要么每帧都被改写，要么该改的不改）。 */
 static size_t to_annexb(const uint8_t *src, size_t size, uint8_t *dst, size_t cap)
 {
-    size_t out = 0;
-    size_t i = 0;
-    while (i + 4 <= size) {
-        size_t len = ((size_t)src[i] << 24) | ((size_t)src[i + 1] << 16) |
-                     ((size_t)src[i + 2] << 8) | (size_t)src[i + 3];
-        i += 4;
-        if (len == 0 || len > size - i || out + 4 + len > cap) {
-            return 0;
-        }
-        dst[out] = 0;
-        dst[out + 1] = 0;
-        dst[out + 2] = 0;
-        dst[out + 3] = 1;
-        memcpy(dst + out + 4, src + i, len);
-        out += 4 + len;
-        i += len;
-    }
-    return out;
+    return lp_nal_avcc_to_annexb(src, size, dst, cap);
 }
 
 int lp_hw_decoder_send(LpVideoDecoder *d, const AVPacket *pkt)

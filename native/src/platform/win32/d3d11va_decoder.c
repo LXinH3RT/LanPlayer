@@ -63,17 +63,15 @@ static enum AVPixelFormat d3d11_get_format(AVCodecContext *ctx, const enum AVPix
  * one frame per second, which the user sees as a permanent stall -- the video
  * sits on the first picture while the clock runs away from it.  The ordinary
  * software decoder does the same work on all cores and keeps up easily, so
- * these profiles must never be routed through the hardware path. */
+ * these profiles must never be routed through the hardware path.
+ *
+ * The list itself lives in src/core/hwprofile.c so the three backends cannot
+ * drift apart.  `refuse_hevc = 0`: D3D11VA handles 10-bit HEVC at full speed
+ * (measured on the same files that stall VideoToolbox), so Windows keeps the
+ * hardware path for it. */
 static int profile_needs_software(int codec_id, int profile)
 {
-    if (codec_id == AV_CODEC_ID_H264) {
-        /* High 10, High 4:2:2, High 4:4:4 and their predictive variants. */
-        return profile == AV_PROFILE_H264_HIGH_10 || profile == AV_PROFILE_H264_HIGH_10_INTRA ||
-               profile == AV_PROFILE_H264_HIGH_422 || profile == AV_PROFILE_H264_HIGH_422_INTRA ||
-               profile == AV_PROFILE_H264_HIGH_444_PREDICTIVE ||
-               profile == AV_PROFILE_H264_HIGH_444_INTRA;
-    }
-    return 0;
+    return lp_hw_profile_needs_software(codec_id, profile, 0);
 }
 
 /* Does this codec expose a d3d11va hwaccel that takes our device context? */

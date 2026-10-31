@@ -1968,6 +1968,35 @@ def check_hw_decode() -> None:
     notes.append("hw decode: d3d11va matches software reference, " +
                  (mid[-1] if mid else "no pixel"))
 
+def check_nal_behaviour() -> None:
+    """Runs the NAL framing and profile-guard test when the build exists.
+
+    Finding `to_annexb(` in media_codec_decoder.c proves somebody wrote the
+    function, not that it converts the right bytes.  The two conversions and the
+    hardware profile list are plain C, so Windows can execute them here and the
+    answer is real: a packet whose length field happens to look like a start code
+    must not be treated as Annex-B, and a 10-bit profile that the backend cannot
+    decode must be refused before the decoder is opened.
+    """
+    out_dir = ROOT / "build" / "win-x64"
+    exe = out_dir / "lp_nal_test.exe"
+    build = ROOT / "scripts" / "build_windows.py"
+    if build.exists() and 'build_test("lp_nal_test.exe"' not in build.read_text(encoding="utf-8"):
+        problems.append("scripts/build_windows.py no longer builds lp_nal_test.exe; the "
+                        "framing rule would only be checked by grepping for its name")
+        return
+    if not exe.exists():
+        notes.append("nal framing: not built (scripts/build_windows.py)")
+        return
+    env = dict(os.environ)
+    env["PATH"] = str(out_dir) + os.pathsep + env.get("PATH", "")
+    code, out = run([str(exe)], env=env, cwd=str(out_dir))
+    if code != 0 or "all nal framing and profile guard cases passed" not in out:
+        problems.append("nal framing test failed:\n" + out.strip()[-1500:])
+        return
+    notes.append("nal framing: length-prefix vs start-code, both conversions "
+                 "and the hw profile guard behave as specified")
+
 def dart_exe() -> Path | None:
     """Prefer the standalone SDK, fall back to the one bundled with Flutter.
 
@@ -2865,12 +2894,23 @@ def check_script_encoding() -> None:
         if not folder.is_dir():
             continue
         for path in sorted(folder.rglob("*.py")):
+            raw = path.read_bytes()
             try:
-                path.read_bytes().decode("utf-8")
+                text = raw.decode("utf-8")
             except UnicodeDecodeError as exc:
                 bad.append(f"{path.relative_to(ROOT).as_posix()}: not valid UTF-8 "
                            f"({exc.reason} at byte {exc.start}); Python would fail "
                            f"to import it")
+                continue
+            # A comment that quotes `\1c` gets its backslash eaten by an editor
+            # that was aiming at the next character, which leaves a real control
+            # byte in the file: invisible in a diff, and a build log full of
+            # escape sequences.  Tab, CR and LF are the only ones we want.
+            ctrl = sorted({hex(ord(c)) for c in text if ord(c) < 32 and ord(c) not in (10, 13, 9)})
+            if ctrl:
+                bad.append(f"{path.relative_to(ROOT).as_posix()}: raw control "
+                           f"characters {' '.join(ctrl)}; the intended text was "
+                           f"probably an escape sequence")
 
     # One interpreter for every build and capture step.  The old .ps1 / .sh
     # versions are gone; letting a new one back in reintroduces the two failure
@@ -3759,8 +3799,11 @@ def check_android_playback() -> None:
 
     dtext = dec.read_text(encoding="utf-8")
     for needle, why in (
-        ("to_annexb(", "the AVCC -> Annex-B conversion is gone; MediaCodec would "
-                       "accept every packet and decode nothing (black screen)"),
+        ("lp_nal_avcc_to_annexb(", "the AVCC -> Annex-B conversion no longer defers "
+                                   "to the shared, behaviour-tested one in "
+                                   "src/core/nal.c; a local copy drifts and "
+                                   "MediaCodec then accepts every packet and "
+                                   "decodes nothing (black screen)"),
         ("apply_csd(", "the csd-0/csd-1 split from the avcC record is gone; "
                        "Qualcomm drops the stream with 'The CSD is not calculated'"),
         ("needs_annexb(", "nothing decides whether a stream is AVCC any more, so "
@@ -3877,48 +3920,44 @@ def check_playback_profiles() -> None:
     the freeze back on that platform only, which is why this is checked per file.
     """
     backends = {
-        "native/src/platform/win32/d3d11va_decoder.c": "D3D11VA",
-        "native/src/platform/apple/videotoolbox_decoder.c": "VideoToolbox",
-        "native/src/platform/android/media_codec_decoder.c": "MediaCodec",
+        "native/src/platform/win32/d3d11va_decoder.c": ("D3D11VA", 0),
+        "native/src/platform/apple/videotoolbox_decoder.c": ("VideoToolbox", 1),
+        "native/src/platform/android/media_codec_decoder.c": ("MediaCodec", 1),
     }
-    for rel, name in backends.items():
+    for rel, (name, refuse) in backends.items():
         path = ROOT / rel
         if not path.exists():
             problems.append(f"{rel} is gone; the {name} profile guard lives there")
             continue
         text = path.read_text(encoding="utf-8")
+        # The list itself is not restated here: lp_nal_test.exe drives
+        # lp_hw_profile_needs_software() with real profile numbers, so what is
+        # left to check per backend is that it consults the shared rule (and with
+        # the right answer for 10-bit HEVC on that platform).
         if "profile_needs_software(" not in text:
             problems.append(f"{rel} lost profile_needs_software(); {name} would be "
                             "handed 10-bit H.264 and would freeze on the first frame")
-        elif "AV_PROFILE_H264_HIGH_10" not in text:
-            problems.append(f"{rel}: profile_needs_software() no longer names "
-                            "AV_PROFILE_H264_HIGH_10, the profile that stalls")
+        elif not re.search(rf"lp_hw_profile_needs_software\([^\n]*[,(]\s*{refuse}\s*\)",
+                           text):
+            # A plain `, 1)` substring is too weak: those two bytes occur in
+            # unrelated calls elsewhere in the same file, so the check would stay
+            # green after the argument was flipped.  The first argument may itself
+            # be a cast such as `(int)id`, hence the looser left edge.
+            problems.append(f"{rel}: {name} no longer calls "
+                            f"lp_hw_profile_needs_software(..., {refuse}); a hand-copied "
+                            "profile list drifts and the freeze returns")
         if "profile_needs_software(cfg->codec_id, cfg->par->profile)" not in text:
             problems.append(f"{rel} no longer calls profile_needs_software() from "
                             "lp_hw_decoder_init(); the guard would never run")
 
-    # 10-bit HEVC is a *different* failure on each platform, so the guard is not
-    # shared: VideoToolbox decodes it at 2-9 fps (audio clock runs away, the
-    # picture freezes), MediaCodec accepts every input buffer and dequeues none
+    # 10-bit HEVC is a *different* failure on each platform, so the answer differs:
+    # VideoToolbox decodes it at 2-9 fps (audio clock runs away, the picture
+    # freezes), MediaCodec accepts every input buffer and dequeues none
     # (Qin:456 DQout:0/456 Render:0 -- a black frame with a walking progress
-    # bar), and D3D11VA handles it fine, so Windows must NOT refuse it.
-    hevc = {
-        "native/src/platform/apple/videotoolbox_decoder.c": "VideoToolbox",
-        "native/src/platform/android/media_codec_decoder.c": "MediaCodec",
-    }
-    for rel, name in hevc.items():
-        path = ROOT / rel
-        if not path.exists():
-            continue
-        text = path.read_text(encoding="utf-8")
-        if "AV_PROFILE_HEVC_MAIN_10" not in text:
-            problems.append(f"{rel}: {name} no longer refuses 10-bit HEVC; it "
-                            "decodes at a few fps or not at all and the picture freezes")
-    win = ROOT / "native" / "src" / "platform" / "win32" / "d3d11va_decoder.c"
-    if win.exists() and "AV_PROFILE_HEVC_MAIN_10" in win.read_text(encoding="utf-8"):
-        problems.append("d3d11va_decoder.c now refuses 10-bit HEVC, but D3D11VA "
-                        "decodes it at full speed on this machine -- that would "
-                        "silently drop hardware decoding for 51 shipping files")
+    # bar), and D3D11VA handles it fine, so Windows must NOT refuse it.  That is
+    # the whole reason lp_hw_profile_needs_software() takes refuse_hevc at all;
+    # the loop above already pins which answer each backend passes, and
+    # lp_nal_test.exe pins the resulting truth table on Windows.
 
     # Windows: the hwaccel can still hand back a system-memory frame mid-stream
     # (the software fallback happens after init for some bitstreams). Downloading
@@ -3949,30 +3988,39 @@ def check_playback_profiles() -> None:
                             "peeking at the first 4 bytes mistakes 00 00 01 e5 "
                             "for a start code and corrupts every slice")
     callers = {
-        "native/src/platform/apple/videotoolbox_decoder.c": "VideoToolbox to_avcc()",
-        "native/src/platform/android/media_codec_decoder.c": "MediaCodec needs_annexb()",
+        "native/src/platform/apple/videotoolbox_decoder.c": ("VideoToolbox to_avcc()",
+                                                             "lp_nal_annexb_to_avcc("),
+        "native/src/platform/android/media_codec_decoder.c": ("MediaCodec to_annexb()",
+                                                              "lp_nal_avcc_to_annexb("),
     }
-    for rel, name in callers.items():
+    for rel, (name, convert) in callers.items():
         path = ROOT / rel
         if not path.exists():
             continue
-        if "lp_nal_is_annexb(" not in path.read_text(encoding="utf-8"):
+        text = path.read_text(encoding="utf-8")
+        if "lp_nal_is_annexb(" not in text:
             problems.append(f"{name} in {rel} no longer calls lp_nal_is_annexb(); "
                             "length-prefixed packets that begin 00 00 01 would be "
                             "converted as if they were Annex-B and decode to nothing")
+        elif convert not in text:
+            problems.append(f"{name} in {rel} no longer calls {convert}; a second "
+                            "hand-written converter is the copy that drifts")
     # The three entry points no longer each carry their own copy of the list;
-    # they all reach native/src/core/nal.c through native/sources.cmake, which
-    # check_source_manifest() verifies contains it.
+    # they all reach native/src/core/{nal,hwprofile}.c through native/sources.cmake,
+    # which check_source_manifest() verifies contains them.
     manifest = ROOT / "native" / "sources.cmake"
-    if not manifest.exists() or "src/core/nal.c" not in manifest.read_text(encoding="utf-8"):
-        problems.append("native/sources.cmake no longer compiles core/nal.c; "
-                        "the decoders would fail to link")
+    manifest_text = manifest.read_text(encoding="utf-8") if manifest.exists() else ""
+    for rel in ("src/core/nal.c", "src/core/hwprofile.c"):
+        if rel not in manifest_text:
+            problems.append(f"native/sources.cmake no longer compiles {rel}; "
+                            "the decoders would fail to link")
 
     notes.append("playback profiles: hwaccel refuses 10-bit H.264 on all three "
                  "platforms, 10-bit HEVC on Apple + Android only, d3d11va draws "
                  "software frames instead of dropping them")
     notes.append("nal framing: start code vs length prefix decided by walking the "
-                 "whole chain, shared by VideoToolbox and MediaCodec")
+                 "whole chain; one converter pair shared by VideoToolbox and "
+                 "MediaCodec, driven by lp_nal_test.exe")
 
     video_c = ROOT / "native" / "src" / "core" / "video.c"
     if video_c.exists():
@@ -4844,6 +4892,7 @@ def main() -> int:
     check_playback_profiles()
     check_apple_wiring()
     check_hw_decode()
+    check_nal_behaviour()
     check_settings_layout()
     check_local_picker()
     check_splash()

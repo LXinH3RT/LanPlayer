@@ -185,6 +185,18 @@ int lp_pq_aborted(LpPacketQueue *q);
 int lp_nal_is_annexb(const uint8_t *data, size_t size);
 /* 从 start 处那个 NAL 的载荷字节数；格式不合法时返回 0。 */
 size_t lp_nal_payload_len(const uint8_t *data, size_t size, size_t start);
+/* AVCC（4 字节长度前缀）转 Annex-B（00 00 00 01 起始码）。返回写入字节数，
+ * 0 表示源不是合法的长度链或 cap 不够。MediaCodec 只吃后者。 */
+size_t lp_nal_avcc_to_annexb(const uint8_t *src, size_t size, uint8_t *dst, size_t cap);
+/* 反方向：Annex-B 转 AVCC。VideoToolbox 只吃后者。3 字节起始码换成 4 字节
+ * 长度，所以 dst 要比源略大（size + size/3 + 8 一定够）。返回 0 表示源里
+ * 一个起始码都没有。 */
+size_t lp_nal_annexb_to_avcc(const uint8_t *src, size_t size, uint8_t *dst, size_t cap);
+/* 硬解不该接的 profile：10-bit / 4:2:2 / 4:4:4 的 H.264 在三个平台上都会
+ * 「接了但解不动」，HEVC 只有 Apple 与 Android 有问题，D3D11VA 能正常解，
+ * 所以 `refuse_hevc` 由调用方决定。放在这里而不是各平台各抄一份，是因为
+ * 三份手抄件已经飘移过一次（Windows 抄错成连 8-bit 也拒）。 */
+int lp_hw_profile_needs_software(int codec_id, int profile, int refuse_hevc);
 
 /* ------------------------------------------------------------ audio ring */
 

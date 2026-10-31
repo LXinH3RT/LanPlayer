@@ -19,6 +19,7 @@ set(LP_CORE_SOURCES
     src/core/queue.c
     src/core/audio_ring.c
     src/core/nal.c
+    src/core/hwprofile.c
     src/core/demux.c
     src/core/video.c
     src/core/audio.c

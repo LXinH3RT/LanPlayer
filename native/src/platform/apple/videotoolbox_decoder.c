@@ -166,30 +166,22 @@ static int hevc_param_sets(const uint8_t *ed, int size, const uint8_t **sets, si
  * thread fall further behind every second (wait_for_presentation never returns
  * early) until nothing is drawn at all -- the user sees a frozen picture and a
  * progress bar that keeps walking.  Routing these profiles to software costs
- * CPU but plays, so refuse them up front; open_decoder() then falls back. */
+ * CPU but plays, so refuse them up front; open_decoder() then falls back.
+ *
+ * The list lives in src/core/hwprofile.c so the three backends cannot drift
+ * apart.  `refuse_hevc = 1` with these measurements, taken on the same machine
+ * over SMB, 6 s each:
+ *
+ *   anime-02a.mkv   VT  11.9 fps, 3 dropped      software 23.8 fps
+ *   anime-02b.mkv   VT   0.0 fps, 2 decoded       software 24.5 fps
+ *   anime-03    VT   0.0 fps, 3 decoded       software 24.0 fps
+ *   anime-04 19     VT   0.0 fps                  software 24.0 fps
+ *
+ * 8-bit HEVC stays on the hardware path (23.6 fps, no drops), which is why the
+ * shared rule only refuses AV_PROFILE_HEVC_MAIN_10 and its two relatives. */
 static int profile_needs_software(int codec_id, int profile)
 {
-    if (codec_id == AV_CODEC_ID_H264) {
-        return profile == AV_PROFILE_H264_HIGH_10 || profile == AV_PROFILE_H264_HIGH_10_INTRA ||
-               profile == AV_PROFILE_H264_HIGH_422 || profile == AV_PROFILE_H264_HIGH_422_INTRA ||
-               profile == AV_PROFILE_H264_HIGH_444_PREDICTIVE ||
-               profile == AV_PROFILE_H264_HIGH_444_INTRA;
-    }
-    if (codec_id == AV_CODEC_ID_HEVC) {
-        /* 10-bit HEVC: the hardware path accepts the format and then either
-         * rejects every frame (-12909) or decodes at a few frames per second.
-         * Measured on the same machine over SMB, 6 s each:
-         *
-         *   anime-02a.mkv   VT  11.9 fps, 3 dropped      software 23.8 fps
-         *   anime-02b.mkv   VT   0.0 fps, 2 decoded       software 24.5 fps
-         *   anime-03    VT   0.0 fps, 3 decoded       software 24.0 fps
-         *   anime-04 19     VT   0.0 fps                  software 24.0 fps
-         *
-         * 8-bit HEVC stays on the hardware path (23.6 fps, no drops). */
-        return profile == AV_PROFILE_HEVC_MAIN_10 || profile == AV_PROFILE_HEVC_MAIN_STILL_PICTURE ||
-               profile == AV_PROFILE_HEVC_REXT;
-    }
-    return 0;
+    return lp_hw_profile_needs_software(codec_id, profile, 1);
 }
 
 static int build_format_description(LpVideoDecoder *d, const LpVideoDecoderConfig *cfg, char *err,
@@ -331,62 +323,39 @@ int lp_hw_decoder_init(LpVideoDecoder *d, const LpVideoDecoderConfig *cfg, char 
  *
  * The framing test is not "does the first byte look like a start code": a
  * length-prefixed packet whose first NAL is ~0x000100xx bytes long starts with
- * 00 00 01 too, and converting it corrupts every NAL (see lp_nal_is_annexb). */
+ * 00 00 01 too, and converting it corrupts every NAL (see lp_nal_is_annexb).
+ *
+ * The conversion itself lives in src/core/nal.c next to that detector, so the
+ * two cannot disagree; lp_nal_test.c drives it on Windows, where no
+ * VideoToolbox exists. */
 static AVPacket *to_avcc(LpVideoDecoder *d, const AVPacket *pkt)
 {
     (void)d;
     const uint8_t *src = pkt->data;
-    int size = pkt->size;
+    size_t size = (size_t)pkt->size;
     if (size < 4) {
         return NULL;
     }
-    if (!lp_nal_is_annexb(src, (size_t)size)) {
+    if (!lp_nal_is_annexb(src, size)) {
         return NULL; /* already length prefixed */
     }
+    /* A 3 byte start code becomes a 4 byte length, so the worst case grows by
+     * one byte per NAL; size/3 + 8 covers a packet that is nothing but NALs. */
+    size_t cap = size + size / 3 + 8;
     AVPacket *out = av_packet_alloc();
     if (!out) {
         return NULL;
     }
-    if (av_new_packet(out, size + 16) < 0) {
+    if (av_new_packet(out, (int)cap) < 0) {
         av_packet_free(&out);
         return NULL;
     }
-    int o = 0;
-    int i = 0;
-    while (i + 3 < size) {
-        int sc = 0;
-        if (src[i] == 0 && src[i + 1] == 0 && src[i + 2] == 1) {
-            sc = 3;
-        } else if (i + 4 < size && src[i] == 0 && src[i + 1] == 0 && src[i + 2] == 0 &&
-                   src[i + 3] == 1) {
-            sc = 4;
-        }
-        if (!sc) {
-            i++;
-            continue;
-        }
-        int start = i + sc;
-        int end = start;
-        while (end + 2 < size && !(src[end] == 0 && src[end + 1] == 0 && src[end + 2] <= 1)) {
-            end++;
-        }
-        int len = end - start;
-        if (len <= 0 || o + 4 + len > out->size) {
-            break;
-        }
-        out->data[o++] = (uint8_t)(len >> 24);
-        out->data[o++] = (uint8_t)(len >> 16);
-        out->data[o++] = (uint8_t)(len >> 8);
-        out->data[o++] = (uint8_t)len;
-        memcpy(out->data + o, src + start, (size_t)len);
-        o += len;
-        i = end;
-    }
+    size_t o = lp_nal_annexb_to_avcc(src, size, out->data, cap);
     if (o == 0) {
         av_packet_free(&out);
         return NULL;
     }
-    out->size = o;
+    out->size = (int)o;
     return out;
 }
 

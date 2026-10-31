@@ -274,8 +274,8 @@ def main() -> int:
                       "submatch test"):
         return 1
 
-    # ASS 的 c/c/c/c 各改一种颜色。曾经的 bug 是把通道数字吃掉，四条
-    # 通道全写进主色，于是 {c...} 的描边色变成了字色。
+    # ASS 的 \1c/\2c/\3c/\4c 各改一种颜色。曾经的 bug 是把通道数字吃掉，四条
+    # 通道全写进主色，于是 {\3c...} 的描边色变成了字色。
     if not build_test("lp_subcolor_test.exe", native / "tests" / "lp_subcolor_test.c",
                       "subcolour test"):
         return 1
@@ -285,6 +285,12 @@ def main() -> int:
     # 标签不外泄、多子路径、卡拉 OK 累计时长。
     if not build_test("lp_subanim_test.exe", native / "tests" / "lp_subanim_test.c",
                       "subtitle animation test"):
+        return 1
+
+    # 分帧嗅探、两个方向的码流转换、以及硬解 profile 黑名单：全是纯函数，
+    # 但只有在真机（VideoToolbox / MediaCodec）上才会暴露错误。这里在 Windows
+    # 上直接跑行为断言，不依赖任何一台手机或 Mac。
+    if not build_test("lp_nal_test.exe", native / "tests" / "lp_nal_test.c", "nal framing test"):
         return 1
 
     # Loads lanplayer.dll at runtime and drives the texture path, exactly like
