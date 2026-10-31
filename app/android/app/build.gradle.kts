@@ -9,8 +9,9 @@ android {
     compileSdk = 35
     // Pinned by default; CI overrides it with whatever NDK the runner really
     // has (see the "locate the Android NDK" step in build.yml), because Gradle
-    // refuses to configure when the named version is not installed.
-    ndkVersion = System.getenv("LP_ANDROID_NDK") ?: "26.1.10909125"
+    // refuses to configure when the named version is not installed.  r27 is the
+    // first release that can align shared objects for 16 KB memory pages.
+    ndkVersion = System.getenv("LP_ANDROID_NDK") ?: "27.0.12077973"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -39,6 +40,13 @@ android {
                 abiFilters += listOf("arm64-v8a")
                 arguments += listOf(
                     "-DANDROID_STL=c++_shared",
+                    // Android 15 devices can run with 16 KB memory pages, and
+                    // Play requires every native library in a targetSdk 35
+                    // bundle to be linked for them.  The NDK flag adds
+                    // -Wl,-z,max-page-size=16384 to liblanplayer.so; the
+                    // prebuilt FFmpeg/libsmb2 objects get the same flag from
+                    // scripts/build_android_deps.py.
+                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
                     // Point this at the prebuilt FFmpeg / libsmb2 layout described
                     // in docs/build.md.
                     "-DLP_FFMPEG_ROOT=${rootProject.projectDir.parentFile}/../native/third_party/ffmpeg",

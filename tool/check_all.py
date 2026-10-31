@@ -109,6 +109,100 @@ def check_model_split() -> None:
                  "subtitle cues live in their own files behind models.dart")
 
 
+# Four Flutter hosts ship from this repository.  A job going missing from the
+# workflow is silent: the code still builds locally on the one platform the
+# author happens to use, and the breakage only shows up at release time.
+WORKFLOW = ROOT / ".github" / "workflows" / "build.yml"
+HOST_BUILDS = (
+    ("flutter build windows", "the Windows desktop app"),
+    ("flutter build macos --release", "the macOS desktop app"),
+    ("flutter build ios", "the iOS app"),
+    ("flutter build apk", "the Android apk"),
+)
+
+# AGP 8.6 is the first release that accepts compileSdk 35, and it in turn
+# requires Gradle 8.7; both numbers are raised together or not at all.
+AGP_MIN_MINOR = 6
+GRADLE_MIN_MINOR = 7
+
+
+def check_build_matrix() -> None:
+    """CI builds every host, and the Android toolchain can be upgraded safely.
+
+    `docs/code-review.md` found the Android side already out of range (AGP 8.1
+    with compileSdk 35, no 16 KB page alignment) and the workflow without a
+    macOS desktop job.  Neither failure shows up when only one host is built
+    locally, so they are pinned here.
+    """
+    if not WORKFLOW.exists():
+        problems.append(".github/workflows/build.yml is gone")
+    else:
+        text = WORKFLOW.read_text(encoding="utf-8")
+        for needle, what in HOST_BUILDS:
+            if needle not in text:
+                problems.append(f"build.yml never runs `{needle}`; {what} would "
+                                f"stop being built without anyone noticing")
+
+    settings = APP / "android" / "settings.gradle"
+    if not settings.exists():
+        problems.append("app/android/settings.gradle missing")
+    else:
+        text = settings.read_text(encoding="utf-8")
+        m = re.search(r'com\.android\.application"\s+version\s+"8\.(\d+)\.', text)
+        if not m:
+            problems.append("app/android/settings.gradle no longer pins the Android "
+                            "Gradle plugin version where this check can read it")
+        elif int(m.group(1)) < AGP_MIN_MINOR:
+            problems.append(f"AGP 8.{m.group(1)} is below 8.{AGP_MIN_MINOR}; "
+                            f"compileSdk 35 needs the newer plugin")
+
+    wrapper = APP / "android" / "gradle" / "wrapper" / "gradle-wrapper.properties"
+    if not wrapper.exists():
+        problems.append("gradle-wrapper.properties missing")
+    else:
+        text = wrapper.read_text(encoding="utf-8")
+        m = re.search(r"gradle-8\.(\d+)-(?:all|bin)\.zip", text)
+        if not m:
+            problems.append("gradle-wrapper.properties no longer pins a Gradle 8.x "
+                            "distribution")
+        elif int(m.group(1)) < GRADLE_MIN_MINOR:
+            problems.append(f"Gradle 8.{m.group(1)} is below 8.{GRADLE_MIN_MINOR}, "
+                            f"which the Android Gradle plugin requires")
+
+    gradle_app = APP / "android" / "app" / "build.gradle.kts"
+    if not gradle_app.exists():
+        problems.append("app/android/app/build.gradle.kts missing")
+    else:
+        text = gradle_app.read_text(encoding="utf-8")
+        for needle, why in (
+            ("ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES", "the 16 KB page-size linker flag"),
+            ("useLegacyPackaging = false", "uncompressed native libraries"),
+        ):
+            if needle not in text:
+                problems.append(f"app/android/app/build.gradle.kts lost `{needle}`; "
+                                f"{why} would silently go away")
+        m = re.search(r'LP_ANDROID_NDK"\)\s*\?:\s*"(\d+\.\d+\.\d+)"', text)
+        if not m:
+            problems.append("app/android/app/build.gradle.kts no longer pins a default "
+                            "ndkVersion this check can read")
+        else:
+            pinned = m.group(1)
+            for doc in (ROOT / "docs" / "build.md",):
+                if doc.exists() and pinned not in doc.read_text(encoding="utf-8"):
+                    problems.append(f"docs/build.md does not mention the pinned NDK "
+                                    f"{pinned}")
+
+    deps = ROOT / "scripts" / "build_android_deps.py"
+    if not deps.exists():
+        problems.append("scripts/build_android_deps.py missing")
+    elif "max-page-size=16384" not in deps.read_text(encoding="utf-8"):
+        problems.append("scripts/build_android_deps.py no longer links the prebuilt "
+                        "FFmpeg / libsmb2 objects for 16 KB pages")
+
+    notes.append("build matrix: four host builds in CI, and the Android toolchain "
+                 "stays inside the range compileSdk 35 and 16 KB pages need")
+
+
 def check_dart_imports() -> None:
     if not LIB.exists():
         problems.append("app/lib is missing")
@@ -4722,6 +4816,7 @@ def main() -> int:
     check_transport_registry()
     check_video_bridge_contract()
     check_model_split()
+    check_build_matrix()
     check_symbols()
     check_native_runtime()
     check_dart_syntax()

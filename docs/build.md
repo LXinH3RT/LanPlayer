@@ -46,7 +46,7 @@ no media given: library smoke test passed
 脚本已自动化，推荐直接用（产物落在 `native/third_party/`，布局见第 0 节）：
 
 ```bash
-ANDROID_NDK_HOME=~/android-ndk-r26 ./scripts/build_android_deps.py
+ANDROID_NDK_HOME=~/android-ndk-r27c ./scripts/build_android_deps.py
 python3 scripts/build_apple_deps.py                 # 默认只做 macosx 切片
 SLICES=iphoneos python3 scripts/build_apple_deps.py # 要编 iOS App 时再跑一次
 ```
@@ -126,20 +126,28 @@ flutter build apk --release --target-platform android-arm64
 
 配置已就位：`android/app/build.gradle.kts` 的 `minSdk 26`（AAudio）、`abiFilters arm64-v8a`（只出这一种 ABI）、`externalNativeBuild` 指向 `src/main/cpp/CMakeLists.txt` 并传 `LP_FFMPEG_ROOT` / `LP_SMB2_ROOT`；`src/main/cpp/CMakeLists.txt` 做 `add_subdirectory(native)`；`AndroidManifest.xml` 有网络/媒体读权限与 `usesCleartextTraffic`。产物：`liblanplayer.so`（含 JNI 符号）+ 随包打入的 FFmpeg `.so`。
 
-`ndkVersion` 是 `System.getenv("LP_ANDROID_NDK") ?: "26.1.10909125"`，可用环境变量覆盖。要先有 NDK 和交叉编译出来的依赖：
+`ndkVersion` 是 `System.getenv("LP_ANDROID_NDK") ?: "27.0.12077973"`，可用环境变量覆盖。要先有 NDK 和交叉编译出来的依赖：
 
 ```bash
-# NDK r26b 正是 26.1.10909125
-curl -fL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r26b-darwin.zip
-unzip -q ndk.zip -d ~ && export ANDROID_NDK_HOME=~/android-ndk-r26b
+# NDK r27c 正是 27.0.12077973；r27 起默认按 16 KB 页对齐链接
+curl -fL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r27c-darwin.zip
+unzip -q ndk.zip -d ~ && export ANDROID_NDK_HOME=~/android-ndk-r27c
 ./scripts/build_android_deps.py arm64-v8a      # FFmpeg 6.1.1 + libsmb2 + 内核
 ```
+
+Android 15 的机器可能以 16 KB 内存页运行，`targetSdk 35` 的包提交 Play 时要求包内每个 `.so` 都按 16 KB 对齐，否则上架会被拒。三处对齐点：
+
+- `scripts/build_android_deps.py` 的 `PAGE_ALIGN_LDFLAG = "-Wl,-z,max-page-size=16384"`：FFmpeg 的 `--extra-ldflags` 与 libsmb2 的 `CMAKE_SHARED_LINKER_FLAGS` 都用它。
+- `app/android/app/build.gradle.kts` 的 `-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON`：`liblanplayer.so` 由 NDK 的 CMake 工具链加同一个链接参数。
+- `packaging.jniLibs.useLegacyPackaging = false`：保持库以未压缩、未改名的方式入包，`extractNativeLibs` 才会是 false。
+
+升级链路：AGP `8.6.1` + Gradle `8.7` + Kotlin `1.9.24`。AGP 8.6 要求 Gradle ≥ 8.7、Kotlin ≥ 1.8，`compileSdk 35` 需要 AGP ≥ 8.6。
 
 真机上跑过一次，过程中会撞到三件事：
 
 1. **`make` 必须有。** `scripts/build_android_deps.py` 是 bash 脚本，交叉编译 FFmpeg 依赖 `make`；Git Bash 里没有 `make`，所以 Windows 不是合适的构建机。Mac 上有。
 2. **Gradle Wrapper 下载证书报 `PKIX path building failed`。** 装了会做 MITM 的代理（比如 SteamTools）时，JVM 不认它的根证书。把该根证书导入 `$JAVA_HOME/lib/security/cacerts`。
-3. **JDK 太新会让 Gradle 8.3 直接拒绝。** 构建脚本里显式 `export JAVA_HOME="$(/usr/libexec/java_home -v 17)"`；之后增量构建只要 1.5–1.8 s。
+3. **JDK 太新会让 Gradle 拒绝。** 构建脚本里显式 `export JAVA_HOME="$(/usr/libexec/java_home -v 17)"`；之后增量构建只要 1.5–1.8 s。
 
 装机：`adb install -r app/build/app/outputs/flutter-apk/app-release.apk`。MIUI 上第一次会报 `INSTALL_FAILED_USER_RESTRICTED`，是开发者选项里的「USB 安装」没开，不是包的问题。
 

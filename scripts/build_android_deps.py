@@ -22,6 +22,13 @@ FFMPEG_ABIS = {
     "x86_64": ("x86_64", "x86-64", "x86_64-linux-android"),
 }
 
+# Android 15 can run with 16 KB memory pages, and Play rejects native libraries
+# in a targetSdk 35 bundle that were only linked for 4 KB ones.  Every shared
+# object shipped in the APK therefore has to carry the larger maximum page size:
+# liblanplayer.so gets it from CMake (see ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES in
+# app/build.gradle.kts), and the prebuilt FFmpeg / libsmb2 libraries get it here.
+PAGE_ALIGN_LDFLAG = "-Wl,-z,max-page-size=16384"
+
 
 def jobs() -> str:
     return str(os.cpu_count() or 4)
@@ -102,6 +109,7 @@ def build_ffmpeg(src: Path, work: Path, out: Path, abi: str, api: str,
         "--enable-parser=h264,hevc,vp9,av1,mpegaudio,aac",
         "--enable-protocol=file,http,https,tcp,tls",
         "--enable-small",
+        f"--extra-ldflags={PAGE_ALIGN_LDFLAG}",
     ]
     lp.run(configure, cwd=build)
     lp.run(["make", f"-j{jobs()}"], cwd=build)
@@ -127,6 +135,8 @@ def build_libsmb2(src: Path, ndk: Path, work: Path, out: Path, abi: str, api: st
         "-DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=TRUE",
         "-DCMAKE_DISABLE_FIND_PACKAGE_GSSAPI=TRUE",
         "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=ON",
+        # Same 16 KB page alignment as the FFmpeg shared objects above.
+        f"-DCMAKE_SHARED_LINKER_FLAGS={PAGE_ALIGN_LDFLAG}",
     ])
     lp.run(["cmake", "--build", str(build), f"-j{jobs()}"])
     return build

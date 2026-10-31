@@ -104,9 +104,9 @@ jobs:
         # install it if the image does not carry that exact version.
         run: |
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          NDK="$SDK/ndk/26.1.10909125"
+          NDK="$SDK/ndk/27.0.12077973"
           if [ ! -d "$NDK" ]; then
-            "$SDK/cmdline-tools/latest/bin/sdkmanager" "ndk;26.1.10909125" || true
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" || true
           fi
           if [ ! -d "$NDK" ]; then
             NDK="$(ls -d "$SDK"/ndk/* 2>/dev/null | sort -V | tail -1)"
@@ -168,6 +168,44 @@ jobs:
       - name: build ios (no codesign)
         working-directory: app
         run: flutter build ios --release --no-codesign
+
+  macos-app:
+    name: macos desktop app (flutter + xcode)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.27.4"
+          channel: stable
+      - name: build ffmpeg + libsmb2 for Apple
+        # No SLICES: the default slice is macosx, which is what the desktop app
+        # links against.  The ios job above builds the iphoneos slice instead;
+        # the two slices land in separate directories under third_party/apple.
+        run: python scripts/build_apple_deps.py
+      - name: analyze + test
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+      - name: build macos app
+        # The signing identity is irrelevant to CI: an unsigned .app proves the
+        # Swift hosts, the CocoaPods integration and the C core all link.
+        working-directory: app
+        run: flutter build macos --release
+      - name: bundle check (app + engine + assets)
+        working-directory: app
+        run: |
+          # The C core is a static archive that CocoaPods links into the Runner
+          # binary, so the bundle only has to prove the engine and the assets
+          # made it in next to the executable.
+          APP="build/macos/Build/Products/Release/lanplayer.app"
+          test -x "$APP/Contents/MacOS/lanplayer"
+          test -d "$APP/Contents/Frameworks/App.framework"
+          test -d "$APP/Contents/Frameworks/FlutterMacOS.framework"
+          test -f "$APP/Contents/Frameworks/App.framework/Resources/flutter_assets/AssetManifest.json"
+          echo "macos bundle looks complete"
 
   windows-native:
     name: windows x64 native core (zig toolchain)
