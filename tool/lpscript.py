@@ -107,7 +107,11 @@ def run(
         argv,
         cwd=str(cwd) if cwd else None,
         env=env,
-        text=True,
+        # See output(): never let the ANSI code page decide how captured bytes
+        # are decoded.  Only matters when capture is set, but keeping both call
+        # sites identical avoids the same bug creeping back.
+        encoding="utf-8",
+        errors="replace",
         input=stdin_text,
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.PIPE if capture else None,
@@ -129,7 +133,12 @@ def output(cmd: list[object], cwd: Path | None = None, env: dict[str, str] | Non
         argv,
         cwd=str(cwd) if cwd else None,
         env=env,
-        text=True,
+        # Always decode as UTF-8: git log / tasklist / vswhere all emit UTF-8 on
+        # this host, while the Windows default would be the ANSI code page.  A
+        # GBK decode of a Chinese commit subject raises UnicodeDecodeError after
+        # the command already succeeded, turning a good run into a traceback.
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
