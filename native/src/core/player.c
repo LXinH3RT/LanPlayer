@@ -147,7 +147,24 @@ int64_t lp_master_clock_us(LpPlayer *p)
     if (p->sync_mode == 0 && p->audio.stream_index >= 0 && !atomic_load(&p->audio.eof)) {
         double t = lp_audio_clock_seconds(p);
         if (t >= 0) {
-            return (int64_t)(t * LP_TIME_BASE);
+            int64_t us = (int64_t)(t * LP_TIME_BASE);
+            /* 环空（音频欠载）时上面这个函数返回的是「最后一刻」而不是 -1，
+             * 一直取它画面就跟着冻住；欠载结束后音频从旧位置继续播，画面
+             * 却已经落后，音画从此错开。判据是「值多久没动过」，不是「是不是
+             * -1」：真的冻住超过 LP_AUDIO_CLOCK_STALL_US 就退回墙钟。 */
+            int64_t seen = atomic_load(&p->audio_clock_seen_us);
+            int64_t now = av_gettime_relative();
+            if (us > seen) {
+                atomic_store(&p->audio_clock_seen_us, us);
+                atomic_store(&p->audio_clock_seen_at, now);
+                return us;
+            }
+            int64_t since = atomic_load(&p->audio_clock_seen_at);
+            if (us == seen && since > 0 && now - since < LP_AUDIO_CLOCK_STALL_US) {
+                return us;
+            }
+            /* 冻结超时：让墙钟接管，同时把记录推到现在，免得下一轮又判一次。 */
+            atomic_store(&p->audio_clock_seen_at, now);
         }
     }
     double e = lp_clock_get(&p->extc);
@@ -172,6 +189,30 @@ void lp_request_seek(LpPlayer *p, int64_t target_us)
 
 /* ------------------------------------------------------------ tick thread --- */
 
+/* 切音轨的真正实现。lp_player_select_track() 只登记请求，因为它是同步 FFI
+ * 调用，不能在那里 join 解码线程；这里由 tick 线程接着做，界面不必等。
+ *
+ * 位置从主时钟取一次再重启：不 seek 的话新解码器从「文件开头那个 GOP」重新
+ * 起播，声音会退回开头。 */
+static void apply_audio_switch(LpPlayer *p)
+{
+    int req = atomic_exchange(&p->audio.switch_req, 0);
+    if (req <= 0 || !p->opened || !p->fmt) {
+        return;
+    }
+    int index = req - 1;
+    if (index < 0 || (unsigned)index >= p->fmt->nb_streams) {
+        return;
+    }
+    int64_t pos = lp_master_clock_us(p);
+    lp_audio_stop(p);
+    p->audio.stream_index = index;
+    if (lp_audio_start(p) == LP_OK) {
+        LP_INFO("audio", "track switched to #%d at %lld us", index, (long long)pos);
+    }
+    lp_request_seek(p, pos);
+}
+
 static void *player_tick_fn(void *arg)
 {
     LpPlayer *p = arg;
@@ -185,6 +226,7 @@ static void *player_tick_fn(void *arg)
         if (!p->opened) {
             continue;
         }
+        apply_audio_switch(p);
         int64_t now = av_gettime_relative();
         LpState st = lp_get_state(p);
 
@@ -200,6 +242,19 @@ static void *player_tick_fn(void *arg)
                 int buffered = lp_audio_buffered_ms(p);
                 int queued = lp_pq_size(&p->video.pq);
                 lp_emit_buffering(p, queued == 0 && buffered == 0 && pos > 0, 0);
+            }
+        } else if (p->buffering) {
+            /* 暂停状态下拖进度条：perform_seek() 已经 emit 了 buffering=1，
+             * 但唯一的清除点在上面那个 PLAYING 分支里。暂停时它永远不执行，
+             * 于是转圈一直转到用户再点播放（用户报告：暂停拖一下进度，
+             * 缓冲指示器就永久转圈）。
+             *
+             * 这里不清成 0：seek 之后队列确实是空的，说「缓冲完了」是假话。
+             * 只在队列已经重新有数据时清掉 —— 那才是「缓冲够了」。 */
+            int queued = lp_pq_size(&p->video.pq);
+            int buffered = lp_audio_buffered_ms(p);
+            if (queued > 0 || buffered > 0) {
+                lp_emit_buffering(p, 0, 0);
             }
         }
 
@@ -253,6 +308,9 @@ static void player_reset_media(LpPlayer *p)
     p->audio.stream_index = -1;
     p->video.hw_active = 0;
     p->video.hw_name = NULL;
+    atomic_store(&p->audio_clock_seen_us, (int64_t)0);
+    atomic_store(&p->audio_clock_seen_at, (int64_t)0);
+    atomic_store(&p->audio.switch_req, 0);
 }
 
 static int apply_open_options(LpPlayer *p)
@@ -273,6 +331,13 @@ static int apply_open_options(LpPlayer *p)
         }
         int64_t n = 0;
         int b = 0;
+        if (lp_json_get_int(opts, "subtitle_delay", &n) == 0) {
+            /* 设置里存着字幕平移，open 的时候就该带上。以前只有
+             * `setOption("subtitle_delay")` 这一条路径能改它，于是「设置里的
+             * 字幕延迟」在开片时永远从 0 开始 —— 用户调完没关掉播放页就看不到
+             * 任何变化，还以为是这一版坏了。 */
+            lp_subtitle_set_delay(p, n);
+        }
         if (lp_json_get_bool(opts, "deinterlace", &b) == 0) {
             p->deinterlace = b;
         }
@@ -290,7 +355,9 @@ static int apply_open_options(LpPlayer *p)
         if (lp_json_get_str(opts, "speed", sv, sizeof(sv)) == 0) {
             speed = atof(sv);
         }
-        if (speed > 0.4 && speed < 2.1) {
+        /* 区间必须与 lp_player_set_speed 一致：这里曾经写死 0.4，比界面能选的
+         * 0.25 还高，于是「以 0.25× 打开」会被静默忽略、按 1.0 播。 */
+        if (speed >= LP_SPEED_MIN * 0.999 && speed <= LP_SPEED_MAX * 1.001) {
             p->speed = speed;
             lp_clock_set_speed(&p->ac, speed);
             lp_clock_set_speed(&p->extc, speed);
@@ -386,6 +453,9 @@ int32_t lp_player_create(LpPlayer **out)
     atomic_init(&p->position_us, (int64_t)0);
     atomic_init(&p->serial, 0);
     atomic_init(&p->audio.graph_dirty, 0);
+    atomic_init(&p->audio.switch_req, 0);
+    atomic_init(&p->audio_clock_seen_us, (int64_t)0);
+    atomic_init(&p->audio_clock_seen_at, (int64_t)0);
     p->video.stream_index = -1;
     p->audio.stream_index = -1;
     p->hw_mode = LP_HW_AUTO;
@@ -407,7 +477,7 @@ int32_t lp_player_create(LpPlayer **out)
     lp_clock_init(&p->ac);
     lp_clock_init(&p->extc);
     lp_pq_init(&p->video.pq, LP_MAX_PACKET_BYTES);
-    lp_pq_init(&p->audio.pq, LP_MAX_PACKET_BYTES / 2);
+    lp_pq_init(&p->audio.pq, LP_AUDIO_PACKET_BYTES);
     lp_source_options_default(&p->sopts);
     if (pthread_create(&p->tick_thread, NULL, player_tick_fn, p) == 0) {
         p->tick_started = 1;
@@ -548,9 +618,40 @@ int32_t lp_player_play(LpPlayer *p)
         return LP_ERR_STATE;
     }
     if (st == LP_STATE_ENDED || st == LP_STATE_STOPPED) {
+        /* 播完（或停止）之后再按播放，两条解码线程都已经是「自己跑完退出」
+         * 的状态：lp_audio_thread_fn 遇到 p->audio.eof 会 audio_flush_graph()
+         * 之后直接 break，lp_video_thread_fn 早一步在收到 EOF 时 return。
+         * 注意 thread_started 只在 lp_*_stop() 里清，所以线程其实已经没了、
+         * 标志却还是 1 —— 不能拿它判断「线程活着」，必须走一次 stop
+         * （在线程已退出时 join 立即返回）再 start。
+         *
+         * 以前这里只发一个 seek 就置 PLAYING：随后 demux 的 seek 把
+         * audio.eof 清回 0，主时钟判据以为音频还活着、继续读
+         * lp_audio_clock_seconds()；环是空的于是退化到墙钟——画面能出来，
+         * 但永远不再出声，而且 audio_done 恒为 0，LP_EVENT_ENDED 也再不会
+         * 触发，用户退不出播放态。 */
+        if (p->opened) {
+            if (p->audio.stream_index >= 0) {
+                lp_audio_stop(p);
+                if (lp_audio_start(p) != LP_OK) {
+                    LP_WARN("player", "audio pipeline failed to restart");
+                }
+            }
+            if (p->video.stream_index >= 0) {
+                lp_video_stop(p);
+                if (lp_video_start(p) != LP_OK) {
+                    LP_WARN("player", "video pipeline failed to restart");
+                }
+            }
+        }
         lp_request_seek(p, 0);
     }
     lp_set_state(p, LP_STATE_PLAYING);
+    /* 上一轮循环可能把 sink 暂停着（lp_player_stop 会 pause），恢复播放
+     * 时要把它放开，否则“停止之后点播放”仍然没声音。 */
+    if (p->sink) {
+        lp_audio_sink_pause(p->sink, 0);
+    }
     return LP_OK;
 }
 
@@ -597,8 +698,8 @@ int32_t lp_player_set_speed(LpPlayer *p, float speed)
     if (!p) {
         return LP_ERR_ARGUMENT;
     }
-    if (speed < 0.5f) speed = 0.5f;
-    if (speed > 2.0f) speed = 2.0f;
+    if (speed < (float)LP_SPEED_MIN) speed = (float)LP_SPEED_MIN;
+    if (speed > (float)LP_SPEED_MAX) speed = (float)LP_SPEED_MAX;
     p->speed = speed;
     lp_clock_set_speed(&p->ac, speed);
     lp_clock_set_speed(&p->extc, speed);
@@ -668,13 +769,17 @@ int32_t lp_player_select_track(LpPlayer *p, int32_t stream_type, int32_t index)
         if (index == p->audio.stream_index) {
             return LP_OK;
         }
-        int64_t pos = lp_master_clock_us(p);
-        lp_audio_stop(p);
-        p->audio.stream_index = index;
-        if (lp_audio_start(p) == LP_OK) {
-            lp_pq_start(&p->audio.pq);
-            lp_request_seek(p, pos);
-        }
+        /* 不能在这个线程上停解码器：Dart 是同步 FFI 调进来的，而
+         * lp_audio_stop() 要 pthread_join 解码线程，网络抖动时那一次 join
+         * 会卡住整个 UI isolate（点一下音轨、界面卡一下）。这里只把队列
+         * 中止掉（轻量：加锁置位、广播），让旧解码线程立刻退出读循环，
+         * 真正的 join 与重启交给 tick 线程。
+         *
+         * stream_index 也留到那边再改：现在改的话 demux 会按新索引往队列里
+         * 推包，而队列要到 tick 线程跑完才重启，旧解码线程仍可能取到这些
+         * 包、用旧流的 codec context 去解，出来是噪声。 */
+        lp_pq_abort(&p->audio.pq);
+        atomic_store(&p->audio.switch_req, index + 1);
         char *info = lp_media_info_json(p);
         if (info) {
             emit_owned_json(p, LP_EVENT_TRACKS, 0, info);
@@ -683,7 +788,6 @@ int32_t lp_player_select_track(LpPlayer *p, int32_t stream_type, int32_t index)
     }
     return LP_ERR_UNSUPPORTED;
 }
-
 int32_t lp_player_add_subtitle(LpPlayer *p, const char *url, const char *options_json)
 {
     if (!p || !url) {

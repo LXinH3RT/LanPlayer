@@ -5,6 +5,10 @@
     lp_source_*;
     lp_url_normalize;
     lp_string_free;
+    /* 缩略图解码出来的像素由调用方释放。它不匹配 lp_source_* 这类通配
+     * 模式，漏一行就等于 Dart 侧 lookup 失败，而那次失败会被缩略图缓存
+     * 当成「这个文件没有封面」静默吞掉。 */
+    lp_pixels_free;
     lp_log_*;
     Java_dev_lanplayer_app_VideoTextureBridge_*;
   local:

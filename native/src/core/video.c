@@ -26,7 +26,7 @@ static int64_t pts_to_us(AVRational tb, int64_t pts)
 static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial)
 {
     for (;;) {
-        if (lp_is_abort(p) || serial != p->serial) {
+        if (lp_is_abort(p) || serial != atomic_load(&p->serial)) {
             return LP_ERR_INTERRUPTED;
         }
         if (atomic_load(&p->state) != LP_STATE_PLAYING) {
@@ -267,7 +267,7 @@ void *lp_video_thread_fn(void *arg)
         return NULL;
     }
 
-    int serial = p->serial;
+    int serial = atomic_load(&p->serial);
     int draining = 0;
     int drained = 0;
     int drain_rounds = 0;
@@ -275,7 +275,7 @@ void *lp_video_thread_fn(void *arg)
     double frame_dur = 0.04;
 
     while (!lp_is_abort(p)) {
-        if (serial != p->serial) { /* seek happened */
+        if (serial != atomic_load(&p->serial)) { /* seek happened */
             if (p->video.hw) {
                 lp_hw_decoder_flush(p->video.hw);
             } else {
@@ -286,7 +286,7 @@ void *lp_video_thread_fn(void *arg)
             draining = 0;
             drained = 0;
             drain_rounds = 0;
-            serial = p->serial;
+            serial = atomic_load(&p->serial);
             continue;
         }
 

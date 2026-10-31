@@ -88,7 +88,14 @@ LpIo *lp_io_open(const char *url, const LpSourceOptions *opts, char *err, size_t
     if (opts->password[0] && !parsed.password[0]) {
         snprintf(io->url.password, sizeof(io->url.password), "%s", opts->password);
     }
-    if (tp->open(io, &io->url, opts, err, errlen) != LP_OK) {
+    int rc = tp->open(io, &io->url, opts, err, errlen);
+    if (rc != LP_OK) {
+        /* 传输层已经分辨出「密码错」「共享名不存在」「连不上」了，这里
+         * 以前直接丢掉返回码，往上只能看到「IO 错误」，UI 就统一说成
+         * 「连接超时或服务器不可达」—— 用户照着那句话排查是白费力气。
+         * 把码留住：lp_io_open 的调用方（demux / thumb / 外挂字幕）都靠
+         * lp_io_last_result() 取最后一次失败的分类。 */
+        lp_source_set_last_result(rc);
         free(io->cache);
         free(io);
         return NULL;
@@ -385,9 +392,31 @@ const LpTransport *lp_transport_find(const char *scheme)
 
 static _Thread_local char g_last_error[256];
 
+/* 「这一线程上一次失败的分类」。文本（g_last_error）只够人看，程序要靠
+ * 这个码决定说哪句话：密码错、共享名不存在、连不上、超时，四种情况用户
+ * 要做的操作完全不同，给同一句「连接超时或服务器不可达」等于没报错。 */
+static _Thread_local int32_t g_last_result = LP_OK;
+
 void lp_source_set_last_error(const char *msg)
 {
     snprintf(g_last_error, sizeof(g_last_error), "%s", msg ? msg : "");
+}
+
+void lp_source_set_last_result(int32_t rc)
+{
+    if (rc != LP_OK) {
+        g_last_result = rc;
+    }
+}
+
+int32_t lp_source_last_result(void)
+{
+    return g_last_result;
+}
+
+int32_t lp_io_last_result(void)
+{
+    return g_last_result != LP_OK ? g_last_result : LP_ERR_IO;
 }
 
 void lp_string_free(char *s)
@@ -404,6 +433,8 @@ int32_t lp_source_last_error(char **out_json)
     lp_str_init(&s);
     lp_str_append(&s, "{\"message\":");
     lp_str_append_json_str(&s, g_last_error[0] ? g_last_error : "");
+    lp_str_append(&s, ",\"code\":");
+    lp_str_append(&s, "%d", (int)g_last_result);
     lp_str_append(&s, "}");
     *out_json = lp_str_take(&s);
     return LP_OK;
@@ -451,8 +482,10 @@ int32_t lp_source_list(const char *url, const char *options_json, char **out_jso
         lp_str_free(&out);
         LP_WARN("source", "list %s failed: %s", url, err[0] ? err : "unknown");
         snprintf(g_last_error, sizeof(g_last_error), "%s", err[0] ? err : "unknown transport error");
+        g_last_result = r;
         return r;
     }
+    g_last_result = LP_OK;
     *out_json = lp_str_take(&out);
     return LP_OK;
 }
@@ -484,9 +517,11 @@ int32_t lp_source_probe(const char *url, const char *options_json, char **out_js
         snprintf(g_last_error, sizeof(g_last_error), "%s",
                  err[0] ? err : "authentication or network failure");
         lp_str_free(&out);
+        g_last_result = r;
         return r;
     }
     g_last_error[0] = 0;
+    g_last_result = LP_OK;
     *out_json = lp_str_take(&out);
     return LP_OK;
 }

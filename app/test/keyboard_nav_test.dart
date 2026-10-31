@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lanplayer/core/background.dart';
 import 'package:lanplayer/data/location.dart';
 import 'package:lanplayer/data/models.dart';
 import 'package:lanplayer/data/repository.dart';
@@ -177,11 +178,11 @@ void main() {
     }) {
       final repo = MediaRepository(fetchListing: (url, options) async {
         final body = tree[url];
-        if (body == null) return null;
+        if (body == null) return ListingResult.failure(null);
         final parent = url == rootUrl
             ? rootParent
             : url.substring(0, url.lastIndexOf('/'));
-        return payload(url, parent, body.split(','));
+        return ListingResult.json(payload(url, parent, body.split(',')));
       });
       final location = MediaLocation.local('本机', rootUrl);
       return MaterialApp(

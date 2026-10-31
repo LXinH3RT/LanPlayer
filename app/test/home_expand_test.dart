@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lanplayer/core/background.dart';
 import 'package:lanplayer/data/folders.dart';
 import 'package:lanplayer/data/repository.dart';
 import 'package:lanplayer/data/stores.dart';
@@ -56,7 +57,7 @@ void main() {
       ),
     ]);
     final repo = MediaRepository(
-      fetchListing: (url, options) async => payload,
+      fetchListing: (url, options) async => ListingResult.json(payload),
     );
     await tester.pumpWidget(MaterialApp(home: HomeScreen(repo: repo)));
     // 不用 pumpAndSettle：封面缩略图在测试里会去碰内核，帧永远settle不下来。

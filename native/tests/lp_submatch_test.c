@@ -69,6 +69,25 @@ int main(void)
           "集数配对");
     check("S10E01.mkv", "55-S10E02 另一个标题.中英字幕.srt", 0, "集数不同");
 
+    /* 数字后面跟标点（发布组最常见的命名）。以前这类写法两边都认不出集数，
+     * 于是掉进 Dice 近似判定 —— `show name 01` 与 `show name 02` 相似度约
+     * 0.909，整季字幕会被判成同一片挂到每一集上。 */
+    check("[Group] Show Name - 01 [1080p].mkv", "[Group] Show Name - 02.chs.ass", 0,
+          "方括号集数不同");
+    check("[Group] Show Name - 01 [1080p].mkv", "[Group] Show Name - 01.chs.ass", 1,
+          "方括号集数相同");
+    check("Show - 03.mkv", "Show - 04.zh.srt", 0, "短横线集数不同");
+    check("白箱第12集.mkv", "白箱第13集.ass", 0, "第N集不同");
+    check("白箱第12集.mkv", "白箱第12集.ass", 1, "第N集相同");
+    check("Show - E03.mkv", "Show - E04.chs.ass", 0, "独立 E 集数不同");
+
+    /* 语言标签补全后，这类最普通的命名要能对上。 */
+    check("Movie.2024.1080p.mkv", "Movie.2024.zh-CN.srt", 1, "zh-CN 语言标签");
+    check("Movie.2024.1080p.mkv", "Movie.2024.hans.ass", 1, "hans 语言标签");
+
+    /* 年份、续集号里的数字不能被当成集数：`2049` 是片名的一部分。 */
+    check("Blade.Runner.2049.2017.mkv", "Blade.Runner.2049.2017.zh.srt", 1, "年份与续集号");
+
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
         return 1;

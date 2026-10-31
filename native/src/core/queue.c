@@ -77,6 +77,13 @@ int lp_pq_put(LpPacketQueue *q, AVPacket *pkt, int serial)
         av_packet_free(&pkt);
         return LP_ERR_NOMEM;
     }
+    /* 单个包超过上限说明解复用给出的尺寸不可信（坏文件、或读到了错位
+     * 的数据），不要拿着它去排队再把内存堆爆。 */
+    if (pkt->size > LP_MAX_SINGLE_PACKET_BYTES) {
+        av_packet_free(&pkt);
+        free(node);
+        return LP_ERR_IO;
+    }
     node->pkt = pkt;
 
     pthread_mutex_lock(&q->mutex);

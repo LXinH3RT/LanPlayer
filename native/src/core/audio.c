@@ -30,11 +30,14 @@ static int audio_graph_build(LpPlayer *p, double speed)
     if (fabs(speed - 1.0) < 0.001) {
         return LP_OK;
     }
-    if (speed < 0.5) {
-        speed = 0.5;
+    /* atempo 单级只吃 0.5–100。用户能把倍速拉到 0.25，所以低于 0.5 时串两级
+     * （0.25 = atempo(0.5) 接 atempo(0.5)），否则这个档位形同虚设 —— 内核
+     * 把它钳回 0.5，界面显示的却是 0.25。 */
+    if (speed < LP_SPEED_MIN) {
+        speed = LP_SPEED_MIN;
     }
-    if (speed > 2.0) {
-        speed = 2.0;
+    if (speed > LP_SPEED_MAX) {
+        speed = LP_SPEED_MAX;
     }
     const AVFilter *abuf = avfilter_get_by_name("abuffer");
     const AVFilter *asink = avfilter_get_by_name("abuffersink");
@@ -53,8 +56,16 @@ static int audio_graph_build(LpPlayer *p, double speed)
         r = avfilter_graph_create_filter(&p->audio.filt_sink, asink, "out", NULL, NULL, g);
     }
     if (r >= 0) {
-        char spec[64];
-        snprintf(spec, sizeof(spec), "atempo=%.4f", speed);
+        /* atempo 单级只吃 0.5–100。要支持 0.25 就得串两级：0.25 = 0.5 × 0.5。
+         * 只写一级的时候 libavfilter 会把 0.25 拒掉，整条滤镜图建不起来，
+         * 结果是有画面没声音 —— 比钳到 0.5 更糟。 */
+        char spec[96];
+        if (speed < 0.5) {
+            snprintf(spec, sizeof(spec), "atempo=%.4f,atempo=%.4f",
+                     sqrt(speed), sqrt(speed));
+        } else {
+            snprintf(spec, sizeof(spec), "atempo=%.4f", speed);
+        }
         r = avfilter_graph_parse_ptr(g, spec, NULL, NULL, NULL);
     }
     if (r >= 0) {
@@ -250,10 +261,10 @@ void *lp_audio_thread_fn(void *arg)
     if (!frame) {
         return NULL;
     }
-    int serial = p->serial;
+    int serial = atomic_load(&p->serial);
 
     while (!lp_is_abort(p)) {
-        if (serial != p->serial) {
+        if (serial != atomic_load(&p->serial)) {
             avcodec_flush_buffers(p->audio.avctx);
             swr_close(p->audio.swr);
             swr_init(p->audio.swr);
@@ -263,7 +274,7 @@ void *lp_audio_thread_fn(void *arg)
             av_packet_free(&pending);
             p->audio.draining = 0;
             atomic_store(&p->audio.eof, 0);
-            serial = p->serial;
+            serial = atomic_load(&p->serial);
             continue;
         }
         if (atomic_exchange(&p->audio.graph_dirty, 0)) {

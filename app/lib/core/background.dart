@@ -25,26 +25,56 @@ import '../core/bindings.dart';
 
 /// 在后台 isolate 里列一次目录，返回内核给的原始 JSON。
 ///
-/// 失败（连不上、超时、路径不存在）返回 null —— 原因由内核记在线程本地，
-/// 跨 isolate 拿不到，所以调用方拿到的错误文案是通用的一条。
-/// 这也是为什么这个函数的名字带 `Raw`：调用方要知道自己失去了具体原因。
-Future<String?> listDirectoryInBackground(
+/// 失败时返回的不是 null，而是带 `code` 的 [ListingResult] —— 错误码在
+/// 后台 isolate 里就取出来一起带回来。内核把「这一次失败的原因」记在线程
+/// 本地，恰好就是后台那个线程，所以这里是唯一能把分类码捞回主 isolate 的
+/// 地方；以前在失败时只返回 null，主 isolate 上只剩一句「连不上」。
+Future<ListingResult> listDirectoryInBackground(
         String url, Map<String, dynamic> options) =>
     Isolate.run(() => _listRaw(url, options));
 
-Future<String?> probeServerInBackground(
+Future<ListingResult> probeServerInBackground(
         String url, Map<String, dynamic> options) =>
     Isolate.run(() => _probeRaw(url, options));
 
-String? _listRaw(String url, Map<String, dynamic> options) {
+ListingResult _listRaw(String url, Map<String, dynamic> options) {
   final map = NativeCore.instance.listDirectory(url, options);
-  return map == null ? null : _encode(map);
+  if (map == null) {
+    return ListingResult.failure(NativeCore.instance.lastSourceFailure());
+  }
+  return ListingResult.json(_encode(map));
 }
 
-String? _probeRaw(String url, Map<String, dynamic> options) {
+ListingResult _probeRaw(String url, Map<String, dynamic> options) {
   final map = NativeCore.instance.probeServer(url, options);
-  return map == null ? null : _encode(map);
+  if (map == null) {
+    return ListingResult.failure(NativeCore.instance.lastSourceFailure());
+  }
+  return ListingResult.json(_encode(map));
 }
 
 /// 后台 isolate 里拿不到主 isolate 的 `jsonEncode` 之外的上下文，直接编码。
 String _encode(Map<String, dynamic> map) => encodeJson(map);
+
+/// 后台 isolate 的返回：要么是内核 JSON，要么是失败分类。
+///
+/// 必须是可以在 isolate 之间传的类型（字符串 + 可空 int），所以是普通类。
+class ListingResult {
+  ListingResult.json(String this.json)
+      : code = null,
+        message = null;
+
+  ListingResult.failure(SourceFailure? failure)
+      : json = null,
+        code = failure?.code,
+        message = failure?.message;
+
+  final String? json;
+  final int? code;
+  final String? message;
+
+  bool get ok => json != null;
+
+  /// 失败分类；成功时为 null。
+  SourceFailure? get failure => ok ? null : SourceFailure(message: message, code: code);
+}

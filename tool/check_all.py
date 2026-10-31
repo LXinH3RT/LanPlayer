@@ -840,6 +840,7 @@ def check_thumbnails() -> None:
     thumbs = ROOT / "app" / "lib" / "data" / "thumbs.dart"
     tile = ROOT / "app" / "lib" / "ui" / "widgets" / "thumbnail_tile.dart"
     browser = ROOT / "app" / "lib" / "ui" / "browser_screen.dart"
+    settings = ROOT / "app" / "lib" / "ui" / "settings_screen.dart"
     for path, what in ((thumbs, "cover cache"), (tile, "cover tile"),
                        (browser, "browser list")):
         if not path.exists():
@@ -950,6 +951,27 @@ def check_thumbnails() -> None:
     if "_seq" not in tile_code:
         problems.append("ThumbnailTile must guard against stale results after "
                         "the row is recycled")
+
+    # A cover that once failed to decode was remembered forever: one network
+    # hiccup and that file never got a cover again. The marker now carries the
+    # failure time and expires; the cache also needs a way to be emptied from
+    # the UI, or the entries of deleted files stay on disk for good.
+    if "markerExpired" not in code:
+        problems.append("thumbs.dart must expire the '<key>.none' failure "
+                        "marker; remembering a failure forever means one "
+                        "network hiccup costs that file its cover")
+    if "marker.writeAsString" not in code:
+        problems.append("thumbs.dart must stamp the failure marker with the "
+                        "time it happened, otherwise it can never expire")
+    settings_text = (settings.read_text(encoding="utf-8")
+                     if settings.exists() else "")
+    if "ThumbnailCache.instance.diskUsage()" not in settings_text:
+        problems.append("settings_screen.dart must show the cover cache size; "
+                        "diskUsage() had no caller and users could not see "
+                        "what the cache costs")
+    if "ThumbnailCache.instance.clear()" not in settings_text:
+        problems.append("settings_screen.dart must offer 清空封面缓存; clear() "
+                        "had no caller, so stale covers stayed on disk")
 
     # OS metadata must never be listed. Both transports have to apply the same
     # filter, otherwise .DS_Store shows up over SMB but not locally (or worse,
@@ -2051,6 +2073,30 @@ def check_script_encoding() -> None:
     else:
         notes.append("scripts: Python only under scripts/ and tool/, all UTF-8")
 
+    # 测试与探针临时目录必须落在仓库里。旧写法把 TEMP 缺失兜底成 "."，
+    # 也就是**当前目录**。从 D:\ 起一次验证，就在用户自己的盘根留下
+    # D:\lp-upgrade-test 这类目录（真实的踩坑）。本文件自己会提到那段代码
+    # 形状，所以跳过它。
+    offenders: list[str] = []
+    for folder in (ROOT / "scripts", ROOT / "tool"):
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.rglob("*.py")):
+            if path.name == "check_all.py":
+                continue
+            text = path.read_text(encoding="utf-8")
+            if 'environ.get("TEMP", ".")' in text:
+                offenders.append(
+                    f"{path.relative_to(ROOT).as_posix()}: falls back to the current "
+                    f"directory when TEMP is unset; use lp.scratch_dir(...) so test "
+                    f"artefacts stay under .tools/tmp")
+    if not (ROOT / "tool" / "lpscript.py").read_text(encoding="utf-8").count(
+            "def scratch_dir("):
+        offenders.append("tool/lpscript.py lost scratch_dir(); test scripts would "
+                         "have nowhere repo-local to put their temp files")
+    if offenders:
+        problems.extend(offenders)
+
 
 def check_track_selection() -> None:
     """Guard the audio/subtitle track picker.
@@ -2530,6 +2576,51 @@ def check_subtitle_advanced() -> None:
         problems.append(
             "app/test/subtitle_clip_test.dart is missing; the clip rectangle "
             "would only be checked by eye")
+
+    # \iclip 与 \fr<N> 曾各自被解析错：\iclip 因为共用首字母 'i' 被当成「开启
+    # 斜体」，矩形整个丢掉；\fr45 因为「后面有没有参数」的判据而进不去，角度
+    # 永远停在 0。两条都要有正向标记 + 负向对照。
+    if header.exists():
+        ht = header.read_text(encoding="utf-8")
+        if "int clip_inverse;" not in ht:
+            problems.append(
+                "player_internal.h lost LpSubRun.clip_inverse; \\iclip would "
+                "be painted the same way as \\clip, i.e. keep the wrong half")
+    if core.exists():
+        ct = core.read_text(encoding="utf-8")
+        # \fr 简写：rz/rx/ry 已被前面的分支吃掉，剩下的 'r' 只可能是 \fr，
+        # 不能再拿 tag_has_arg() 当「没有后缀」的判据。
+        if '!strncmp(p, "r", 1) && !tag_has_arg(p + 1)' in ct:
+            problems.append(
+                "native/src/core/subtitle.c: the \\fr branch is gated on "
+                "tag_has_arg() again; \\fr45 would parse as a bare \\fr")
+        if "b->st.clip_inverse = 1;" not in ct:
+            problems.append(
+                "native/src/core/subtitle.c: no tag sets clip_inverse any "
+                "more; every \\iclip would paint the inside of the window")
+        # 无 BOM 的 UTF-16：NUL 不能被当成合法 UTF-8 字节，否则整份文件
+        # 「通过」校验、不回落到 UTF-16 分支，解析出 0 条 cue。
+        if "static int guess_utf16(" not in ct:
+            problems.append(
+                "native/src/core/subtitle.c lost guess_utf16(); a subtitle "
+                "saved as BOM-less UTF-16 would decode to mojibake")
+        if "if (c == 0) {" not in ct.split("static int is_valid_utf8(", 1)[-1][:600]:
+            problems.append(
+                "native/src/core/subtitle.c: is_valid_utf8() accepts 0x00 "
+                "again; BOM-less UTF-16 files would be taken as UTF-8")
+        # 切轨要清掉图形字幕的 overlay，否则 PGS 的残留矩形会永久贴在画面上。
+        select = ct.split("void lp_subtitle_select(", 1)[-1][:1400]
+        if "overlay_reset(&p->subs.overlay)" not in select:
+            problems.append(
+                "native/src/core/subtitle.c: lp_subtitle_select() no longer "
+                "clears the bitmap overlay; leftovers from a PGS track stay "
+                "on screen after switching to a text track")
+    if overlay.exists():
+        ot = overlay.read_text(encoding="utf-8")
+        if "PathOperation.difference" not in ot:
+            problems.append(
+                "subtitle_overlay.dart lost the inverted clip path; \\iclip "
+                "would hide exactly the region it should keep")
 
     notes.append("subtitle advanced: animations, clip rectangles, vector "
                  "drawings and karaoke are parsed, shipped and painted")
@@ -3110,6 +3201,18 @@ def check_apple_wiring() -> None:
     if not (APP / "macos" / "Runner" / "MainFlutterWindow.swift").exists():
         problems.append("app/macos/Runner/MainFlutterWindow.swift missing; the macOS "
                         "build would have no lanplayer/video channel")
+    else:
+        # macOS 的全屏一度是 `result(false)` 的空实现：用户按 F11 时窗口不动、
+        # 系统栏也不收，看着就是按钮坏了。这里钉住两件事 —— 走 AppKit 的原生
+        # 全屏，并且用返回值告诉 Dart 有没有成功。
+        macos_window = (APP / "macos" / "Runner" / "MainFlutterWindow.swift").read_text(
+            encoding="utf-8")
+        if "toggleFullScreen(nil)" not in macos_window:
+            problems.append("macOS fullscreen must call AppKit toggleFullScreen; "
+                            "resizing the styleMask alone leaves the menu bar on top")
+        if "result(false)\n\n      default:" in macos_window:
+            problems.append("macOS setFullscreen still answers false; the player then "
+                            "shows a fullscreen HUD over an unchanged window")
 
     # iOS side of the same class of bug.  Xcode 27 (iOS SDK 27) raised its floor to
     # 15.0, so a pod or target left on 13.0 now fails with:
@@ -3289,6 +3392,26 @@ def check_offline_shortcut() -> None:
         problems.append(
             "app/lib/ui/browser_screen.dart: a failed navigation no longer "
             "records the source as offline")
+
+    # 异步守卫：await 之后必须先看 mounted 再动状态，否则请求飞行中被 pop
+    # 掉的页面会抛 "setState() called after dispose()"。代际号则负责丢掉
+    # 「点了 A 又点 B，A 后到」的过期响应。
+    nav_part = bc.split("Future<void> _navigate(", 1)[-1].split(
+        "Future<void> _reload(", 1)[0]
+    if "if (!mounted || _navGen != gen) return;" not in nav_part:
+        problems.append(
+            "app/lib/ui/browser_screen.dart: _navigate must guard on mounted and "
+            "the navigation generation after its await; without it a page popped "
+            "mid-request calls setState on a disposed State")
+    picker_nav = ROOT / "app/lib/ui/folder_picker.dart"
+    if picker_nav.exists():
+        pc_nav = picker_nav.read_text(encoding="utf-8", errors="replace")
+        enter_part = pc_nav.split("Future<void> _enter(", 1)[-1].split(
+            "Future<void> _reload(", 1)[0]
+        if "if (!mounted || _navGen != gen) return;" not in enter_part:
+            problems.append(
+                "app/lib/ui/folder_picker.dart: _enter must compare the request "
+                "generation, otherwise two quick taps stack the wrong path")
 
     notes.append(
         "offline: a failed listing marks its source offline, and opening it "

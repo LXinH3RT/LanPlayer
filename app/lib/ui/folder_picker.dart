@@ -76,6 +76,11 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
   bool _loading = false;
   String? _error;
 
+  /// 进出目录请求的代际号：只有最后一次发起的请求能改 [_stack] 与 [_listing]。
+  /// 快速连点两个目录时，先发的那次可能后到；没有这个比较就会压错栈，
+  /// 用户点进的目录和选中的路径对不上。
+  int _navGen = 0;
+
   /// 返回键的抬起触发状态（长按不生效，见 keyboard.dart）。
   late final BackKeyHandler _backKey = BackKeyHandler(key: widget.backKey);
 
@@ -112,6 +117,7 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
 
   Future<void> _enter(String rawPath) async {
     final path = _plain(rawPath);
+    final gen = ++_navGen;
     setState(() {
       _loading = true;
       _error = null;
@@ -119,7 +125,7 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
     });
     try {
       final listing = await _list(path);
-      if (!mounted) return;
+      if (!mounted || _navGen != gen) return;
       setState(() {
         final segments =
             path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty);
@@ -131,7 +137,7 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
         _loading = false;
       });
     } on MediaSourceException catch (e) {
-      if (!mounted) return;
+      if (!mounted || _navGen != gen) return;
       setState(() {
         _error = e.message;
         _loading = false;
@@ -143,19 +149,20 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
   Future<void> _reload() async {
     final path = _currentPath;
     if (path == null) return;
+    final gen = ++_navGen;
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
       final listing = await _list(path);
-      if (!mounted) return;
+      if (!mounted || _navGen != gen) return;
       setState(() {
         _listing = listing;
         _loading = false;
       });
     } on MediaSourceException catch (e) {
-      if (!mounted) return;
+      if (!mounted || _navGen != gen) return;
       setState(() {
         _error = e.message;
         _loading = false;

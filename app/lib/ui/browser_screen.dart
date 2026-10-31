@@ -65,6 +65,11 @@ class _BrowserScreenState extends State<BrowserScreen> {
   /// 当正在异步加载新目录列表时为 true。
   bool _loading = false;
 
+  /// 导航请求的代际号：只有最后一次发起的请求有权改 [_listing]。
+  /// 快速连点两层目录时，先发的那次可能后到，没有这个比较就会把界面
+  /// 切回用户已经离开的目录。
+  int _navGen = 0;
+
   /// 返回键的抬起触发状态。
   ///
   /// 必须是实例字段：它记着「这颗键按下了还没抬起」，那是每个页面各自的
@@ -85,20 +90,30 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
   /// 导航到指定路径，并在替换为新目录内容前可选择性地把当前列表
   /// 压入返回栈中，方便后退浏览。
+  /// 导航到指定路径，并在替换为新目录内容前可选择性地把当前列表
+  /// 压入返回栈中，方便后退浏览。
+  ///
+  /// 请求飞行期间页面可能已经被 pop 掉（用户按了返回），所以每个 await
+  /// 之后都要先看 mounted 再动状态。代际号用来丢掉「点了 A 又点 B，A 的
+  /// 结果后到」这种过期响应：两层目录快速连着点时，后到的旧结果会把新
+  /// 目录顶掉，显出来的路径和内容就对不上了。
   Future<void> _navigate(String url, {bool push = true}) async {
+    final gen = ++_navGen;
     setState(() => _loading = true);
     try {
       final listing = await _repo.browseUrl(url, widget.location.options);
+      if (!mounted || _navGen != gen) return;
       _markOnline();
       setState(() {
         if (push) _stack.add(_listing);
         _listing = listing;
       });
     } on MediaSourceException catch (e) {
+      if (!mounted || _navGen != gen) return;
       _markOffline(e.message);
-      if (mounted) await showError(context, offlineHint(url, e.message));
+      await showError(context, offlineHint(url, e.message));
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && _navGen == gen) setState(() => _loading = false);
     }
   }
 
@@ -107,21 +122,22 @@ class _BrowserScreenState extends State<BrowserScreen> {
   /// 刷新期间把 [_loading] 置上：SMB 上列一个大目录要好几秒，没有进度条时
   /// 用户会以为按钮没反应，接着反复点击。这里也不做「正在刷新就忽略」的
   /// 守卫 —— 点两次就该真的去拉两次，否则第二次点击会被悄悄吞掉，看起来
-  /// 更像按钮坏了。
+  /// 更像按钮坏了。过期响应由 [_navGen] 丢掉。
   Future<void> _reload() async {
+    final gen = ++_navGen;
     if (mounted) setState(() => _loading = true);
     try {
       final listing =
           await _repo.browseUrl(_listing.url, widget.location.options);
+      if (!mounted || _navGen != gen) return;
       _markOnline();
-      if (mounted) setState(() => _listing = listing);
+      setState(() => _listing = listing);
     } on MediaSourceException catch (e) {
+      if (!mounted || _navGen != gen) return;
       _markOffline(e.message);
-      if (mounted) {
-        await showError(context, offlineHint(_listing.url, e.message));
-      }
+      await showError(context, offlineHint(_listing.url, e.message));
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && _navGen == gen) setState(() => _loading = false);
     }
   }
 

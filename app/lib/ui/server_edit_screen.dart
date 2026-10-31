@@ -171,7 +171,7 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
     });
     try {
       await _repo.probeServer(_build());
-      if (!mounted) return true;
+      if (!mounted) return false;
       setState(() => _status = '连接成功');
       return true;
     } on MediaSourceException catch (e) {
@@ -182,11 +182,22 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
     }
   }
 
+  /// 保存不强制先连通。
+  ///
+  /// 原来这里先 `await _test()`，于是 NAS 关机、端口还没改好、网线还没插的
+  /// 时候，用户连「显示名」都改不了 —— 保存按钮永远没用。现在直接校验表单
+  /// 就落盘：配置写下来不会造成任何后果，下一次打开才会去连。用户想先验证
+  /// 账号密码，旁边还有独立的「测试连接」。
   Future<void> _save() async {
-    final ok = await _test();
-    if (!ok) return;
-    await ServerStore.instance.upsert(_build());
-    if (mounted) Navigator.of(context).pop(true);
+    if (!(_form.currentState?.validate() ?? false)) return;
+    setState(() => _busy = true);
+    try {
+      await ServerStore.instance.upsert(_build());
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   @override
@@ -337,7 +348,7 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
             const SizedBox(height: 16),
             Text(
               '提示：共享名就是 Windows 上「属性 → 共享」里填的名字。'
-              '点"测试连接"会真的连一次服务器来验证账号密码。',
+              '保存不需要先联网；想验证账号密码请点「测试连接」。',
               style: TextStyle(
                 fontSize: 12,
                 height: 1.5,

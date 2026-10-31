@@ -119,6 +119,64 @@ void main() {
     });
   });
 
+  // 数字后面跟标点：发布组最常见的命名。早先这种写法两边都认不出集数，
+  // 于是掉进 Dice 近似判定 —— `show name 01` 与 `show name 02` 相似度约
+  // 0.909，整季字幕会被判成同一片挂到每一集上。用例与内核
+  // `native/tests/lp_submatch_test.c` 保持一一对应。
+  group('数字后面跟标点也算集数', () {
+    test('方括号后跟分辨率：集数不同不配', () {
+      expect(
+        matches(
+          '[Group] Show Name - 01 [1080p].mkv',
+          '[Group] Show Name - 02.chs.ass',
+        ),
+        isFalse,
+      );
+    });
+
+    test('方括号后跟分辨率：集数相同要配', () {
+      expect(
+        matches(
+          '[Group] Show Name - 01 [1080p].mkv',
+          '[Group] Show Name - 01.chs.ass',
+        ),
+        isTrue,
+      );
+    });
+
+    test('短横线分隔的集数', () {
+      expect(matches('Show - 03.mkv', 'Show - 04.zh.srt'), isFalse);
+    });
+
+    test('第 N 集写法', () {
+      expect(matches('白箱第12集.mkv', '白箱第13集.ass'), isFalse);
+      expect(matches('白箱第12集.mkv', '白箱第12集.ass'), isTrue);
+    });
+
+    test('独立 E 编号', () {
+      expect(matches('Show - E03.mkv', 'Show - E04.chs.ass'), isFalse);
+    });
+
+    test('四位年份不当集数', () {
+      expect(
+        matches('Blade.Runner.2049.2017.mkv', 'Blade.Runner.2049.2017.zh.srt'),
+        isTrue,
+      );
+    });
+  });
+
+  // 语言标签补全：`cn`/`tw`/`hk`/`hans`/`hant` 早先两侧都漏了，
+  // 最普通的 `Movie.2024.1080p.mkv` + `Movie.2024.zh-CN.srt` 会被判否。
+  group('语言标签补全', () {
+    test('zh-CN', () {
+      expect(matches('Movie.2024.1080p.mkv', 'Movie.2024.zh-CN.srt'), isTrue);
+    });
+
+    test('hans', () {
+      expect(matches('Movie.2024.1080p.mkv', 'Movie.2024.hans.ass'), isTrue);
+    });
+  });
+
   group('边界', () {
     test('完全无关的字幕', () {
       expect(matches('movie.mkv', 'other.srt'), isFalse);

@@ -509,6 +509,12 @@ static int is_valid_utf8(const uint8_t *s, size_t len)
     while (i < len) {
         uint8_t c = s[i];
         if (c < 0x80) {
+            /* 0x00 不是文本：无 BOM 的 UTF-16 字幕里每个 ASCII 字符后面都跟着
+             * 一个 0x00，把 NUL 当合法 UTF-8 会让整份文件「通过」校验，于是
+             * decode_text 不回落到 UTF-16 分支，解析出 0 条 cue。 */
+            if (c == 0) {
+                return 0;
+            }
             i++;
             continue;
         }
@@ -604,6 +610,41 @@ static char *win_codepage_to_utf8(UINT cp, const uint8_t *data, size_t len, size
 }
 #endif
 
+/* 无 BOM 的 UTF-16 猜测：中文/日文/韩文用 UTF-16 存下来时，ASCII 与标点都是
+ * 「低字节 + 0x00」，于是偶数位上 0x00 的比例极高；纯 UTF-8 文本里 0x00 根本
+ * 不该出现（上面已判非法）。只在「长度成对 + 其中一侧 0x00 过半 + 另一侧没有
+ * 几个 0x00」时才认，避免误伤真正的单字节文本。返回 0 = LE，1 = BE，-1 = 不是
+ * UTF-16。 */
+static int guess_utf16(const uint8_t *raw, size_t len)
+{
+    if (len < 4 || (len % 2) != 0) {
+        return -1;
+    }
+    size_t pairs = len / 2;
+    if (pairs < 2) {
+        return -1;
+    }
+    size_t zero_even = 0;
+    size_t zero_odd = 0;
+    for (size_t i = 0; i + 1 < len; i += 2) {
+        if (raw[i] == 0) {
+            zero_even++;
+        }
+        if (raw[i + 1] == 0) {
+            zero_odd++;
+        }
+    }
+    /* 纯 ASCII 的 UTF-16 里 100% 的配对都有一侧是 0；带中文的也远高于一半。
+     * 反过来要求「另一侧几乎没有 0」，否则两个方向都像，宁可放弃。 */
+    if (zero_odd * 2 >= pairs && zero_even * 8 <= pairs) {
+        return 0;
+    }
+    if (zero_even * 2 >= pairs && zero_odd * 8 <= pairs) {
+        return 1;
+    }
+    return -1;
+}
+
 /* Returns a NUL terminated UTF-8 buffer (malloc). */
 static char *decode_text(const uint8_t *raw, size_t len, size_t *out_len, int *charset_ok)
 {
@@ -617,6 +658,14 @@ static char *decode_text(const uint8_t *raw, size_t len, size_t *out_len, int *c
         return utf16_to_utf8(raw + 2, len - 2, 0);
     } else if (len >= 2 && raw[0] == 0xFE && raw[1] == 0xFF) {
         return utf16_to_utf8(raw + 2, len - 2, 1);
+    } else {
+        /* 无 BOM 的 UTF-16：先猜再走正常流程。猜错时下面的 is_valid_utf8 会
+         * 把结果判否，字符集回退仍能接手，所以这里不必过于保守。 */
+        int be = guess_utf16(raw, len);
+        if (be >= 0) {
+            LP_DEBUG("subtitle", "no BOM, guessing UTF-16%s", be ? "BE" : "LE");
+            return utf16_to_utf8(raw, len, be);
+        }
     }
     if (!is_valid_utf8(raw, len)) {
 #if defined(LP_HAVE_ICONV)
@@ -730,6 +779,9 @@ static void sub_rich_init(SubRich *b, LpSubCue *cue)
     b->st.border = -1;
     b->st.shadow = -1;
     b->st.alpha = 1.0;
+    /* a \clip 之后紧跟 {\clip0} 之类的复位写法时，逆裁剪标记必须一起清掉，
+     * 否则下一条矩形裁剪会莫名其妙变成「挖洞」。 */
+    b->st.clip_inverse = 0;
     b->st.clip_x1 = b->st.clip_y1 = b->st.clip_x2 = b->st.clip_y2 = 0.0;
     lp_str_init(&b->plain);
 }
@@ -1132,9 +1184,41 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
             }
             break;
         case 'i':
-            b->st.flags = tag_number(&p, &num) == 0 && num == 0
-                              ? (b->st.flags & ~LP_SUB_ITALIC)
-                              : (b->st.flags | LP_SUB_ITALIC);
+            /* \i0 / \i1 是斜体开关，\iclip 是逆裁剪，两者只共用一个首字母。
+             * 以前这里不区分，直接按「有没有参数」决定开关：\iclip(...) 的
+             * 参数以 '(' 开头，tag_number 返回非 0，于是整行被当成「开启斜体」，
+             * 真正想要的效果被丢掉、还顺手把文字变成斜的。 */
+            if (!strncmp(p, "clip", 4)) {
+                p += 4;
+                if (*p == '(') {
+                    p++;
+                    double v[4];
+                    int n = path_numbers(&p, v, 4);
+                    if (n >= 4) {
+                        b->st.clip_on = 1;
+                        b->st.clip_inverse = 1;
+                        b->st.clip_x1 = v[0];
+                        b->st.clip_y1 = v[1];
+                        b->st.clip_x2 = v[2];
+                        b->st.clip_y2 = v[3];
+                    }
+                    while (*p && *p != ')' && *p != '\\' && *p != '}') {
+                        p++;
+                    }
+                    if (*p == ')') {
+                        p++;
+                    }
+                }
+                break;
+            }
+            if (tag_has_arg(p)) {
+                if (tag_number(&p, &num) == 0) {
+                    b->st.flags = num == 0 ? (b->st.flags & ~LP_SUB_ITALIC)
+                                           : (b->st.flags | LP_SUB_ITALIC);
+                }
+            } else {
+                b->st.flags |= LP_SUB_ITALIC;
+            }
             break;
         case 'u':
             b->st.flags = tag_number(&p, &num) == 0 && num == 0
@@ -1252,8 +1336,12 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
                 if (tag_number(&p, &num) == 0 && planar) {
                     b->st.angle = num;
                 }
-            } else if (!strncmp(p, "r", 1) && !tag_has_arg(p + 1)) {
-                /* \fr without a suffix is the same as \frz. */
+            } else if (*p == 'r') {
+                /* \fr45 是 \frz 的简写，`\fr<N>` 这种「只有角度、没有轴」的写法
+                 * 恰恰是旋转最常用的形式。以前这里用 `!tag_has_arg(p + 1)` 当作
+                 * 「没有后缀」的判据，而 \fr45 的参数本身就是数字，条件不成立，
+                 * 于是整条分支进不去：不旋转、也不报错。到了这一步 rz/rx/ry 已经
+                 * 被上面的分支吃掉，剩下的 'r' 只可能是 \fr 本身。 */
                 p += 1;
                 if (tag_number(&p, &num) == 0) {
                     b->st.angle = num;
@@ -1553,6 +1641,7 @@ static void apply_override(const char *tags, const AssCtx *ctx, SubRich *b)
             b->st.alpha = 1.0;
             b->st.font_name[0] = '\0';
             b->st.clip_on = 0;
+            b->st.clip_inverse = 0;
             b->st.nb_path = 0;
             b->st.path_sub = -1;
             b->st.drawing_scale = 0;
@@ -1812,6 +1901,29 @@ static int merge_cue_into(SubRich *dst, LpSubCue *src)
         if (sub_rich_append(dst, "\n", 1) != 0) {
             return -1;
         }
+    }
+    /* \pos, \an and the margins live on the cue, not on a run, and every
+     * rectangle is compiled into its own temporary cue before being merged
+     * here.  Without this the tags were parsed, stored on `src`, and dropped
+     * on the floor: an embedded ASS track lost \pos entirely (the overlay
+     * then fell back to the alignment default).  Only copy what the source
+     * actually set - -1 / 0 mean "not specified", and a later rectangle
+     * without the tag must not blank out an earlier one that had it. */
+    if (src->pos_x >= 0.0 && src->pos_y >= 0.0) {
+        dst->cue->pos_x = src->pos_x;
+        dst->cue->pos_y = src->pos_y;
+    }
+    if (src->margin_l >= 0.0) {
+        dst->cue->margin_l = src->margin_l;
+    }
+    if (src->margin_r >= 0.0) {
+        dst->cue->margin_r = src->margin_r;
+    }
+    if (src->margin_v >= 0.0) {
+        dst->cue->margin_v = src->margin_v;
+    }
+    if (src->align_override) {
+        dst->cue->align_override = src->align_override;
     }
     if (src->nb_runs > 0 && src->runs) {
         for (int i = 0; i < src->nb_runs; i++) {
@@ -2099,6 +2211,35 @@ static void split_fields(char *line, char sep, char **fields, int max)
     }
 }
 
+/* Reads PlayResX/PlayResY out of an ASS ``[Script Info]`` header.  Embedded
+ * tracks keep that header in the codec extradata rather than in the packets,
+ * so the packet path cannot reuse parse_ass(); this is the small piece of it
+ * that translates script coordinates.  Leaves the outputs untouched when the
+ * header does not name them (100 is the same floor parse_ass() applies). */
+static void script_resolution(const char *text, size_t len, double *play_w,
+                              double *play_h)
+{
+    if (!text || len == 0) {
+        return;
+    }
+    for (size_t i = 0; i + 9 < len; i++) {
+        if (i > 0 && text[i - 1] != '\n' && text[i - 1] != '\r') {
+            continue;
+        }
+        if (strncmp(text + i, "PlayResX:", 9) == 0) {
+            double v = atof(text + i + 9);
+            if (v >= 100.0) {
+                *play_w = v;
+            }
+        } else if (strncmp(text + i, "PlayResY:", 9) == 0) {
+            double v = atof(text + i + 9);
+            if (v >= 100.0) {
+                *play_h = v;
+            }
+        }
+    }
+}
+
 static int parse_ass(const char *text, LpSubtitleTrack *t, char *err, size_t errlen)
 {
     char *copy = lp_str_dup(text);
@@ -2334,7 +2475,7 @@ static int read_whole_file(const char *url, const char *options_json, uint8_t **
     lp_source_options_parse(options_json, &opts);
     LpIo *io = lp_io_open(url, &opts, err, errlen);
     if (!io) {
-        return LP_ERR_IO;
+        return lp_io_last_result();
     }
     int64_t size = lp_io_size(io);
     size_t cap = size > 0 && size < 32 * 1024 * 1024 ? (size_t)size + 1 : 1024 * 1024;
@@ -2532,6 +2673,20 @@ int lp_subtitle_open(LpPlayer *p)
                 t->avctx = ctx;
                 p->subs.nb_tracks++;
                 track_style(t, 0);
+                /* The style was just created from style_default() (1920x1080).
+                 * If the muxer stored the ASS header, it also recorded the
+                 * real PlayRes - use it so \pos lands where the author meant
+                 * rather than a scaled guess. */
+                if (st->codecpar->extradata && st->codecpar->extradata_size > 0) {
+                    double pw = t->styles[0].play_res_x;
+                    double ph = t->styles[0].play_res_y;
+                    script_resolution((const char *)st->codecpar->extradata,
+                                      (size_t)st->codecpar->extradata_size, &pw, &ph);
+                    t->styles[0].play_res_x = pw;
+                    t->styles[0].play_res_y = ph;
+                    LP_DEBUG("subtitle", "track #%u script resolution %.0fx%.0f", i, pw,
+                             ph);
+                }
                 continue;
             }
             avcodec_free_context(&ctx);
@@ -2554,6 +2709,17 @@ int lp_subtitle_open(LpPlayer *p)
 
 void lp_subtitle_close(LpPlayer *p)
 {
+    /* 必须持锁：tick 线程每 20ms 醒一次，只要状态是 PLAYING 就会调
+     * lp_subtitle_tick()，而后者持同一把锁遍历 t->cues[i] 读 start_us 与
+     * text。lp_player_close() 直到很后面才把 opened 置 0、状态切 IDLE，
+     * 中间这段窗口里 tick 仍在跑；以前这里不加锁就 track_reset() 释放
+     * cue，正在播放时点「停止」「返回」「切集」有概率读到已释放的内存
+     * （SIGSEGV，或者更糟的静默堆损坏）。
+     *
+     * 不销毁 p->subs.mutex：它属于播放器对象本身（lp_player_destroy 负责
+     * 销毁）。关片之后 Dart 侧仍可能调 setOption("subtitle_delay")，那把
+     * 锁必须还活着。 */
+    pthread_mutex_lock(&p->subs.mutex);
     overlay_reset(&p->subs.overlay);
     for (int i = 0; i < p->subs.nb_tracks; i++) {
         LpSubtitleTrack *t = &p->subs.tracks[i];
@@ -2564,9 +2730,8 @@ void lp_subtitle_close(LpPlayer *p)
     }
     p->subs.nb_tracks = 0;
     p->subs.selected = -1;
-    /* 不销毁 p->subs.mutex：它属于播放器对象本身（lp_player_destroy 负责
-     * 销毁）。关片之后 Dart 侧仍可能调 setOption("subtitle_delay")，那把
-     * 锁必须还活着。 */
+    p->subs.dirty = 0;
+    pthread_mutex_unlock(&p->subs.mutex);
 }
 
 void lp_subtitle_feed_packet(LpPlayer *p, int stream_index, AVPacket *pkt)
@@ -2657,6 +2822,20 @@ void lp_subtitle_feed_packet(LpPlayer *p, int stream_index, AVPacket *pkt)
         one.pos_y = -1.0;
         AssCtx ctx;
         memset(&ctx, 0, sizeof(ctx));
+        /* Embedded tracks carry dialogue lines, not a whole script file, so
+         * there is no [Script Info] header in the packets themselves and
+         * memset left both at zero.  Every tag that turns script coordinates
+         * into screen ones (\\pos, \\fs, \\clip, \\p) is gated on ctx->play_w
+         * and ctx->play_h being positive, so an embedded ASS track silently
+         * ignored all of them - the very same file loaded sidecar was fine.
+         * The real PlayRes lives in the track's extradata (the ASS header the
+         * muxer stored once), so prefer that and fall back to the track style,
+         * which track_style() always creates with the 1920x1080 default. */
+        if (t->nb_styles > 0) {
+            ctx.play_w = t->styles[0].play_res_x;
+            ctx.play_h = t->styles[0].play_res_y;
+            ctx.base = &t->styles[0];
+        }
         if (r->type == SUBTITLE_ASS && strncmp(src, "Dialogue:", 9) == 0) {
             /* The ASS packet is a single dialogue line: strip its own timing
              * and let the container decide when it shows. */
@@ -3100,6 +3279,14 @@ void lp_subtitle_select(LpPlayer *p, int track_index)
         p->subs.tracks[i].current_cue = -1;
         p->subs.tracks[i].enabled = (i == sel);
     }
+    /* 切轨必须顺手清掉图形字幕的 overlay：tick 只在新轨是位图轨时重建它，
+     * 从 PGS 切到文本轨、或者直接关字幕，残留下来的矩形会一直贴在画面上。
+     * 更长的连锁反应在 Windows 上：win32_platform.c 只要有 overlay 就返回
+     * LP_ERR_UNSUPPORTED 让调用方下载回 CPU 混合，残留一次等于永久放弃 GPU
+     * 直出。 */
+    if (p->subs.overlay.nb > 0) {
+        overlay_reset(&p->subs.overlay);
+    }
     p->subs.dirty = 1;
     pthread_mutex_unlock(&p->subs.mutex);
 }
@@ -3194,11 +3381,13 @@ int lp_sub_test_parse_anim(const char *dialogue_text, int run_index,
         out->karaoke_start_ms = r->karaoke_start_ms;
         out->karaoke_end_ms = r->karaoke_end_ms;
         out->alpha = r->alpha;
+        out->angle = r->angle;
         out->clip_on = r->clip_on;
         out->clip_x1 = r->clip_x1;
         out->clip_y1 = r->clip_y1;
         out->clip_x2 = r->clip_x2;
         out->clip_y2 = r->clip_y2;
+        out->clip_inverse = r->clip_inverse;
         out->drawing_scale = r->drawing_scale;
         out->nb_path = r->nb_path;
         if (r->nb_path > 0 && r->path) {
@@ -3211,4 +3400,12 @@ int lp_sub_test_parse_anim(const char *dialogue_text, int run_index,
     }
     cue_free(&cue);
     return 0;
+}
+
+/* 测试入口：走一遍 lp_subtitle_add_file 的文本解码链（BOM 剥除、无 BOM 的
+ * UTF-16 猜测、字符集回退），把结果作为 UTF-8 返回。仅供
+ * native/tests/lp_subanim_test.c 使用 —— 正常播放路径不会调它。 */
+char *lp_sub_test_decode_text(const void *raw, size_t len, int *charset_ok)
+{
+    return decode_text((const uint8_t *)raw, len, NULL, charset_ok);
 }

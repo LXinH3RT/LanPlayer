@@ -13,25 +13,28 @@ import 'package:lanplayer/ui/widgets/volume_sheet.dart';
 /// 这里直接驱动**真实组件**（不是复刻一份），所以断言不会和实现漂移。
 void main() {
   /// 把面板套进一个能测试的宿主里，并记录回调。
-  Future<({List<double> vols, List<bool> mutes})> pumpSheet(
+  Future<({List<double> vols, List<bool> mutes, List<double> commits})>
+      pumpSheet(
     WidgetTester tester, {
     double volume = 1.0,
     bool muted = false,
   }) async {
     final vols = <double>[];
     final mutes = <bool>[];
+    final commits = <double>[];
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
         body: VolumeSheet(
           volume: volume,
           muted: muted,
           onVolumeChanged: vols.add,
+          onVolumeCommitted: commits.add,
           onMutedChanged: mutes.add,
         ),
       ),
     ));
     await tester.pumpAndSettle();
-    return (vols: vols, mutes: mutes);
+    return (vols: vols, mutes: mutes, commits: commits);
   }
 
   group('显示值与增益的换算', () {
@@ -107,6 +110,52 @@ void main() {
       await tester.tap(find.byKey(const Key('volume-preset-25')));
       await tester.pumpAndSettle();
       expect(rec.vols.last, 0.5);
+    });
+  });
+
+  /// 落盘时机（P0-5）。
+  ///
+  /// 以前播放页把 `SettingsStore.instance.save()` 挂在 `onVolumeChanged` 上，
+  /// 拖一次滑杆会连发几十次写入；几次写入抢同一个 `.tmp` 后落盘的可能是半截
+  /// JSON，下次启动 readJson 把它当损坏文件丢掉 —— 用户看到的是「所有设置
+  /// 回默认值」。所以落盘只挂在 `onVolumeCommitted`（松手/点档位）。
+  group('落盘时机', () {
+    testWidgets('拖动过程中只回调 onVolumeChanged，不回调 onVolumeCommitted',
+        (tester) async {
+      final rec = await pumpSheet(tester, volume: 1.0);
+      final slider = find.byKey(const Key('volume-slider'));
+      final rect = tester.getRect(slider);
+
+      // dragFrom 是「按下-移动-抬起」，中途 pump 一次抓的是移动阶段的快照。
+      final gesture = await tester.startGesture(rect.center);
+      await gesture.moveBy(const Offset(40, 0));
+      await tester.pump();
+      expect(rec.vols, isNotEmpty, reason: '拖动中要即时改音量');
+      expect(rec.commits, isEmpty, reason: '还没松手就不该落盘');
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(rec.commits, hasLength(1), reason: '松手落盘一次');
+    });
+
+    testWidgets('拖到最右端松手，落盘的是满增益 2.0', (tester) async {
+      final rec = await pumpSheet(tester, volume: 1.0);
+      final slider = find.byKey(const Key('volume-slider'));
+      final rect = tester.getRect(slider);
+
+      await tester.dragFrom(rect.center, Offset(rect.width, 0));
+      await tester.pumpAndSettle();
+
+      expect(rec.commits, isNotEmpty);
+      expect(rec.commits.last, closeTo(VolumeSheet.maxVolume, 0.001));
+    });
+
+    testWidgets('点档位会落盘一次', (tester) async {
+      final rec = await pumpSheet(tester);
+      await tester.tap(find.byKey(const Key('volume-preset-75')));
+      await tester.pumpAndSettle();
+      expect(rec.commits, hasLength(1));
+      expect(rec.commits.last, VolumeSheet.volumeOf(75));
     });
   });
 

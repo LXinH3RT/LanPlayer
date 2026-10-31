@@ -109,8 +109,8 @@ def main() -> int:
     if not setup.exists():
         raise lp.ScriptError(f"missing setup: {setup}")
 
-    scratch = Path(args.scratch) if args.scratch else Path(os.environ.get("TEMP", ".")) / "lp-uninstall-test"
-    temp = Path(os.environ.get("TEMP", "."))
+    scratch = Path(args.scratch) if args.scratch else lp.scratch_dir("lp-uninstall-test")
+    temp = lp.scratch_dir("verify-temp")
     exe = scratch / "lanplayer.exe"
     unexe = scratch / "uninstall.exe"
     tmp_exe = temp / "lp-uninstall-fixture.exe"

@@ -179,4 +179,35 @@ void main() {
       expect(await ThumbnailCache.decodeThumb(truncated), isNull);
     });
   });
+
+  group('ThumbnailCache 失败标记的时效', () {
+    // 失败标记曾经是「有文件就算永久失败」，一次网络抖动就让这个视频
+    // 再也没有封面。改成带时间戳、过期重试。
+    final t0 = DateTime.fromMillisecondsSinceEpoch(1700000000000);
+
+    test('刚记下的失败不重试', () {
+      expect(ThumbnailCache.markerExpired(t0, t0), isFalse);
+      expect(
+        ThumbnailCache.markerExpired(t0, t0.add(const Duration(minutes: 5))),
+        isFalse,
+      );
+    });
+
+    test('过了有效期就放它重试', () {
+      expect(
+        ThumbnailCache.markerExpired(t0, t0.add(ThumbnailCache.failureTtl)),
+        isTrue,
+        reason: '刚好到期也算过期，否则边界上永远差一秒',
+      );
+      expect(
+        ThumbnailCache.markerExpired(t0, t0.add(const Duration(days: 1))),
+        isTrue,
+      );
+    });
+
+    test('有效期不是无穷大，也不是短到每次滚动都重解', () {
+      expect(ThumbnailCache.failureTtl.inMinutes, greaterThanOrEqualTo(10));
+      expect(ThumbnailCache.failureTtl.inHours, lessThanOrEqualTo(24));
+    });
+  });
 }

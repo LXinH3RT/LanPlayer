@@ -36,6 +36,11 @@ typedef struct LpEgl {
     int frame_h;
     int pix_fmt; /* 0 = yuv420p, 1 = nv12 */
     struct SwsContext *sws;
+    /* 缩放上下文是按「源尺寸 + 源像素格式」建的，换片/换轨之后必须重建，
+     * 否则 sws_scale 会按旧尺寸取样，画面被拉花或读越界。 */
+    int sws_src_w;
+    int sws_src_h;
+    int sws_src_fmt;
     uint8_t *conv[4];
     int conv_linesize[4];
     int conv_cap;
@@ -222,6 +227,13 @@ static AVFrame *prepare_frame(LpPlayer *p, AVFrame *frame)
         frame->format == AV_PIX_FMT_NV12) {
         return frame;
     }
+    int src_fmt = (int)frame->format;
+    if (g_egl.sws && (g_egl.sws_src_w != frame->width ||
+                      g_egl.sws_src_h != frame->height ||
+                      g_egl.sws_src_fmt != src_fmt)) {
+        sws_freeContext(g_egl.sws);
+        g_egl.sws = NULL;
+    }
     if (!g_egl.sws) {
         g_egl.sws = sws_getContext(frame->width, frame->height, (enum AVPixelFormat)frame->format,
                                    frame->width, frame->height, AV_PIX_FMT_YUV420P, SWS_BILINEAR,
@@ -229,6 +241,9 @@ static AVFrame *prepare_frame(LpPlayer *p, AVFrame *frame)
         if (!g_egl.sws) {
             return NULL;
         }
+        g_egl.sws_src_w = frame->width;
+        g_egl.sws_src_h = frame->height;
+        g_egl.sws_src_fmt = src_fmt;
     }
     int w = frame->width, h = frame->height;
     if (g_egl.conv_cap < w * h * 2 || !g_egl.conv[0]) {

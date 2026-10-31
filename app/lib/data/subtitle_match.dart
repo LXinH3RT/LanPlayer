@@ -44,6 +44,10 @@ const Set<String> _noiseTokens = {
 /// 语言/字幕类型标签：出现在主干之后属于「同一条字幕的不同语言版本」。
 const Set<String> _languageTokens = {
   'zh', 'zhcn', 'zhtw', 'zhhk', 'chs', 'cht', 'chn', 'chi', 'zho',
+  // `cn`/`tw`/`hk`/`hans`/`hant` 是最常见的一批写法，早先漏了，
+  // `Movie.2024.1080p.mkv` 配 `Movie.2024.zh-CN.srt` 会被判否。
+  // 与内核 `native/src/core/submatch.c` 的 `kLang[]` 对齐。
+  'cn', 'tw', 'hk', 'hans', 'hant',
   'en', 'eng', 'english', 'jp', 'jpn', 'japanese', 'kr', 'kor', 'korean',
   'sc', 'tc', 'gb', 'big5', '简体', '繁体', '简中', '繁中', '中文', '英文',
   '中英', '英中', '双语', '中日', '日文', '粤语', '国语',
@@ -123,6 +127,22 @@ String? _episodeKey(String stem) {
   if (m != null) return 'e${int.parse(m.group(1)!)}';
   m = RegExp(r'(?<![a-z0-9])e(\d{1,4})(?![0-9])').firstMatch(stem);
   if (m != null) return 'e${int.parse(m.group(1)!)}';
+  // 被分隔符包起来的独立 2–3 位数字，取最后一个。
+  //
+  // 发布组最常见的写法就是这种：`[Group] Show Name - 01 [1080p].mkv` 与
+  // `[Group] Show Name - 02.chs.ass`。数字后面跟的是 `]` 或 `.` 而不是行尾，
+  // 下面那条「纯数字结尾」够不着，两边都认不出集数，于是掉进 Dice 近似判定
+  // ——`show name 01` 与 `show name 02` 相似度约 0.909，整季字幕会被判成
+  // 同一片挂到每一集上。
+  //
+  // 只收 2–3 位：`2049` 这种四位数是年份或片名里的数字，收进来会让
+  // `Blade.Runner.2049.mkv` 与 `Blade.Runner.2049.2017.zh.srt` 判成两集。
+  final loose = RegExp(r'(?<![0-9a-z])(\d{2,3})(?![0-9a-z])')
+      .allMatches(stem)
+      .toList();
+  if (loose.isNotEmpty) {
+    return 'e${int.parse(loose.last.group(1)!)}';
+  }
   m = RegExp(r'(\d{2,4})$').firstMatch(stem);
   if (m != null) {
     // 纯数字文件名（`101.mp4`）与「片名 + 数字」都算，但要求数字前不是字母，

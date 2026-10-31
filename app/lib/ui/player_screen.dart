@@ -694,11 +694,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
           onVolumeChanged: (v) {
             _player.setVolume(v);
             _settings.volume = v;
+            setSheetState(() {});
+          },
+          // 落盘只在松手/点档位时做一次。拖动过程中每帧 save() 会让几次写入
+          // 抢同一个 .tmp，落盘的可能是半截 JSON —— 下次启动设置就全回默认值。
+          onVolumeCommitted: (v) {
             // 记住音量：下次开片按上次的来。写 SettingsStore 里那份，
             // 否则重开播放器还会回到 100%。
             SettingsStore.instance.value.volume = v;
             unawaited(SettingsStore.instance.save());
-            setSheetState(() {});
           },
           onMutedChanged: (m) {
             if (m != _player.muted) _player.toggleMute();
@@ -836,6 +840,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
             onVerticalDragStart: _beginVerticalDrag,
             onVerticalDragUpdate: _updateVerticalDrag,
             onVerticalDragEnd: (_) => _hideHud(),
+            // 横向拖动调进度。触屏上这是标配，而进度条只在控制条可见时才有。
+            onHorizontalDragStart: _beginHorizontalDrag,
+            onHorizontalDragUpdate: _updateHorizontalDrag,
+            onHorizontalDragEnd: (_) => _endHorizontalDrag(),
+            onHorizontalDragCancel: _endHorizontalDrag,
             child: Stack(
               fit: StackFit.expand,
               children: [
@@ -984,6 +993,58 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
+  // ------------------------------------------------- horizontal drag seek ---
+
+  /// 上一次横向拖动落到的时间点（微秒），拖动期间相对它做增量。
+  ///
+  /// 不用「松手时才 seek」：拖动过程中就把画面带过去，用户才能凭画面找位置；
+  /// 而每帧都用相对位移累加，所以中途播放器自己推进的时钟不会把位置甩掉。
+  int? _seekDragUs;
+
+  void _beginHorizontalDrag(DragStartDetails d) {
+    _seekDragUs = _player.positionUs;
+    _showControls();
+  }
+
+  void _updateHorizontalDrag(DragUpdateDetails d) {
+    final from = _seekDragUs;
+    if (from == null) return;
+    // 一屏宽大概扫过 120 秒，够粗也够细：手指位移 100 像素 ≈ 12 秒。
+    final width = MediaQuery.sizeOf(context).width;
+    const span = 120 * Duration.microsecondsPerSecond;
+    final delta = (d.delta.dx / width * span).round();
+    final total = _player.durationUs;
+    var next = from + delta;
+    if (total > 0) {
+      next = next.clamp(0, total);
+    } else if (next < 0) {
+      next = 0;
+    }
+    _seekDragUs = next;
+    _player.seekTo(next);
+    _showHud(_formatPosition(next, total));
+  }
+
+  void _endHorizontalDrag() {
+    if (_seekDragUs == null) return;
+    _seekDragUs = null;
+    _hideHud();
+  }
+
+  /// `00:12:34 / 01:02:03`（时长未知时只显示当前时间）。
+  String _formatPosition(int positionUs, int durationUs) {
+    String clock(int us) {
+      final d = Duration(microseconds: us < 0 ? 0 : us);
+      final h = d.inHours;
+      final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+      final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+      return h > 0 ? '$h:$m:$s' : '$m:$s';
+    }
+
+    if (durationUs <= 0) return clock(positionUs);
+    return '${clock(positionUs)} / ${clock(durationUs)}';
+  }
+
   void _beginSpeedBoost() {
     _speedBeforeHold = _player.speed;
     _player.setSpeed(2.0);
@@ -1108,12 +1169,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _toggleFullscreen() {
     final next = !_fullscreen;
     setState(() => _fullscreen = next);
-    // On desktop the plugin owns the real window; on mobile SystemChrome hides
-    // the bars, and both are harmless no-ops when the other one is missing.
-    VideoTextureBridge.setFullscreen(next);
+    // 桌面端由插件改真窗口；移动端没有这一步，下面 SystemChrome 收系统栏。
+    unawaited(_applyWindowFullscreen(next));
     SystemChrome.setEnabledSystemUIMode(
         next ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge);
     _showHud(next ? '全屏' : '退出全屏');
+  }
+
+  /// 请求宿主机把真实窗口切成（或退出）全屏。
+  ///
+  /// 桌面插件若明确拒绝，必须把界面状态退回去：否则 HUD 已经显示「全屏」、
+  /// 窗口却一动不动，用户只能看到按钮毫无反应。移动端不走这条路，返回值
+  /// 没有意义，所以先按平台筛掉。
+  Future<void> _applyWindowFullscreen(bool next) async {
+    if (!(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
+      return;
+    }
+    final ok = await VideoTextureBridge.setFullscreen(next);
+    if (ok || !mounted || _fullscreen != next) {
+      return;
+    }
+    setState(() => _fullscreen = !next);
+    _showHud('当前窗口不支持全屏');
   }
 
   Widget _topBar() {

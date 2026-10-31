@@ -66,6 +66,19 @@ class ThumbnailCache {
   // "LPT2"：v1 的 "LPT1" 只写了宽没写高，读回必定失败。
   static const List<int> _magic = [0x4C, 0x50, 0x54, 0x32];
 
+  /// 「这个文件解不出封面」这条结论的有效期。
+  ///
+  /// 记失败本身是有必要的：目录里混着 .flv、坏文件、改了后缀的 .docx，
+  /// 不记账就会每次滚回来都重走一遍 SMB + 解码。但**不能记成永久结论** ——
+  /// 网络抖一下、那一刻文件正被别的程序占用，都会让一帧解不出来，
+  /// 而这两种情况下次完全可能成功。所以标记带时效，过期后放它重试一次。
+  static const Duration failureTtl = Duration(hours: 6);
+
+  /// 失败时间戳是不是已经过期。抽成纯函数是为了单测能直接喂时间。
+  @visibleForTesting
+  static bool markerExpired(DateTime failureAt, DateTime now) =>
+      now.difference(failureAt) >= failureTtl;
+
   final Map<String, ui.Image> _memory = <String, ui.Image>{};
 
   /// 正在解码的请求，避免同一行被 build 多次时重复解码。
@@ -160,13 +173,28 @@ class ThumbnailCache {
         // 「这个文件解不出封面」也要记住，否则每次滚回来都重新走一遍
         // SMB + 解码。目录里混着 .flv / 坏文件 / .docx 改名成 .mp4 时，
         // 这类必然失败的请求会一直占着闸门。
+        //
+        // 但记忆带时效（[failureTtl]）：一次网络抖动不该让这个文件
+        // 永远没有封面。过期的标记直接删掉重试。
         final marker = File('${dir.path}${Platform.pathSeparator}$key.none');
         if (await marker.exists()) {
-          if (_verbose) {
-            // ignore: avoid_print
-            print('LanPlayer thumb: $key skipped (known failure) $url');
+          var expired = true;
+          try {
+            final at = await marker.lastModified();
+            expired = markerExpired(at, DateTime.now());
+          } catch (_) {
+            // 读不到时间就当过期，宁可重解一次。
           }
-          return null;
+          if (!expired) {
+            if (_verbose) {
+              // ignore: avoid_print
+              print('LanPlayer thumb: $key skipped (recent failure) $url');
+            }
+            return null;
+          }
+          try {
+            await marker.delete();
+          } catch (_) {}
         }
 
         // 内核调用是同步阻塞的，放到后台 isolate，避免卡住滚动；
@@ -228,10 +256,12 @@ class ThumbnailCache {
     }
   }
 
-  /// 记下「这个 URL 解不出封面」，内容为空文件，只靠存在与否判断。
+  /// 记下「这个 URL 解不出封面」。内容是失败时刻的毫秒时间戳，
+  /// 读回来才知道要不要按 [failureTtl] 放它重试。
   static Future<void> _writeMarker(File marker) async {
     try {
-      await marker.writeAsBytes(const <int>[], flush: true);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await marker.writeAsString('$now', flush: true);
     } catch (_) {}
   }
 

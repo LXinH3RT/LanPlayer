@@ -49,6 +49,10 @@ static const char *const kNoise[] = {
  * 放进来会让 `电影2.srt` 挂到 `电影.mkv`。 */
 static const char *const kLang[] = {
     "zh", "zhcn", "zhtw", "zhhk", "chs", "cht", "chn", "chi", "zho",
+    /* `cn`/`tw`/`hans`/`hant` 是最常见的一批写法，早先漏了，
+     * `Movie.2024.1080p.mkv` 配 `Movie.2024.zh-CN.srt` 会被判否。
+     * 与 Dart 侧 `subtitle_match.dart` 的 `_languageTokens` 对齐。 */
+    "cn", "tw", "hk", "hans", "hant",
     "en", "eng", "english", "jp", "jpn", "japanese", "kr", "kor", "korean",
     "sc", "tc", "gb", "big5",
     NULL,
@@ -235,6 +239,109 @@ static void episode_key(const char *stem, char *out, size_t outlen)
         }
         snprintf(out, outlen, "s%lde%ld", season, ep);
         return;
+    }
+
+    /* 「第12集」这种写法：中日文的集数常见形式，阿拉伯数字与中文数字都在用，
+     * 这里只认阿拉伯数字（中文数字解析成本不划算，回落到后面的规则）。 */
+    {
+        static const char kDi[] = "\xe7\xac\xac";   /* 第 */
+        static const char kJi[] = "\xe9\x9b\x86";   /* 集 */
+        const char *d = strstr(stem, kDi);
+        if (d) {
+            const char *q = d + sizeof(kDi) - 1;
+            if (isdigit((unsigned char)*q)) {
+                long ep = 0;
+                const char *s = q;
+                while (isdigit((unsigned char)*q) && q - s < 4) {
+                    ep = ep * 10 + (*q - '0');
+                    q++;
+                }
+                if (ep > 0 && strncmp(q, kJi, sizeof(kJi) - 1) == 0) {
+                    snprintf(out, outlen, "e%ld", ep);
+                    return;
+                }
+            }
+        }
+    }
+
+    /* 独立的 `e02`（没有季号）。`S01E02` 已在上面处理掉；这里要给
+     * `Show - E03.chs.ass` 这种命名兜底。前面必须是分隔符，后面不能跟字母，
+     * 否则 `web`、`hevc` 里那个 e 会被当成集数标记。 */
+    for (size_t i = 0; i + 2 < len; i++) {
+        if (stem[i] != 'e' || !isdigit((unsigned char)stem[i + 1])) {
+            continue;
+        }
+        if (i > 0 && (isalnum((unsigned char)stem[i - 1]) || (unsigned char)stem[i - 1] >= 0x80)) {
+            continue;
+        }
+        size_t j = i + 1;
+        long ep = 0;
+        while (j < len && isdigit((unsigned char)stem[j]) && j - i <= 4) {
+            ep = ep * 10 + (stem[j] - '0');
+            j++;
+        }
+        if (j < len && (isalpha((unsigned char)stem[j]) || (unsigned char)stem[j] >= 0x80)) {
+            continue;
+        }
+        if (ep > 0) {
+            snprintf(out, outlen, "e%ld", ep);
+            return;
+        }
+    }
+
+    /* 被分隔符包起来的独立 2–4 位数字，取最后一个。
+     *
+     * 这是发布组最常见的写法：`[Group] Show Name - 01 [1080p].mkv` 与
+     * `[Group] Show Name - 02.chs.ass`。尾巴是 `]` 或 `.` 而不是行尾，
+     * 「纯数字结尾」那条规则够不着，两边都认不出集数，于是掉进 Dice 近似
+     * 判定 —— `show name 01` 与 `show name 02` 相似度约 0.909，整季字幕
+     * 会被判成同一片挂到每一集上。
+     *
+     * 排除三类误判：紧贴字母的（`1080p`、`x264`）、一位数的（`电影2` 是续集）、
+     * 以及明显是年份的四位数（`2024` 后面紧跟的通常是分辨率或版本，两边都
+     * 会得到同一个键，一致性不受影响，所以不特意排除）。 */
+    {
+        long last = 0;
+        size_t last_digits = 0;
+        for (size_t i = 0; i < len; i++) {
+            if (!isdigit((unsigned char)stem[i])) {
+                continue;
+            }
+            int left_ok = 1;
+            if (i > 0) {
+                unsigned char prev = (unsigned char)stem[i - 1];
+                if (isalnum(prev) || prev >= 0x80) {
+                    left_ok = 0;
+                }
+            }
+            size_t j = i;
+            long val = 0;
+            while (j < len && isdigit((unsigned char)stem[j]) && j - i < 5) {
+                val = val * 10 + (stem[j] - '0');
+                j++;
+            }
+            size_t digits = j - i;
+            int right_ok = 1;
+            if (j < len) {
+                unsigned char next = (unsigned char)stem[j];
+                if (isalnum(next) || next >= 0x80) {
+                    right_ok = 0;
+                }
+            }
+            /* 只收 2–3 位：`2049` 这种四位数是年份或片名里的数字，
+             * 收进来会让 `Blade.Runner.2049.mkv` 与
+             * `Blade.Runner.2049.2017.zh.srt` 的集数键一个 2049 一个 2017，
+             * 反倒判成两集。 */
+            if (left_ok && right_ok && digits >= 2 && digits <= 3) {
+                last = val;
+                last_digits = digits;
+            }
+            i = j;
+        }
+        if (last_digits >= 2) {
+            snprintf(out, outlen, "e%ld", last);
+            return;
+        }
     }
 
     /* 纯数字尾巴：101.mp4 / 悠哉日常大王001。 */

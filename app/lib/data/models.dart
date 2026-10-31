@@ -68,6 +68,13 @@ class PlaybackSettings {
 
   static const double speedDefault = 1.0;
 
+  /// 档位区间的两端，给 `PlayerController.setSpeed` 做夹紧用。
+  ///
+  /// 写成 getter 而不是常量字面量，是为了只有一个地方能改档位：改
+  /// `speedSteps` 就自动跟着变。
+  static double get speedMin => speedSteps.first;
+  static double get speedMax => speedSteps.last;
+
   /// 把任意来源的值吸附到最近的合法档位。
   ///
   /// 只做区间夹紧不够：内核对任意小数都收，但界面上的 RadioListTile 用
@@ -1032,5 +1039,15 @@ class SubtitleCue {
         nowUs: nowUs,
       );
 
-  bool get isEmpty => text.trim().isEmpty;
+  /// 整条字幕是不是没有任何可见内容。
+  ///
+  /// 不能只看 `text`：只含 `\p1` 矢量绘图的行没有文字，但渲染器
+  /// （`subtitle_overlay.dart` 的 `_drawingsWithPlacement`）确实会把图形画出来。
+  /// 早先这里只判 `text.trim().isEmpty`，OP/ED 的矢量标题与特效字幕整段消失，
+  /// 而内核那边 `has_drawing_runs()` 是把这类行当作「有内容」保留的。
+  bool get isEmpty => text.trim().isEmpty && !lines.any(_hasDrawing);
+
+  /// 这一行里有没有矢量绘图（`\p1` 之类）需要画。
+  static bool _hasDrawing(SubtitleLine line) =>
+      line.runs.any((run) => run.path.isNotEmpty);
 }

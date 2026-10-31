@@ -38,6 +38,12 @@
 typedef struct LpThumbCtx {
     atomic_int abort;
     int64_t deadline_ms; /* 0 = 不限 */
+    /* lp_io_attach_avio 给 fmt 装好的中断回调（lp_io_interrupt）。
+     * 这里必须把它链在后面继续调用，不能直接覆盖：覆盖之后 io->abort
+     * 和播放器的 external_abort 都再也没人看，一次卡住的 smb2_read 就只能
+     * 等 socket 超时（默认 8 s），比整个封面预算还长。 */
+    AVIOInterruptCB inner;
+    LpIo *io; /* 截止到点时用来置 io->abort */
 } LpThumbCtx;
 
 static int64_t thumb_now_ms(void)
@@ -66,6 +72,17 @@ static int thumb_interrupt_cb(void *opaque)
     }
     if (ctx->deadline_ms > 0 && thumb_now_ms() > ctx->deadline_ms) {
         atomic_store(&ctx->abort, 1);
+        /* 只置自己的标志不够：真正卡住的是传输层的 read。把 io 的 abort
+         * 也打开，lp_io_read 下一次进循环就会返回 LP_ERR_INTERRUPTED，
+         * AVIO 那边转成 AVERROR_EXIT，把阻塞的调用当场掀掉。 */
+        if (ctx->io) {
+            lp_io_abort(ctx->io);
+        }
+        return 1;
+    }
+    /* 交给 lp_io_attach_avio 装的那一个（它会看 io->abort 与播放器的
+     * external_abort）。两个都看，谁的结论都不能丢。 */
+    if (ctx->inner.callback && ctx->inner.callback(ctx->inner.opaque)) {
         return 1;
     }
     return 0;
@@ -104,13 +121,17 @@ static int thumb_open_input(const char *url, const char *options_json, LpThumbCt
         LpIo *io = lp_io_open(url, &opts, err, errlen);
         if (!io) {
             av_dict_free(&dict);
-            return LP_ERR_IO;
+            return lp_io_last_result();
         }
         if (lp_io_attach_avio(io, &fmt, err, errlen) != LP_OK) {
             lp_io_close(io);
             av_dict_free(&dict);
             return LP_ERR_NOMEM;
         }
+        /* 保留 attach_avio 装好的那一个，链在自己的回调后面 —— 直接覆盖
+         * 会让 io->abort 再也没人看（见 LpThumbCtx 的注释）。 */
+        ctx->inner = fmt->interrupt_callback;
+        ctx->io = io;
         fmt->interrupt_callback.callback = thumb_interrupt_cb;
         fmt->interrupt_callback.opaque = ctx;
         /* 自定义 IO 时 url 传 NULL：fmt->pb 已经挂好了我们自己的 AVIO，
@@ -196,6 +217,9 @@ int32_t lp_source_thumbnail(const char *url, const char *options_json, int32_t m
     LpThumbCtx ctx;
     atomic_init(&ctx.abort, 0);
     ctx.deadline_ms = thumb_now_ms() + LP_THUMB_BUDGET_MS;
+    ctx.inner.callback = NULL;
+    ctx.inner.opaque = NULL;
+    ctx.io = NULL;
 
     char err[256] = {0};
     AVFormatContext *fmt = NULL;

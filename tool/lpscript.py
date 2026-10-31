@@ -52,6 +52,23 @@ def clean_dir() -> Path:
     return CLEAN
 
 
+def scratch_dir(name: str) -> Path:
+    """A disposable directory for tests and probes, always inside the repo.
+
+    Everything a test creates belongs under `.tools/tmp/`.  The old call sites
+    read ``TEMP`` out of the environment and fell back to ``.`` when it was
+    unset — which meant *the current directory*, so a verification run started
+    from the drive root left ``lp-upgrade-test`` and friends sitting next to the
+    user's own folders.
+
+    Keeping the fallback inside the repo means the worst case is a dirty
+    ``.tools/tmp``, which is git-ignored and trivially cleaned.
+    """
+    path = TOOLS / "tmp" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 QUIET = False
 
 

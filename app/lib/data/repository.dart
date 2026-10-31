@@ -25,11 +25,11 @@ class SourceProbe {
   final String server;
 }
 
-/// 一次目录列表请求：返回内核的原始 JSON，失败返回 null。
+/// 一次目录列表请求：返回内核的原始 JSON，失败时带分类码。
 ///
 /// 抽成函数类型是为了让测试能换成不碰 SMB 的假实现 —— 真实现要起后台
 /// isolate 并加载动态库，widget 测试里跑不起来。
-typedef ListingFetcher = Future<String?> Function(
+typedef ListingFetcher = Future<ListingResult> Function(
     String url, Map<String, dynamic> options);
 
 /// UI 访问共享所需的全部能力：目录浏览、凭据校验，以及两个入口
@@ -52,28 +52,42 @@ class MediaRepository {
   Future<DirectoryListing> browse(ServerProfile profile, {String? url}) async {
     final target = url ?? profile.rootUrl;
     final listing = await _fetch(target, profile.transportOptions());
-    if (listing == null) {
-      throw MediaSourceException(_errorFor(target));
+    if (!listing.ok) {
+      throw MediaSourceException(_errorFor(target, listing.failure));
     }
-    return DirectoryListing.fromJson(decodeJson(listing) ?? const {});
+    return DirectoryListing.fromJson(decodeJson(listing.json!) ?? const {});
   }
 
   Future<DirectoryListing> browseUrl(
       String url, Map<String, dynamic> options) async {
     final listing = await _fetch(url, options);
-    if (listing == null) {
-      throw MediaSourceException(_errorFor(url));
+    if (!listing.ok) {
+      throw MediaSourceException(_errorFor(url, listing.failure));
     }
-    return DirectoryListing.fromJson(decodeJson(listing) ?? const {});
+    return DirectoryListing.fromJson(decodeJson(listing.json!) ?? const {});
   }
 
   /// 失败时给用户的文案。
   ///
-  /// 后台 isolate 里内核记的错误是线程本地的，跨 isolate 拿不到，所以这里只
-  /// 给一条通用说法。以前能显示内核原文（`connect //host/share failed:
-  /// Timeout expired and no connection exists`），代价是整个界面在请求期间
-  /// 冻住十几秒 —— 那条细节不值得。
-  String _errorFor(String url) => '无法访问 $url：连接超时或服务器不可达';
+  /// 内核把失败分成几类（密码错、共享名或目录不存在、超时、连不上），这里
+  /// 照分类给不同的话 —— 以前四种都是「连接超时或服务器不可达」，用户照着
+  /// 那句话去查网线是白费力气，真正该改的是账号密码。
+  String _errorFor(String url, SourceFailure? failure) {
+    switch (failure?.code) {
+      case SourceFailure.auth:
+        return '无法访问 $url：账号或密码不对，或者没有这个共享';
+      case SourceFailure.notFound:
+        return '无法访问 $url：路径不存在';
+      case SourceFailure.timeout:
+        return '无法访问 $url：等待服务器响应超时';
+      case SourceFailure.unsupported:
+        return '无法访问 $url：这种地址不受支持';
+      case SourceFailure.argument:
+        return '无法访问 $url：地址格式不对';
+      default:
+        return '无法访问 $url：连接失败，服务器不可达或端口不通';
+    }
+  }
 
   /// Verifies credentials without listing a directory.
   Future<void> probe(ServerProfile profile) async {
@@ -82,14 +96,20 @@ class MediaRepository {
 
   /// 只校验账号密码：真的连一次服务器，连上了就返回，不列共享。
   Future<SourceProbe> probeServer(ServerProfile profile) async {
-    final raw = await probeServerInBackground(
+    final result = await probeServerInBackground(
       'smb://${profile.host}${profile.port == 445 ? '' : ':${profile.port}'}/${profile.share}',
       profile.transportOptions(),
     );
-    if (raw == null) {
-      throw MediaSourceException('认证失败：连不上 ${profile.host}');
+    if (!result.ok) {
+      final host = profile.host;
+      final message = switch (result.failure?.code) {
+        SourceFailure.auth => '认证失败：$host 上的账号或密码不对',
+        SourceFailure.timeout => '认证失败：$host 没有响应（地址或端口不对，或被防火墙挡住）',
+        _ => '认证失败：连不上 $host',
+      };
+      throw MediaSourceException(message);
     }
-    return SourceProbe.fromJson(decodeJson(raw) ?? const {});
+    return SourceProbe.fromJson(decodeJson(result.json!) ?? const {});
   }
 
   /// 单个文件作为来源时用的「列表」：父目录里只留下这个文件本身，外加与它
@@ -123,10 +143,11 @@ class MediaRepository {
   /// Entry point for module 5: local storage.
   Future<DirectoryListing> browseLocal(String path) async {
     final listing = await _fetch('file://$path', const {});
-    if (listing == null) {
-      throw MediaSourceException('无法读取 $path');
+    if (!listing.ok) {
+      final why = listing.failure?.code == SourceFailure.notFound ? '不存在' : '读不出来';
+      throw MediaSourceException('$path 这个目录$why');
     }
-    return DirectoryListing.fromJson(decodeJson(listing) ?? const {});
+    return DirectoryListing.fromJson(decodeJson(listing.json!) ?? const {});
   }
 
   /// Well known local roots; the Android/iOS sandboxes expose different paths.

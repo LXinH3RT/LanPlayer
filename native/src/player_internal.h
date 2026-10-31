@@ -59,11 +59,24 @@ extern "C" {
 #define LP_PLATFORM_DESKTOP 1
 #endif
 
-#define LP_MAX_QUEUED_PACKETS 4096
-#define LP_MAX_PACKET_BYTES (256 * 1024 * 1024)
-#define LP_MIN_PACKET_BYTES (512 * 1024)
-#define LP_VIDEO_FRAME_QUEUE 24
+/* 预读窗口。以前两个队列分别给 256 MB 与 128 MB，而背压条件是
+ * 「超过 8 个包且填满容量」（queue.c），也就是最多能堆到 384 MB ——
+ * 移动端有真实的 OOM 风险，而这么深的缓冲对局域网播放毫无收益：
+ * 20 Mbps 的片源，24 MB 已经是 10 秒的预读量。取 24 MB / 12 MB。 */
+#define LP_MAX_PACKET_BYTES (24 * 1024 * 1024)
+#define LP_AUDIO_PACKET_BYTES (12 * 1024 * 1024)
+/* 单包上限：一个包超过它就说明解复用给出的尺寸不可信，直接拒绝，
+ * 不要拿着它去 malloc。 */
+#define LP_MAX_SINGLE_PACKET_BYTES (16 * 1024 * 1024)
+/* 倍速的可用区间。上限来自 atempo 与时钟倍率的共同适用性，下限来自界面
+ * 那个 0.25 档 —— 定成 0.5 的时候界面能选到 0.25、内核却悄悄钳回 0.5，
+ * 表现出来就是「这一档和 0.5 一模一样」。 */
+#define LP_SPEED_MIN 0.25
+#define LP_SPEED_MAX 2.0
 #define LP_DEFAULT_AUDIO_LATENCY_MS 120
+/* 音频主时钟连续这么久不前进，就认为它不会自己恢复了（环空、声卡没在
+ * 消费、或者解码线程被网络卡住），改用墙钟推着画面走。 */
+#define LP_AUDIO_CLOCK_STALL_US 400000
 #define LP_POSITION_INTERVAL_US 200000
 #define LP_TICK_INTERVAL_US 20000
 #define LP_STATS_INTERVAL_US 1000000
@@ -590,6 +603,9 @@ typedef struct LpAudioStream {
     atomic_int eof;
     int draining;
     int64_t frames_decoded;
+    /* 切轨请求（index + 1，0 = 没有请求）。宿主是同步 FFI 调用，不能在那个
+     * 线程上 join 解码线程，改由 tick 线程负责真正停下、换流、重启。 */
+    atomic_int switch_req;
 } LpAudioStream;
 
 /* ---------------------------------------------------------------- player */
@@ -674,6 +690,12 @@ struct LpPlayer {
     int64_t stats_last_frames;
     double stats_last_time;
     int buffering;
+
+    /* 音频主时钟的健康检查：环空（解码跟不上、或声卡没在消费）时
+     * lp_ring_clock_seconds() 会一直返回同一刻，主时钟跟着冻住，画面
+     * 也不走了。记下上一次看到的值与时刻，超过阈值就退回墙钟。 */
+    atomic_llong audio_clock_seen_us;
+    atomic_llong audio_clock_seen_at;
 };
 
 /* player.c helpers used by the other modules */
@@ -754,11 +776,13 @@ typedef struct LpSubTestAnim {
     double karaoke_start_ms;
     double karaoke_end_ms;
     double alpha;
+    double angle; /* \fr / \frz, in degrees */
     int clip_on;
     double clip_x1;
     double clip_y1;
     double clip_x2;
     double clip_y2;
+    int clip_inverse; /* \iclip: keep what is OUTSIDE the rectangle */
     int drawing_scale;
     int nb_path;
     int nb_subpaths;
@@ -771,6 +795,12 @@ typedef struct LpSubTestAnim {
 int lp_sub_test_parse_anim(const char *dialogue_text, int run_index,
                            int64_t cue_dur_us, LpSubTestAnim *out);
 
+/* Decode a raw subtitle byte blob exactly the way lp_subtitle_add_file() does
+ * (BOM strip, BOM-less UTF-16 guess, legacy code-page fallback).  Returns a
+ * malloc'd NUL-terminated UTF-8 buffer, or NULL when the buffer itself could
+ * not be allocated.  Test-only. */
+char *lp_sub_test_decode_text(const void *raw, size_t len, int *charset_ok);
+
 /* source layer (see src/source) */
 typedef struct LpIo LpIo;
 LpIo *lp_io_open(const char *url, const LpSourceOptions *opts, char *err, size_t errlen);
@@ -782,6 +812,9 @@ int64_t lp_io_size(LpIo *io);
 int lp_io_attach_avio(LpIo *io, AVFormatContext **fmt, char *err, size_t errlen);
 int lp_io_interrupt(void *user);
 void lp_io_abort(LpIo *io);
+/* 这一次失败属于哪一类（LP_ERR_AUTH / LP_ERR_NOT_FOUND / LP_ERR_TIMEOUT …）。
+ * lp_io_open 返回 NULL 之后由调用方取，别再一律报 LP_ERR_IO。 */
+int32_t lp_io_last_result(void);
 
 #ifdef __cplusplus
 }

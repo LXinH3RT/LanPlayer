@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lanplayer/core/background.dart';
+import 'package:lanplayer/core/bindings.dart';
 import 'package:lanplayer/data/repository.dart';
 
 /// 「列表请求不能在 UI 线程上跑」的回归测试。
@@ -28,7 +29,7 @@ void main() {
         // 模拟一次要等一阵子的网络往返。
         await Future<void>.delayed(const Duration(milliseconds: 40));
         finished = true;
-        return '{"url":"$url","parent":"","entries":[]}';
+        return ListingResult.json('{"url":"$url","parent":"","entries":[]}');
       },
     );
 
@@ -43,7 +44,10 @@ void main() {
   });
 
   test('请求失败时给的不是内核原文，而是一句能读懂的话', () async {
-    final repo = MediaRepository(fetchListing: (url, options) async => null);
+    final repo = MediaRepository(
+      fetchListing: (url, options) async =>
+          ListingResult.failure(const SourceFailure(code: SourceFailure.timeout)),
+    );
     await expectLater(
       repo.browseUrl('smb://host/share', const {}),
       throwsA(isA<MediaSourceException>().having(
@@ -52,5 +56,36 @@ void main() {
         allOf(contains('smb://host/share'), contains('超时')),
       )),
     );
+  });
+
+  /// 内核分得出「密码错」和「连不上」，这两句话必须不一样 —— 前者要去改
+  /// 账号密码，后者要去查网线和端口。以前两者都是同一句「连接超时或服务器
+  /// 不可达」，用户照着它排查是白费力气。
+  test('不同失败原因给不同的提示', () async {
+    Future<String> messageFor(int? code) async {
+      final repo = MediaRepository(
+        fetchListing: (url, options) async =>
+            ListingResult.failure(SourceFailure(code: code)),
+      );
+      try {
+        await repo.browseUrl('smb://host/share', const {});
+      } on MediaSourceException catch (e) {
+        return e.message;
+      }
+      fail('应当抛出 MediaSourceException');
+    }
+
+    final auth = await messageFor(SourceFailure.auth);
+    final notFound = await messageFor(SourceFailure.notFound);
+    final timeout = await messageFor(SourceFailure.timeout);
+    final io = await messageFor(SourceFailure.io);
+
+    expect(auth, contains('账号或密码'));
+    expect(notFound, contains('路径不存在'));
+    expect(timeout, contains('超时'));
+    expect(io, contains('连接失败'));
+    expect({auth, notFound, timeout, io}.length, 4, reason: '四类失败不能是同一句话');
+    // 内核没给分类时退回通用说法，不能崩。
+    expect(await messageFor(null), contains('连接失败'));
   });
 }

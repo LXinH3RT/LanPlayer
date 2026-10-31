@@ -71,6 +71,37 @@ def collect_defs() -> dict[str, Path]:
             defs.setdefault(name, path)
     return defs
 
+MAP_RE = re.compile(r"^\s*(lp_[a-z0-9_]*(?:\*)?|Java_[A-Za-z0-9_]*(?:\*)?)\s*;", re.M)
+
+
+def collect_exports() -> dict[str, Path]:
+    """Every function the public headers mark `LP_EXPORT`.
+
+    Those are the only ones a host outside the library can call, so they are
+    also the only ones that must survive the version script.
+    """
+    exports: dict[str, Path] = {}
+    for path in INC.rglob("*.h"):
+        text = path.read_text(encoding="utf-8")
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+        # The two `#define LP_EXPORT ...` lines would otherwise look like
+        # declarations of a function called nothing at all.
+        text = re.sub(r"^\s*#define[^\n]*$", "", text, flags=re.M)
+        for m in re.finditer(r"LP_EXPORT\b[^;()]*?\b(lp_[a-z0-9_]+)\s*\(", text):
+            exports.setdefault(m.group(1), path)
+    return exports
+
+
+def collect_map(varname: str) -> list[str]:
+    """The `global:` entries of a linker version script."""
+    path = ROOT / varname
+    if not path.exists():
+        return []
+    text = re.sub(r"/\*.*?\*/", "", path.read_text(encoding="utf-8"), flags=re.S)
+    head = text.split("local:", 1)[0]
+    return [m.group(1) for m in MAP_RE.finditer(head)]
+
+
 def collect_dart_symbols() -> set[str]:
     if not APP.exists():
         return set()
@@ -101,6 +132,29 @@ def main() -> int:
     for name in sorted(dart):
         if name not in defs:
             problems.append(f"Dart binds a symbol the core does not define: {name}")
+
+    # Linux / Android build with `C_VISIBILITY_PRESET hidden` and get their
+    # exported surface back from a version script alone. A symbol that is
+    # `LP_EXPORT` in the header but missing from that script compiles fine and
+    # then fails at lookup time on the device — which is exactly how Android
+    # lost its thumbnails for a while.
+    exports = collect_exports()
+    map_path = ROOT / "lp_map.txt"
+    if map_path.exists():
+        # An empty `global:` list means nothing is exported at all, which is a
+        # different bug with the same symptom; do not skip the check for it.
+        gl_map = collect_map(Path("lp_map.txt"))
+        patterns = [p for p in gl_map if p.endswith("*")]
+        listed = set(p for p in gl_map if not p.endswith("*"))
+        for name in sorted(exports):
+            if name in listed or any(name.startswith(p[:-1]) for p in patterns):
+                continue
+            problems.append(
+                f"LP_EXPORT but missing from native/lp_map.txt: {name}"
+                f"  ({exports[name].relative_to(ROOT)})")
+    else:
+        problems.append("native/lp_map.txt is gone; the Linux/Android builds "
+                        "would export nothing")
 
     public = sorted(n for n in decls if n.startswith(("lp_player", "lp_source", "lp_abi", "lp_string", "lp_url", "lp_log_set")))
     print(f"public API functions: {len(public)}")

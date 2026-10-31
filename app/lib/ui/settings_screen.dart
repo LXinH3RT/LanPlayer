@@ -5,6 +5,7 @@ import '../data/build_info.dart';
 import '../data/models.dart' show PlaybackSettings, kLanguageOptions;
 import '../data/probe.dart';
 import '../data/stores.dart';
+import '../data/thumbs.dart' show ThumbnailCache;
 import 'widgets/number_field.dart';
 import 'widgets/shortcut_section.dart';
 import 'widgets/volume_sheet.dart' show VolumeSheet;
@@ -192,6 +193,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _persist();
             },
           ),
+          // 封面缓存没有过期时间，删掉的片子、换过的服务器都会留下文件。
+          // 以前 `ThumbnailCache.clear()` 写好了却没有任何入口，用户只能
+          // 去翻本地目录手动删 —— 这里补上。
+          const _ClearThumbCacheTile(),
         ];
 
       case SettingsTab.picture:
@@ -443,6 +448,71 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (_) {
       return null;
     }
+  }
+}
+
+/// 「清空封面缓存」这一行。
+///
+/// 单独做成 StatefulWidget 而不是塞进设置页：它要显示当前占用、清完后
+/// 立刻刷新数字，而这些状态跟 [PlaybackSettings] 一点关系都没有，塞进去
+/// 只会让设置页的 `_persist()` 路径莫名多一次 setState。
+class _ClearThumbCacheTile extends StatefulWidget {
+  const _ClearThumbCacheTile();
+
+  @override
+  State<_ClearThumbCacheTile> createState() => _ClearThumbCacheTileState();
+}
+
+class _ClearThumbCacheTileState extends State<_ClearThumbCacheTile> {
+  int? _bytes;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final bytes = await ThumbnailCache.instance.diskUsage();
+    if (!mounted) return;
+    setState(() => _bytes = bytes);
+  }
+
+  /// 小于 1 MB 时按 KB 显示：封面多半只有几百 KB，一律写成 0.0 MB
+  /// 会让人以为缓存没在写。
+  static String _size(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  Future<void> _clear() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    await ThumbnailCache.instance.clear();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    await _refresh();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('封面缓存已清空，下次进目录会重新生成。')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final usage = _bytes == null ? '正在统计…' : _size(_bytes!);
+    return ListTile(
+      key: const ValueKey('settings-clear-thumb-cache'),
+      title: const Text('清空封面缓存'),
+      subtitle: Text('当前占用 $usage。'
+          '删掉的片子、换过的服务器都会在这里留下文件；清空后重新进目录会再解一次。'),
+      trailing: TextButton(
+        onPressed: _busy ? null : _clear,
+        child: Text(_busy ? '清理中…' : '清空'),
+      ),
+    );
   }
 }
 

@@ -99,6 +99,15 @@ class PlayerController extends ChangeNotifier {
     initialize();
     error = null;
     buffering = true;
+    // 换片必须把上一集的运行时状态清零。留着的话：连播切集后时长条还是上一集
+    // 的长度、字幕还停在上一集最后一句、进度从上一集的位置跳一下再回来。
+    // 内核那边 open 成功后才发 MEDIA_INFO/POSITION，中间这几百毫秒界面读到的
+    // 就是这些陈旧值。
+    positionUs = 0;
+    durationUs = 0;
+    media = MediaInfo.empty;
+    cue = SubtitleCue.empty;
+    speed = settings.speed;
     final options = <String, dynamic>{
       // Transport credentials first: the core needs them to auto-load sidecar
       // subtitles from the same SMB directory.
@@ -144,7 +153,9 @@ class PlayerController extends ChangeNotifier {
   void setSpeed(double value) {
     final p = _player;
     if (p == null) return;
-    speed = value.clamp(0.5, 2.0);
+    // 区间与 PlaybackSettings.speedSteps 一致：这里如果比档位窄，0.25× 会被
+    // 静默钳成 0.5，用户点两次「减速」看到的是同一个速度。
+    speed = value.clamp(PlaybackSettings.speedMin, PlaybackSettings.speedMax);
     _core.setSpeed(p, speed);
     notifyListeners();
   }

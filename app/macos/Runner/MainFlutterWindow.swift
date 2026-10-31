@@ -87,14 +87,29 @@ class MainFlutterWindow: NSWindow {
         result(nil)
 
       case "setFullscreen":
-        // macOS keeps its own fullscreen mode and owns the menu bar, so answer
-        // false and let Dart fall back to the Flutter-only behaviour.
-        result(false)
+        // Windows 侧是自己改窗口 style；macOS 上必须走 AppKit 的原生全屏，
+        // 只改 styleMask 会让菜单栏和 Dock 留在原地，用户按 F11 看到的
+        // 只是一个铺满屏幕但还带着标题栏的窗口。
+        let on = (call.arguments as? Bool) ?? false
+        self.setWindowFullscreen(on)
+        result(true)
 
       default:
         result(FlutterMethodNotImplemented)
       }
     }
+  }
+
+  /// 真正的全屏：走 AppKit 的 `toggleFullScreen`，让系统把菜单栏、Dock 和
+  /// 标题栏一起收走，退出时再原样还原尺寸与位置。
+  ///
+  /// 这里不用改 `styleMask` 的老办法 —— Windows 那套 `WS_POPUP` 搬到 macOS 上
+  /// 只会得到一个铺满屏幕但菜单栏还压在顶上的窗口，用户看不出区别。
+  private func setWindowFullscreen(_ on: Bool) {
+    if on == styleMask.contains(.fullscreen) {
+      return
+    }
+    toggleFullScreen(nil)
   }
 
   /// The core notifies us from its decode thread; hop to the main thread before

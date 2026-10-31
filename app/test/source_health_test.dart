@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lanplayer/core/background.dart';
 import 'package:lanplayer/data/folders.dart';
 import 'package:lanplayer/data/repository.dart';
 import 'package:lanplayer/data/source_health.dart';
@@ -45,36 +46,6 @@ void main() {
         ],
       });
 
-  /// 让「连不上」这条路走一遍：fetcher 返回 null，仓库就该抛
-  /// [MediaSourceException]。
-  Future<void> pumpOfflineHome(WidgetTester tester) async {
-    tester.view.physicalSize = const Size(1200, 2400);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.reset);
-
-    LocalFolderStore.instance.debugSeed(<LocalFolder>[
-      LocalFolder(
-        id: 'dir-1',
-        label: '本机',
-        path: '/media',
-        createdAt: DateTime(2026, 1, 1),
-      ),
-    ]);
-    var calls = 0;
-    final repo = MediaRepository(
-      fetchListing: (url, options) async {
-        calls++;
-        // 第一次（启动加载）失败；之后任何一次真连也都失败 —— 但正常的
-        // 实现根本不该走到第二次。
-        return null;
-      },
-    );
-    await tester.pumpWidget(
-        MaterialApp(home: HomeScreen(repo: repo)));
-    await settleHome(tester);
-    expect(calls, greaterThan(0), reason: '启动时应该真去连一次');
-  }
-
   test('连失败后标记为离线，判据按来源 id 走', () {
     final health = SourceHealth.instance;
     expect(health.isOffline('dir:dir-1'), isFalse);
@@ -111,7 +82,7 @@ void main() {
     final repo = MediaRepository(
       fetchListing: (url, options) async {
         calls++;
-        return listingJson();
+        return ListingResult.json(listingJson());
       },
     );
     await tester.pumpWidget(MaterialApp(home: HomeScreen(repo: repo)));
@@ -163,7 +134,7 @@ void main() {
     final repo = MediaRepository(
       fetchListing: (url, options) async {
         calls++;
-        return payload;
+        return ListingResult.json(payload);
       },
     );
     await tester.pumpWidget(MaterialApp(home: HomeScreen(repo: repo)));
@@ -194,7 +165,8 @@ void main() {
       ),
     ]);
     final repo = MediaRepository(
-      fetchListing: (url, options) async => fail ? null : listingJson(),
+      fetchListing: (url, options) async =>
+          fail ? ListingResult.failure(null) : ListingResult.json(listingJson()),
     );
     await tester.pumpWidget(MaterialApp(home: HomeScreen(repo: repo)));
     await settleHome(tester);

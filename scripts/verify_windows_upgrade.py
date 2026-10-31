@@ -204,9 +204,9 @@ def main() -> int:
     )
     old_version = setup_version(old_setup)
     new_version = setup_version(new_setup)
-    scratch = Path(args.scratch) if args.scratch else Path(os.environ.get("TEMP", ".")) / "lp-upgrade-test"
+    scratch = Path(args.scratch) if args.scratch else lp.scratch_dir("lp-upgrade-test")
 
-    temp = Path(os.environ.get("TEMP", "."))
+    temp = lp.scratch_dir("verify-temp")
     old_tmp = temp / "lp-verify-old.exe"
     new_tmp = temp / "lp-verify-new.exe"
     exe = scratch / "lanplayer.exe"

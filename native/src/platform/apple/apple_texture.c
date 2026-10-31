@@ -95,7 +95,14 @@ int lp_render_draw(LpPlayer *p, AVFrame *frame)
     if (!p || !frame) {
         return LP_ERR_ARGUMENT;
     }
+    /* 缩放上下文必须跟着源帧走。以前这里是函数级 static，只在第一次按
+     * frame->width/height/format 建一次，之后永远复用 —— 连播两个分辨率不同
+     * 的文件、或者同片切到像素格式不同的轨时，sws_scale 会按错误的源尺寸
+     * 取样，画面被拉花或者直接读越界。win32_platform.c 一直是按尺寸重建的。 */
     static struct SwsContext *sws = NULL;
+    static int sws_src_w = 0;
+    static int sws_src_h = 0;
+    static int sws_src_fmt = -1;
     CVPixelBufferRef image = NULL;
     CFDictionaryRef empty = CFDictionaryCreate(kCFAllocatorDefault, NULL, NULL, 0,
                                                &kCFTypeDictionaryKeyCallBacks,
@@ -119,10 +126,21 @@ int lp_render_draw(LpPlayer *p, AVFrame *frame)
     CVPixelBufferLockBaseAddress(image, 0);
     uint8_t *dst[4] = {(uint8_t *)CVPixelBufferGetBaseAddress(image), NULL, NULL, NULL};
     int dst_linesize[4] = {(int)CVPixelBufferGetBytesPerRow(image), 0, 0, 0};
+    int src_fmt = (int)frame->format;
+    if (sws && (sws_src_w != frame->width || sws_src_h != frame->height ||
+                sws_src_fmt != src_fmt)) {
+        sws_freeContext(sws);
+        sws = NULL;
+    }
     if (!sws) {
         sws = sws_getContext(frame->width, frame->height, (enum AVPixelFormat)frame->format,
                              frame->width, frame->height, AV_PIX_FMT_BGRA, SWS_BILINEAR, NULL,
                              NULL, NULL);
+        if (sws) {
+            sws_src_w = frame->width;
+            sws_src_h = frame->height;
+            sws_src_fmt = src_fmt;
+        }
     }
     if (sws) {
         sws_scale(sws, (const uint8_t *const *)frame->data, frame->linesize, 0, frame->height, dst,

@@ -50,6 +50,8 @@ class SubtitleAnimator {
     var alpha = run.alpha;
     var clip = run.clip;
     final clipOn = run.clipOn;
+    // `\iclip` 的逆标记不参与插值：`\t` 只能改矩形，改不了「保留里面还是外面」。
+    final clipInverse = run.clipInverse;
 
     for (final anim in run.anims) {
       final p = progress(anim, nowMs);
@@ -104,6 +106,7 @@ class SubtitleAnimator {
       alpha: alpha,
       clip: clip,
       clipOn: clipOn,
+      clipInverse: clipInverse,
       karaoke: karaokeFill(run, nowMs),
     );
   }
@@ -168,6 +171,7 @@ class ResolvedSpan {
     required this.alpha,
     required this.clip,
     required this.clipOn,
+    required this.clipInverse,
     required this.karaoke,
   });
 
@@ -185,5 +189,8 @@ class ResolvedSpan {
 
   /// `\clip` 是否生效（动画里可能把裁剪打开或关掉）。
   final bool clipOn;
+
+  /// `\iclip`：保留 [clip] 矩形**外面**的内容。
+  final bool clipInverse;
   final double karaoke;
 }

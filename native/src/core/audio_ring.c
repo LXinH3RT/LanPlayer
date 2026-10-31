@@ -195,8 +195,20 @@ int lp_ring_read(LpAudioRing *r, float *out, int frames)
     pthread_mutex_lock(&r->mutex);
     if (r->paused || r->count == 0) {
         memset(out, 0, (size_t)total * sizeof(float));
+        /* 欠载时补静音，但这段时间是真实流逝的：不推进 sample_index 的话
+         * lp_ring_clock_seconds() 会一直返回同一刻，主时钟退化到墙钟，画面
+         * 按墙钟跑；数据一续上，音频从旧位置继续播，画面已经跑到前面，
+         * 音画就永久错开。按实际消耗的帧数推进游标，让时钟至少以正常速率
+         * 往前走，续上之后两者自然重新对齐。
+         *
+         * 暂停时不能推进 —— 那时是声卡还在要数据，时间并没有走。 */
+        if (!r->paused) {
+            r->sample_index += frames;
+            prune_markers(r, 1);
+        }
+        pthread_cond_broadcast(&r->cond);
         pthread_mutex_unlock(&r->mutex);
-        return frames; /* silence, clock does not advance */
+        return frames; /* silence */
     }
     int n = frames;
     if (n > r->count) {

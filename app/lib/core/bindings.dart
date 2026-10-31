@@ -22,6 +22,27 @@ class ThumbnailResult {
   final Uint8List rgba;
 }
 
+/// 一次来源操作失败的分类（[code] 取自 `LpResult`）。
+///
+/// 密码错（-8）、共享名/文件不存在（-9）、超时（-10）、连不上（-3）在用户
+/// 眼里是四件要分别处理的事，混成一句「连接超时或服务器不可达」等于没报错。
+class SourceFailure {
+  const SourceFailure({this.message, this.code});
+
+  /// 内核给的原文，可能为 null（没有更具体的说明时）。
+  final String? message;
+
+  /// `LpResult` 值；null 表示内核没给（老版本或非来源类失败）。
+  final int? code;
+
+  static const int auth = -8;
+  static const int notFound = -9;
+  static const int timeout = -10;
+  static const int io = -3;
+  static const int unsupported = -4;
+  static const int argument = -1;
+}
+
 typedef _ResultInt32C = Int32 Function();
 typedef _ResultInt32D = int Function();
 
@@ -143,9 +164,23 @@ class NativeCore {
       return DynamicLibrary.process();
     }
     if (Platform.isWindows) {
-      return DynamicLibrary.open('lanplayer.dll');
+      return _openWindows();
     }
     return DynamicLibrary.open('liblanplayer.so');
+  }
+
+  /// Windows 上找 `lanplayer.dll`。
+  ///
+  /// 裸名走标准 DLL 搜索顺序（exe 目录在前），正常安装与 `flutter run` 都能
+  /// 命中。但宿主进程（IDE、调试器）的当前目录不是 exe 目录时，裸名可能先撞
+  /// 上别处的同名文件、或者直接失败，所以显式补一次「exe 同目录」。
+  static DynamicLibrary _openWindows() {
+    try {
+      return DynamicLibrary.open('lanplayer.dll');
+    } on ArgumentError {
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      return DynamicLibrary.open('$exeDir\\lanplayer.dll');
+    }
   }
 
   late final _ResultInt32D _abi =
@@ -216,7 +251,11 @@ class NativeCore {
       _lib.lookupFunction<_SourceErrC, _SourceErrD>('lp_source_last_error');
 
   /// Last transport error on this thread, or null when there is none.
-  String? lastSourceError() {
+  String? lastSourceError() => lastSourceFailure()?.message;
+
+  /// 同上，但带上分类码 —— 密码错、共享名不存在、连不上、超时，四种情况
+  /// 用户要做的事完全不同，只给一句话等于没报错。
+  SourceFailure? lastSourceFailure() {
     final out = calloc<Pointer<Utf8>>();
     try {
       if (_lastError(out) != 0 || out.value == nullptr) {
@@ -226,7 +265,11 @@ class NativeCore {
       _freeString(out.value);
       final map = decodeJson(json);
       final msg = map?['message'] as String?;
-      return (msg == null || msg.isEmpty) ? null : msg;
+      final code = map?['code'];
+      return SourceFailure(
+        message: (msg == null || msg.isEmpty) ? null : msg,
+        code: code is int ? code : null,
+      );
     } finally {
       calloc.free(out);
     }

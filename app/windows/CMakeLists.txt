@@ -93,6 +93,30 @@ if(PLUGIN_BUNDLED_LIBRARIES)
     COMPONENT Runtime)
 endif()
 
+# 播放内核与它依赖的 FFmpeg DLL。
+#
+# 以前这两个都靠 scripts/build_windows_desktop.py 在 INSTALL 之后手工
+# shutil.copy2 —— 也就是说 `flutter build windows` 直接出来的产物缺
+# lanplayer.dll 与这些 DLL，一启动就在 DynamicLibrary.open('lanplayer.dll')
+# 那里抛 Invalid argument，窗口连闪都不闪。放在这里，两条出包路径都齐。
+#
+# av* 与 sw* 都要：内核直接链了 swresample / swscale（重采样与缩放），
+# 只装 av* 的话打包脚本会报 missing swresample-*.dll —— 那正是本机
+# `flutter build windows` 产物缺两个 DLL 时的样子。
+set(LP_CORE_DLL "${CMAKE_CURRENT_SOURCE_DIR}/../../build/win-x64/lanplayer.dll")
+if(EXISTS "${LP_CORE_DLL}")
+  install(FILES "${LP_CORE_DLL}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+endif()
+file(GLOB LP_FFMPEG_DLLS
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../.tools/ffmpeg/bin/av*.dll"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../.tools/ffmpeg/bin/sw*.dll")
+if(LP_FFMPEG_DLLS)
+  list(SORT LP_FFMPEG_DLLS)
+  install(FILES ${LP_FFMPEG_DLLS} DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+endif()
+
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")
 install(DIRECTORY "${NATIVE_ASSETS_DIR}"

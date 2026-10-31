@@ -95,7 +95,25 @@ class AppStorage {
     }
   }
 
-  static Future<void> writeJson(String name, Map<String, dynamic> data) async {
+  /// 每个文件名一条写入队列。
+  ///
+  /// [writeJson] 把内容写进固定名字的 `$name.tmp` 再 rename，两条写入并发时
+  /// 会互相截断同一个临时文件：一方 flush 到一半、另一方已经 rename，落盘的
+  /// 就是半截 JSON。下次启动 `readJson` 把它当损坏文件丢掉，用户看到的是
+  /// 所有设置回默认值 —— 而这个触发很容易碰到：拖一次音量滑杆每帧都
+  /// `save()`。串行化按文件名分队列，不同文件之间仍可并行。
+  static final Map<String, Future<void>> _writeChains = <String, Future<void>>{};
+
+  static Future<void> writeJson(String name, Map<String, dynamic> data) {
+    final prev = _writeChains[name] ?? Future<void>.value();
+    final next = prev.then((_) => _writeJsonNow(name, data));
+    // 链条本身不能因为某次失败断掉，否则后面所有写入都不会再被执行。
+    _writeChains[name] = next.catchError((Object _) {});
+    return next;
+  }
+
+  static Future<void> _writeJsonNow(
+      String name, Map<String, dynamic> data) async {
     final dir = await directory();
     final f = File('${dir.path}/$name');
     final tmp = File('${dir.path}/$name.tmp');

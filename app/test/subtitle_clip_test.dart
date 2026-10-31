@@ -74,7 +74,8 @@ const SubtitleStyle _style = SubtitleStyle(
   align: 5,
 );
 
-SubtitleCue _cueWithClip(List<double> clip) => SubtitleCue(
+SubtitleCue _cueWithClip(List<double> clip, {bool inverse = false}) =>
+    SubtitleCue(
       text: '裁剪之外的两端都看不见',
       startUs: 0,
       endUs: 1000000,
@@ -83,7 +84,11 @@ SubtitleCue _cueWithClip(List<double> clip) => SubtitleCue(
         SubtitleLine(
           text: '裁剪之外的两端都看不见',
           runs: [
-            SubtitleSpan(text: '裁剪之外的两端都看不见', clip: clip),
+            SubtitleSpan(
+              text: '裁剪之外的两端都看不见',
+              clip: clip,
+              clipInverse: inverse,
+            ),
           ],
           style: _style,
           posX: 0.5,
@@ -170,5 +175,20 @@ void main() {
     expect(clipped.left, greaterThanOrEqualTo(370),
         reason: '裁剪窗要落在画面里的 375px 处，不能停在左边的黑边上');
     expect(clipped.right, lessThanOrEqualTo(505), reason: '右边界同样要跟着挪');
+  });
+
+  testWidgets('\\iclip 反过来只保留窗口外面的字', (tester) async {
+    // 中间的窄窗口被挖空，左右两端留下来。负向对照是上面那条 `\clip`：
+    // 同一个矩形，普通裁剪只剩窗口里的字，逆裁剪只剩窗口外的字。
+    const window = <double>[560, 0, 720, 720];
+    final normal = await _bounds(tester, _cueWithClip(window));
+    final inverse = await _bounds(tester, _cueWithClip(window, inverse: true));
+    expect(normal.count, greaterThan(20));
+    expect(normal.left, greaterThanOrEqualTo(558));
+    expect(normal.right, lessThanOrEqualTo(722));
+    expect(inverse.count, greaterThan(20), reason: '窗口外的字必须画出来');
+    expect(inverse.right, greaterThanOrEqualTo(780),
+        reason: '右侧的字不该被 \\iclip 的窗口吞掉');
+    expect(inverse.left, lessThan(500), reason: '左侧的字同样要留着');
   });
 }

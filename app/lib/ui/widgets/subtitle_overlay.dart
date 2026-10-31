@@ -307,12 +307,13 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
   /// 这条行里第一个带 `\clip` 的 run 的裁剪矩形（脚本坐标），没有就是 null。
   ///
   /// `\t(...\clip(...))` 的动画会改这个矩形，所以每帧都要重新解算。
-  List<double>? _clipOf(SubtitleLine line) {
+  /// `inverse` 对应 `\iclip`：保留矩形**外面**的内容。
+  ({List<double> rect, bool inverse})? _clipOf(SubtitleLine line) {
     for (final run in line.runs) {
       if (run.drawingScale > 0) continue;
       final r = SubtitleAnimator.resolve(run, _nowMs);
       if (!r.clipOn || r.clip.length != 4) continue;
-      return r.clip;
+      return (rect: r.clip, inverse: r.clipInverse);
     }
     return null;
   }
@@ -339,7 +340,8 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
   }
 
   /// 这组行里第一个带 `\clip` 的 run 的裁剪矩形（脚本坐标），没有就是 null。
-  List<double>? _clipOfLineGroup(List<SubtitleLine> lines) {
+  ({List<double> rect, bool inverse})? _clipOfLineGroup(
+      List<SubtitleLine> lines) {
     for (final line in lines) {
       final c = _clipOf(line);
       if (c != null) return c;
@@ -351,9 +353,12 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
   ///
   /// `\clip` 是画面绝对坐标，而 [child] 是摆好位置之后的块，所以这里用
   /// [ClipPath] 裁「整块画面上的一块」——把裁剪矩形换算成相对块的偏移。
+  /// [inverse] 为真时（`\iclip`）保留矩形外面的部分，这是卡拉 OK 里「让字只在
+  /// 一块区域外可见」的唯一写法。
   Widget _clipWidget(
     Widget child,
     List<double> clip,
+    bool inverse,
     SubtitleStyle style,
     double videoHeight,
     Rect video,
@@ -376,11 +381,13 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
       video.top + clip[3] * videoHeight / pry,
     );
     if (rect.width <= 0 || rect.height <= 0) {
-      return const SizedBox.shrink();
+      // 正裁剪的退化矩形什么都裁掉了，整块不画；逆裁剪的退化矩形等于「不裁」，
+      // 照常画。
+      return inverse ? child : const SizedBox.shrink();
     }
     // clip 给的是画面坐标，块本身尺寸未知，所以交给 _ClipRelative 在布局后
     // 用 RenderBox 的全局位置换算。
-    return _ClipRelative(rect: rect, child: child);
+    return _ClipRelative(rect: rect, inverse: inverse, child: child);
   }
 
   /// 卡拉 OK 的逐字填色。
@@ -642,7 +649,8 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
       final clip = _clipOfLineGroup(lines);
       Widget block = _paragraph(context, videoHeight, lines, align);
       if (clip != null) {
-        block = _clipWidget(block, clip, style, videoHeight, video);
+        block = _clipWidget(
+            block, clip.rect, clip.inverse, style, videoHeight, video);
       }
 
       if (p.posX >= 0 && p.posY >= 0) {
@@ -782,30 +790,43 @@ class _Placement {
 /// 布局后由 [RenderClipRelative] 换算：先在 `paint` 里取块的全局矩形的父级
 /// 坐标系，再把 `rect` 转成局部坐标。
 class _ClipRelative extends SingleChildRenderObjectWidget {
-  const _ClipRelative({required this.rect, required Widget child})
+  const _ClipRelative(
+      {required this.rect, required this.inverse, required Widget child})
       : super(child: child);
 
   final Rect rect;
 
+  /// `\iclip`：保留 [rect] 外面的内容。
+  final bool inverse;
+
   @override
   _RenderClipRelative createRenderObject(BuildContext context) =>
-      _RenderClipRelative(rect);
+      _RenderClipRelative(rect, inverse);
 
   @override
   void updateRenderObject(
       BuildContext context, _RenderClipRelative renderObject) {
-    renderObject.rect = rect;
+    renderObject
+      ..rect = rect
+      ..inverse = inverse;
   }
 }
 
 class _RenderClipRelative extends RenderProxyBox {
-  _RenderClipRelative(this._rect);
+  _RenderClipRelative(this._rect, this._inverse);
 
   Rect _rect;
+  bool _inverse;
 
   set rect(Rect value) {
     if (value == _rect) return;
     _rect = value;
+    markNeedsPaint();
+  }
+
+  set inverse(bool value) {
+    if (value == _inverse) return;
+    _inverse = value;
     markNeedsPaint();
   }
 
@@ -814,7 +835,24 @@ class _RenderClipRelative extends RenderProxyBox {
     if (child == null) return;
     // 这一块在画面坐标系里的起点 = offset（父级已把块摆好）。
     final local = _rect.shift(-offset);
-    context.pushClipRect(needsCompositing, offset, local,
+    if (!_inverse) {
+      context.pushClipRect(needsCompositing, offset, local,
+          (inner, innerOffset) => super.paint(inner, innerOffset));
+      return;
+    }
+    // 逆裁剪：用「整块减去矩形」的奇偶规则。矩形贴在块外时就等于不裁，
+    // clipPath 会返回 true 直接把块画出来。
+    if (!offset.isFinite || size.isEmpty) {
+      super.paint(context, offset);
+      return;
+    }
+    final outer = Offset.zero & size;
+    final clip = Path.combine(
+      PathOperation.difference,
+      Path()..addRect(outer),
+      Path()..addRect(local),
+    );
+    context.pushClipPath(needsCompositing, offset, outer, clip,
         (inner, innerOffset) => super.paint(inner, innerOffset));
   }
 }

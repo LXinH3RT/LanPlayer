@@ -239,7 +239,10 @@ static int open_input(LpPlayer *p, char *err, size_t errlen)
         p->io = lp_io_open(p->url, &p->sopts, err, errlen);
         if (!p->io) {
             av_dict_free(&opts);
-            return LP_ERR_IO;
+            /* 传输层分得出「密码错」「共享名不存在」「连不上」「超时」，
+             * 这里以前一律折成 LP_ERR_IO，于是 UI 上四种情况同一句话，
+             * 用户照着「连接超时或服务器不可达」去查网络是白费力气。 */
+            return lp_io_last_result();
         }
         p->io->external_abort = &p->abort_request;
         if (lp_io_attach_avio(p->io, &fmt, err, errlen) != LP_OK) {
@@ -313,18 +316,23 @@ static void perform_seek(LpPlayer *p, int64_t target_us)
     if (r < 0) {
         LP_WARN("demux", "seek to %lld us failed", (long long)target_us);
     }
-    p->serial++;
+    /* serial 是原子量，必须走原子读改写。以前这里写成 `p->serial++`：
+     * 读-改-写不是一次操作，而 video.c/audio.c 里同时在裸读它来判断
+     * 「这次 seek 之后包是不是作废了」。C11 意义上是数据竞争（UB），
+     * 编译器完全可以把解码线程里那两次读缓存在一次 flush 之前，于是
+     * seek 之后解码器仍按旧串号处理，画面会闪一下旧的。 */
+    int new_serial = atomic_fetch_add(&p->serial, 1) + 1;
     lp_pq_flush(&p->video.pq);
     lp_pq_flush(&p->audio.pq);
     lp_ring_flush(&p->audio.ring);
     atomic_store(&p->eos_demux, 0);
     atomic_store(&p->video.eof, 0);
     atomic_store(&p->audio.eof, 0);
-    lp_clock_set(&p->ac, (double)target_us / LP_TIME_BASE, p->serial);
-    lp_clock_set(&p->extc, (double)target_us / LP_TIME_BASE, p->serial);
+    lp_clock_set(&p->ac, (double)target_us / LP_TIME_BASE, new_serial);
+    lp_clock_set(&p->extc, (double)target_us / LP_TIME_BASE, new_serial);
     lp_subtitle_seek(p, target_us);
     lp_emit_buffering(p, 1, 0);
-    LP_DEBUG("demux", "seek -> %lld us (serial %d, rc %d)", (long long)target_us, p->serial, r);
+    LP_DEBUG("demux", "seek -> %lld us (serial %d, rc %d)", (long long)target_us, new_serial, r);
 }
 
 void *lp_demux_thread_fn(void *arg)
@@ -360,8 +368,9 @@ void *lp_demux_thread_fn(void *arg)
         }
         if (r == AVERROR_EOF) {
             atomic_store(&p->eos_demux, 1);
-            lp_pq_signal_eof(&p->video.pq, p->serial);
-            lp_pq_signal_eof(&p->audio.pq, p->serial);
+            int eof_serial = atomic_load(&p->serial);
+            lp_pq_signal_eof(&p->video.pq, eof_serial);
+            lp_pq_signal_eof(&p->audio.pq, eof_serial);
             waiting_eof = 1;
             LP_INFO("demux", "end of stream after %lld packet(s), pos %lld us",
                     read_ok, (long long)p->fmt->pb->pos);
@@ -382,7 +391,7 @@ void *lp_demux_thread_fn(void *arg)
         }
         if (pkt->stream_index == p->video.stream_index) {
             read_ok++;
-            if (lp_pq_put(&p->video.pq, pkt, p->serial) != 0) {
+            if (lp_pq_put(&p->video.pq, pkt, atomic_load(&p->serial)) != 0) {
                 /* 队列已放掉这个包，不能重复释放。切轨会先 abort 队列再
                  * restart，这时推包失败不代表播放结束 —— 以前直接 break 会
                  * 让 demux 线程永久退出，之后没有任何线程喂包：播放停在切轨
@@ -396,7 +405,7 @@ void *lp_demux_thread_fn(void *arg)
             }
             pkt = av_packet_alloc();
         } else if (pkt->stream_index == p->audio.stream_index) {
-            if (lp_pq_put(&p->audio.pq, pkt, p->serial) != 0) {
+            if (lp_pq_put(&p->audio.pq, pkt, atomic_load(&p->serial)) != 0) {
                 pkt = av_packet_alloc();
                 if (!pkt || lp_is_abort(p)) {
                     break;
@@ -421,11 +430,14 @@ void *lp_demux_thread_fn(void *arg)
 int lp_demux_open(LpPlayer *p)
 {
     char err[256] = {0};
-    if (open_input(p, err, sizeof(err)) != LP_OK) {
+    int open_rc = open_input(p, err, sizeof(err));
+    if (open_rc != LP_OK) {
         char msg[384];
         snprintf(msg, sizeof(msg), "%s", err[0] ? err : "cannot open media");
-        lp_emit_error(p, LP_ERR_IO, msg);
-        return LP_ERR_IO;
+        /* 错误码一路透到 LP_EVENT_ERROR，UI 才能说「密码不对」而不是
+         * 「连接超时或服务器不可达」——四种失败的处置方式完全不同。 */
+        lp_emit_error(p, open_rc, msg);
+        return open_rc;
     }
     if (select_streams(p) != LP_OK) {
         lp_emit_error(p, LP_ERR_UNSUPPORTED, "no playable stream found");
@@ -440,8 +452,8 @@ int lp_demux_open(LpPlayer *p)
         /* Normalise the timeline so 0 means "first frame". */
         LP_DEBUG("demux", "start_time offset %lld us", (long long)p->start_us);
     }
-    lp_clock_set(&p->ac, 0, p->serial);
-    lp_clock_set(&p->extc, 0, p->serial);
+    lp_clock_set(&p->ac, 0, atomic_load(&p->serial));
+    lp_clock_set(&p->extc, 0, atomic_load(&p->serial));
 
     /* LP_NO_VIDEO / LP_NO_AUDIO: debugging switches to bisect pipeline faults. */
     if (getenv("LP_NO_VIDEO")) {

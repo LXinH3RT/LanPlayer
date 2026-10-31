@@ -119,7 +119,7 @@ def run_setup(path: Path, target: Path, timeout: float = 180.0) -> int | None:
 
 
 def start_holder(dll: Path, python: str) -> subprocess.Popen:
-    script = Path(os.environ.get("TEMP", ".")) / "lp-dll-holder.py"
+    script = lp.scratch_dir("holders") / "lp-dll-holder.py"
     script.write_text(HOLDER_SOURCE, encoding="utf-8")
     proc = subprocess.Popen([python, str(script), str(dll)],
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -192,12 +192,12 @@ def main() -> int:
             raise lp.ScriptError(f"missing installer: {path}")
 
     scratch = Path(args.scratch) if args.scratch else \
-        Path(os.environ.get("TEMP", ".")) / "lp-locked-test"
+        lp.scratch_dir("lp-locked-test")
     python = lp.find_python()
 
     # Both packages run from %TEMP%: files under the repo carry a Low integrity
     # label, and a half-finished install must never touch dist/.
-    temp = Path(os.environ.get("TEMP", "."))
+    temp = lp.scratch_dir("verify-temp")
     old_tmp = temp / "lp-locked-old.exe"
     new_tmp = temp / "lp-locked-new.exe"
     shutil.copy2(old_setup, old_tmp)

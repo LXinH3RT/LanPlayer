@@ -30,6 +30,11 @@ void lp_url_join(const LpUrl *u, const char *name, char *out, size_t outlen);
  * 和 lp_source_list / lp_source_probe 共用同一份线程局部缓冲。 */
 void lp_source_set_last_error(const char *msg);
 
+/* 同上，但记的是分类码（LP_ERR_AUTH / LP_ERR_NOT_FOUND / LP_ERR_TIMEOUT …）。
+ * 文本够人看，程序要靠码决定说哪句话。 */
+void lp_source_set_last_result(int32_t rc);
+int32_t lp_source_last_result(void);
+
 typedef struct LpIo LpIo;
 
 typedef struct LpTransport {

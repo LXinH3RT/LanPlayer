@@ -21,12 +21,23 @@ class VolumeSheet extends StatefulWidget {
     required this.muted,
     required this.onVolumeChanged,
     required this.onMutedChanged,
+    this.onVolumeCommitted,
   });
 
   /// 当前音量，0.0–2.0（1.0 = 100%，2.0 = 200% 增强）。
   final double volume;
   final bool muted;
+
+  /// 音量**正在**变化：滑杆每动一档、滚轮每滚一格都会来一次。
+  /// 只该用来即时改内核增益与重绘，不要在里面落盘。
   final ValueChanged<double> onVolumeChanged;
+
+  /// 音量**改完了**：松手、点档位、滚轮停下时来一次。
+  ///
+  /// 落盘只挂这里。以前把它挂在 [onVolumeChanged] 上，拖一次滑杆会连发几十
+  /// 次 save()，几次写入互相截断同一个 `.tmp` 后落盘的可能是半截 JSON。
+  final ValueChanged<double>? onVolumeCommitted;
+
   final ValueChanged<bool> onMutedChanged;
 
   /// 常用档位，按**显示值**给（0–100）。
@@ -154,6 +165,10 @@ class _VolumeSheetState extends State<VolumeSheet> {
                     label: label,
                     // 滑杆按显示值走，回调时换算回增益。
                     onChanged: _setDisplay,
+                    // 松手才落盘（见 onVolumeCommitted 的注释）。
+                    onChangeEnd: (display) =>
+                        widget.onVolumeCommitted?.call(
+                            VolumeSheet.volumeOf(display)),
                   ),
                 ),
                 SizedBox(
@@ -176,7 +191,10 @@ class _VolumeSheetState extends State<VolumeSheet> {
                     key: Key('volume-preset-$preset'),
                     label: Text('$preset'),
                     selected: shown == preset,
-                    onSelected: (_) => _setDisplay(preset),
+                    onSelected: (_) {
+                      _setDisplay(preset);
+                      widget.onVolumeCommitted?.call(_value);
+                    },
                   ),
               ],
             ),

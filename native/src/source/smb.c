@@ -69,27 +69,44 @@ static int smb_error_rc(struct smb2_context *smb2, int fallback)
 {
     const char *e = smb2 ? smb2_get_error(smb2) : NULL;
     if (e) {
+        /* 凭据类：账号密码错、没权限、共享名不存在。
+         * 共享名不存在（STATUS_BAD_NETWORK_NAME）归到 AUTH 而不是 NOT_FOUND，
+         * 因为对用户来说「这个共享打不开」要先去核对服务器配置。 */
         if (strstr(e, "STATUS_LOGON_FAILURE") || strstr(e, "STATUS_ACCESS_DENIED") ||
-            strstr(e, "STATUS_BAD_NETWORK_NAME") || strstr(e, "Permission denied")) {
+            strstr(e, "STATUS_BAD_NETWORK_NAME") || strstr(e, "STATUS_ACCOUNT_DISABLED") ||
+            strstr(e, "STATUS_ACCOUNT_LOCKED_OUT") || strstr(e, "STATUS_PASSWORD_EXPIRED") ||
+            strstr(e, "Permission denied")) {
             return LP_ERR_AUTH;
         }
-        if (strstr(e, "STATUS_OBJECT_NAME_NOT_FOUND") || strstr(e, "No such file")) {
+        if (strstr(e, "STATUS_OBJECT_NAME_NOT_FOUND") || strstr(e, "STATUS_NO_SUCH_FILE") ||
+            strstr(e, "STATUS_OBJECT_PATH_NOT_FOUND") || strstr(e, "No such file")) {
             return LP_ERR_NOT_FOUND;
         }
-        if (strstr(e, "timed out") || strstr(e, "Timeout")) {
+        /* libsmb2 给的是大写的状态名（SMB2_STATUS_IO_TIMEOUT），不带空格的
+         * "timed out"。以前只匹配后者，LP_ERR_TIMEOUT 在整个产品里从未被置位。 */
+        if (strstr(e, "STATUS_IO_TIMEOUT") || strstr(e, "STATUS_NETWORK_NAME_DELETED") ||
+            strstr(e, "timed out") || strstr(e, "Timeout")) {
             return LP_ERR_TIMEOUT;
+        }
+        /* 服务器报「我连不上你」/「目标不可达」这类传输层问题。 */
+        if (strstr(e, "STATUS_NETWORK_UNREACHABLE") || strstr(e, "STATUS_HOST_UNREACHABLE") ||
+            strstr(e, "STATUS_CONNECTION_REFUSED") || strstr(e, "STATUS_CONNECTION_DISCONNECTED") ||
+            strstr(e, "STATUS_CONNECTION_RESET") || strstr(e, "Connect failed") ||
+            strstr(e, "Connection refused") || strstr(e, "No route to host")) {
+            return LP_ERR_IO;
         }
     }
     return fallback;
 }
 
 static struct smb2_context *smb_connect(const LpUrl *u, const LpSourceOptions *opts,
-                                        char *err, size_t errlen)
+                                        char *err, size_t errlen, int *rc_out)
 {
     smb_wsa_init();
     struct smb2_context *smb2 = smb2_init_context();
     if (!smb2) {
         if (err && errlen) snprintf(err, errlen, "smb2_init_context failed");
+        *rc_out = LP_ERR_NOMEM;
         return NULL;
     }
     int timeout_sec = (opts->timeout_ms > 0 ? opts->timeout_ms : 8000) / 1000;
@@ -118,6 +135,9 @@ static struct smb2_context *smb_connect(const LpUrl *u, const LpSourceOptions *o
         snprintf(server, sizeof(server), "%s", u->host);
     }
     if (smb2_connect_share(smb2, server, u->share, user) < 0) {
+        /* 先把分类算出来再销毁 context —— smb2_get_error 的文本挂在
+         * context 上，destroy 之后就取不到了。 */
+        int rc = smb_error_rc(smb2, LP_ERR_IO);
         if (err && errlen) {
             const char *detail = smb2_get_error(smb2);
             if (detail && strstr(detail, "Connect failed")) {
@@ -132,6 +152,7 @@ static struct smb2_context *smb_connect(const LpUrl *u, const LpSourceOptions *o
             }
         }
         smb2_destroy_context(smb2);
+        *rc_out = rc;
         return NULL;
     }
     return smb2;
@@ -148,10 +169,11 @@ static int smb_transport_open(LpIo *io, const LpUrl *u, const LpSourceOptions *o
     if (!ctx) {
         return LP_ERR_NOMEM;
     }
-    ctx->smb2 = smb_connect(u, opts, err, errlen);
+    int rc = LP_ERR_IO;
+    ctx->smb2 = smb_connect(u, opts, err, errlen, &rc);
     if (!ctx->smb2) {
         free(ctx);
-        return LP_ERR_IO;
+        return rc;
     }
     const char *rel = smb_relpath(u->path);
     if (rel[0]) {
@@ -160,10 +182,10 @@ static int smb_transport_open(LpIo *io, const LpUrl *u, const LpSourceOptions *o
             if (err && errlen) {
                 snprintf(err, errlen, "open %s failed: %s", u->path, smb2_get_error(ctx->smb2));
             }
-            int rc = smb_error_rc(ctx->smb2, LP_ERR_IO);
+            int open_rc = smb_error_rc(ctx->smb2, LP_ERR_IO);
             smb2_destroy_context(ctx->smb2);
             free(ctx);
-            return rc;
+            return open_rc;
         }
         struct smb2_stat_64 st;
         memset(&st, 0, sizeof(st));
@@ -256,9 +278,10 @@ static int64_t smb_transport_size(LpIo *io)
 static int smb_transport_list(const LpUrl *u, const LpSourceOptions *opts,
                               LpStr *out, char *err, size_t errlen)
 {
-    struct smb2_context *smb2 = smb_connect(u, opts, err, errlen);
+    int rc = LP_ERR_IO;
+    struct smb2_context *smb2 = smb_connect(u, opts, err, errlen, &rc);
     if (!smb2) {
-        return LP_ERR_IO;
+        return rc;
     }
     const char *rel = smb_relpath(u->path);
     struct smb2dir *dir = smb2_opendir(smb2, rel);
@@ -267,9 +290,9 @@ static int smb_transport_list(const LpUrl *u, const LpSourceOptions *opts,
             snprintf(err, errlen, "opendir %s failed: %s", u->path[0] ? u->path : "/",
                      smb2_get_error(smb2));
         }
-        int rc = smb_error_rc(smb2, LP_ERR_IO);
+        int dir_rc = smb_error_rc(smb2, LP_ERR_IO);
         smb2_destroy_context(smb2);
-        return rc;
+        return dir_rc;
     }
 
     int cap = 256, count = 0;
@@ -346,24 +369,24 @@ static int smb_transport_probe(const LpUrl *u, const LpSourceOptions *opts,
 
     char connect_err[256];
     connect_err[0] = '\0';
-    struct smb2_context *smb2 = smb_connect(&target, opts, connect_err, sizeof(connect_err));
+    int rc = LP_ERR_AUTH;
+    struct smb2_context *smb2 = smb_connect(&target, opts, connect_err, sizeof(connect_err), &rc);
     if (!smb2) {
         if (err && errlen) {
-            if (strstr(connect_err, "Timeout") || strstr(connect_err, "timed out") ||
-                strstr(connect_err, "cannot reach")) {
+            if (rc == LP_ERR_TIMEOUT || strstr(connect_err, "Timeout") ||
+                strstr(connect_err, "timed out") || strstr(connect_err, "cannot reach")) {
                 snprintf(err, errlen,
                          "cannot reach %s (no SMB answer: wrong address/port, or blocked by a "
                          "firewall)",
                          u->host);
-            } else if (strstr(connect_err, "STATUS_LOGON_FAILURE") ||
-                       strstr(connect_err, "STATUS_ACCESS_DENIED")) {
+            } else if (rc == LP_ERR_AUTH) {
                 snprintf(err, errlen, "login failed on %s: wrong user name or password", u->host);
             } else {
                 snprintf(err, errlen, "%s",
                          connect_err[0] ? connect_err : "authentication failed");
             }
         }
-        return smb_error_rc(NULL, LP_ERR_AUTH);
+        return rc;
     }
     smb2_disconnect_share(smb2);
     smb2_destroy_context(smb2);

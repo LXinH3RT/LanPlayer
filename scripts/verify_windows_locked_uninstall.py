@@ -88,7 +88,7 @@ def listing(directory: Path) -> list[str]:
 
 
 def start_holder(dll: Path, python: str) -> subprocess.Popen:
-    script = Path(os.environ.get("TEMP", ".")) / "lp-unl-holder.py"
+    script = lp.scratch_dir("holders") / "lp-unl-holder.py"
     script.write_text(HOLDER_SOURCE, encoding="utf-8")
     proc = subprocess.Popen([python, str(script), str(dll)],
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -114,11 +114,11 @@ def main() -> int:
     if not setup.exists():
         raise lp.ScriptError(f"missing installer: {setup}")
     scratch = Path(args.scratch) if args.scratch else \
-        Path(os.environ.get("TEMP", ".")) / "lp-locked-uninstall"
+        lp.scratch_dir("lp-locked-uninstall")
     python = lp.find_python()
 
     # Run from %TEMP% so the test never touches dist/.
-    temp = Path(os.environ.get("TEMP", "."))
+    temp = lp.scratch_dir("verify-temp")
     setup_tmp = temp / "lp-locked-unl-setup.exe"
     shutil.copy2(setup, setup_tmp)
 

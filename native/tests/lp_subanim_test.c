@@ -180,6 +180,150 @@ static void test_clip_c_untouched(void)
     }
 }
 
+static void test_clip_inverse(void)
+{
+    LpSubTestAnim a;
+    const char *body = "{\\iclip(10,20,300,400)}text";
+    if (lp_sub_test_parse_anim(body, 0, 1000000, &a) != 0) {
+        fail("clip-inverse", "parser rejected the line");
+        return;
+    }
+    if (!a.clip_on || !approx_eq(a.clip_x1, 10) || !approx_eq(a.clip_y1, 20) ||
+        !approx_eq(a.clip_x2, 300) || !approx_eq(a.clip_y2, 400)) {
+        fail("clip-inverse", "the rectangle coordinates were not all stored");
+    }
+    if (!a.clip_inverse) {
+        fail("clip-inverse", "\\iclip was not marked as an inverse clip");
+    }
+    /* The plain \clip above shares the parser path and must NOT come back
+     * inverted; keep both directions pinned. */
+    const char *plain = "{\\clip(10,20,300,400)}text";
+    LpSubTestAnim b;
+    if (lp_sub_test_parse_anim(plain, 0, 1000000, &b) != 0) {
+        fail("clip-inverse", "parser rejected the plain \\clip line");
+        return;
+    }
+    if (b.clip_inverse) {
+        fail("clip-inverse", "a plain \\clip must not become inverse");
+    }
+}
+
+static void test_italic_not_clip(void)
+{
+    LpSubTestAnim a;
+    /* \iclip used to be read as "\i" + garbage, which switched italic ON and
+     * sent the parenthesis text to the renderer.  Assert the text survives and
+     * the rectangle is what actually got stored. */
+    const char *body = "{\\iclip(0,0,100,100)}still here";
+    if (lp_sub_test_parse_anim(body, 0, 1000000, &a) != 0) {
+        fail("italic-vs-iclip", "parser rejected the line");
+        return;
+    }
+    if (a.nb_runs != 1) {
+        fail("italic-vs-iclip", "the body text was lost around \\iclip");
+    }
+    if (!a.clip_on || !a.clip_inverse) {
+        fail("italic-vs-iclip", "\\iclip did not take the clip path");
+    }
+}
+
+/* --- \fr 旋转 --------------------------------------------------------- */
+
+static void test_fr_shorthand(void)
+{
+    LpSubTestAnim a;
+    const char *body = "{\\fr45}tilted";
+    if (lp_sub_test_parse_anim(body, 0, 1000000, &a) != 0) {
+        fail("fr-shorthand", "parser rejected the line");
+        return;
+    }
+    if (!approx_eq(a.angle, 45)) {
+        fail("fr-shorthand", "\\fr45 did not set the rotation angle");
+    }
+    /* \frz is the long form of the same thing, \fscx is a different tag that
+     * also starts with 'f'; neither may be confused with the other. */
+    LpSubTestAnim b;
+    if (lp_sub_test_parse_anim("{\\frz-30}tilted", 0, 1000000, &b) != 0) {
+        fail("fr-shorthand", "parser rejected the \\frz line");
+        return;
+    }
+    if (!approx_eq(b.angle, -30)) {
+        fail("fr-shorthand", "\\frz-30 did not set the rotation angle");
+    }
+    LpSubTestAnim c;
+    if (lp_sub_test_parse_anim("{\\fscx150}tilted", 0, 1000000, &c) != 0) {
+        fail("fr-shorthand", "parser rejected the \\fscx line");
+        return;
+    }
+    if (!approx_eq(c.angle, 0)) {
+        fail("fr-shorthand", "\\fscx150 must not rotate the text");
+    }
+    /* \frx / \fry tilt out of plane and a 2D layout cannot honour them, so the
+     * angle must stay zero rather than half-applying them. */
+    LpSubTestAnim d;
+    if (lp_sub_test_parse_anim("{\\frx40}tilted", 0, 1000000, &d) != 0) {
+        fail("fr-shorthand", "parser rejected the \\frx line");
+        return;
+    }
+    if (!approx_eq(d.angle, 0)) {
+        fail("fr-shorthand", "\\frx must not feed the in-plane angle");
+    }
+}
+
+/* --- 字幕文本解码 ----------------------------------------------------- */
+
+static void check_decoded(const char *why, const void *raw, size_t len,
+                          const char *want)
+{
+    int charset_ok = 1;
+    char *got = lp_sub_test_decode_text(raw, len, &charset_ok);
+    if (!got) {
+        fail(why, "decode_text returned NULL");
+        return;
+    }
+    if (strcmp(got, want) != 0) {
+        fprintf(stderr, "FAIL [%s] decoded \"%s\", wanted \"%s\"\n", why, got, want);
+        failures++;
+    }
+    if (!charset_ok) {
+        fail(why, "the decoder reported a charset problem on a clean input");
+    }
+    free(got);
+}
+
+static void test_decode_utf16_no_bom(void)
+{
+    /* 无 BOM 的 UTF-16LE：每个 ASCII 字符后面都跟着 0x00。这些 0x00 曾经被
+     * is_valid_utf8() 当成合法字节，整份文件「通过」UTF-8 校验，于是不回落到
+     * UTF-16 分支，解析出 0 条 cue。 */
+    static const uint8_t le[] = {'[', 0, 'S', 0, 'c', 0, 'r', 0, 'i', 0, 'p', 0, 't', 0,
+                                 ' ', 0, 'I', 0, 'n', 0, 'f', 0, 'o', 0, ']', 0};
+    check_decoded("utf16le-no-bom", le, sizeof(le), "[Script Info]");
+
+    /* 同一个编码的 BIG-ENDIAN 变体：0x00 在前面。两个方向都要认对，否则
+     * 只会换一种样子乱码。 */
+    static const uint8_t be[] = {0, '[', 0, 'S', 0, 'c', 0, 'r', 0, 'i', 0, 'p', 0, 't',
+                                 0, ']'};
+    check_decoded("utf16be-no-bom", be, sizeof(be), "[Script]");
+}
+
+static void test_decode_utf16_bom(void)
+{
+    /* 带 BOM 的路径一直是对的，钉住它，免得改启发式时顺手改坏。 */
+    static const uint8_t le_bom[] = {0xFF, 0xFE, 'a', 0, 'b', 0, 'c', 0};
+    check_decoded("utf16le-bom", le_bom, sizeof(le_bom), "abc");
+    static const uint8_t be_bom[] = {0xFE, 0xFF, 0, 'a', 0, 'b', 0, 'c'};
+    check_decoded("utf16be-bom", be_bom, sizeof(be_bom), "abc");
+}
+
+static void test_decode_utf8_untouched(void)
+{
+    /* 普通 UTF-8（含中文）不能被 UTF-16 启发式抢走：偶数长度 + 中文字节里
+     * 0x00 极少，这是负向对照。 */
+    const char *utf8 = "[Script Info]\xE4\xBD\xA0\xE5\xA5\xBD";
+    check_decoded("utf8-passthrough", utf8, strlen(utf8), utf8);
+}
+
 /* --- \p 矢量绘图 ------------------------------------------------------ */
 
 static void test_drawing_path(void)
@@ -372,6 +516,12 @@ int main(void)
     test_anim_inside_t_does_not_leak();
     test_clip_plain();
     test_clip_c_untouched();
+    test_clip_inverse();
+    test_italic_not_clip();
+    test_fr_shorthand();
+    test_decode_utf16_no_bom();
+    test_decode_utf16_bom();
+    test_decode_utf8_untouched();
     test_drawing_path();
     test_drawing_two_subpaths();
     test_drawing_leaves_text_alone();
