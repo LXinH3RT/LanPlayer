@@ -57,11 +57,14 @@ static void *resolve(HMODULE lib, const char *name)
 int main(int argc, char **argv)
 {
     int expect_red = 0;
+    int allow_software = 0;
     const char *video = NULL;
     const char *ffmpeg_root = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--expect-red") == 0) {
             expect_red = 1;
+        } else if (strcmp(argv[i], "--allow-software") == 0) {
+            allow_software = 1;
         } else if (!video) {
             video = argv[i];
         } else if (!ffmpeg_root) {
@@ -70,7 +73,8 @@ int main(int argc, char **argv)
     }
     if (!video) {
         fprintf(stderr,
-                "usage: lp_win32_texture_test.exe <video> [ffmpeg-root] [--expect-red]\n");
+                "usage: lp_win32_texture_test.exe <video> [ffmpeg-root] "
+                "[--expect-red] [--allow-software]\n");
         return 2;
     }
     /* ffmpeg dlls live next to the exe; make sure they are found. */
@@ -202,23 +206,35 @@ int main(int argc, char **argv)
         }
         printf("gpu_ready=%d gpu_samples=%d gpu_serial=%lld->%lld gpu_w=%d\n",
                gpu_ready(), surfaces, (long long)gpu_first, (long long)gpu_last, distinct);
-        if (!gpu_ready()) {
-            printf("FAIL: lp_win32_gpu_ready() is 0, the GPU output never initialised\n");
-            gpu_ok = 0;
-        }
-        if (surfaces < 10) {
-            printf("FAIL: only %d GPU surfaces in 1s, expected the frame rate\n", surfaces);
-            gpu_ok = 0;
-        }
-        if (distinct != width) {
-            printf("FAIL: GPU surface width %d does not match the frame width %d\n", distinct,
-                   width);
-            gpu_ok = 0;
-        }
-        if (gpu_last <= gpu_first) {
-            printf("FAIL: GPU serial did not advance (%lld -> %lld)\n", (long long)gpu_first,
-                   (long long)gpu_last);
-            gpu_ok = 0;
+        /* A runner without a D3D11 video device falls back to the CPU pixel
+         * path on purpose (the DLL logs "no ID3D11VideoDevice ...").  Demanding
+         * GPU surfaces there failed every GitHub windows runner from the day
+         * the job was added, which trains people to ignore a red build.  With
+         * --allow-software the absence of a GPU is a skip; a GPU that is
+         * present but broken still fails, because gpu_ready() would be 1. */
+        int gpu_available = gpu_ready();
+        if (!gpu_available) {
+            if (allow_software) {
+                printf("gpu_skip=1 no D3D11 video device on this host; CPU path asserted\n");
+            } else {
+                printf("FAIL: lp_win32_gpu_ready() is 0, the GPU output never initialised\n");
+                gpu_ok = 0;
+            }
+        } else {
+            if (surfaces < 10) {
+                printf("FAIL: only %d GPU surfaces in 1s, expected the frame rate\n", surfaces);
+                gpu_ok = 0;
+            }
+            if (distinct != width) {
+                printf("FAIL: GPU surface width %d does not match the frame width %d\n", distinct,
+                       width);
+                gpu_ok = 0;
+            }
+            if (gpu_last <= gpu_first) {
+                printf("FAIL: GPU serial did not advance (%lld -> %lld)\n", (long long)gpu_first,
+                       (long long)gpu_last);
+                gpu_ok = 0;
+            }
         }
     }
 

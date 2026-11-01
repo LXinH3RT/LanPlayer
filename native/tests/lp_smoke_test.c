@@ -17,9 +17,6 @@
 #include "lanplayer/lp_log.h"
 #include "lanplayer/lp_player.h"
 
-/* 传输层注册表的内部接口，用来把 scheme 列表验证成行为断言。 */
-#include "source_internal.h"
-
 #if defined(_WIN32)
 #include <windows.h>
 
@@ -186,26 +183,14 @@ int main(int argc, char **argv)
         return 4;
     }
     printf("schemes=%s\n", schemes);
-    /* 列表内容改成行为断言：以前只打印出来，scheme 表被改坏也发现不了。
-     * file:// 在所有构建里都必须可用，且必须被识别成「自定义 IO」。 */
+    /* 注册表的逐条断言在 lp_transport_test 里：那些用例要调内部接口，而这里
+     * 链接的是导出符号受限的共享库。这里只保证列表非空且含 file。 */
     if (!strstr(schemes, "\"file\"")) {
         fprintf(stderr, "schemes is missing \"file\": %s\n", schemes);
         lp_string_free(schemes);
         return 5;
     }
     lp_string_free(schemes);
-    if (lp_transport_find("file") == NULL || lp_transport_custom_io("file") != 1) {
-        fprintf(stderr, "file:// is not registered as a custom-IO transport\n");
-        return 6;
-    }
-    if (lp_transport_find("no-such-scheme") != NULL) {
-        fprintf(stderr, "unknown scheme must not resolve to a transport\n");
-        return 7;
-    }
-    if (lp_transport_default_port("file") != -1) {
-        fprintf(stderr, "file:// must not claim a default port\n");
-        return 8;
-    }
 
     LpPlayer *player = NULL;
     if (lp_player_create(&player) != LP_OK || !player) {

@@ -293,6 +293,12 @@ def main() -> int:
     if not build_test("lp_nal_test.exe", native / "tests" / "lp_nal_test.c", "nal framing test"):
         return 1
 
+    # 传输层注册表：scheme 列表、查表、别名、URL 形状。用内部接口，所以直接
+    # 链内核对象，而不是像 lp_smoke_test 那样过一层 dll 桩。
+    if not build_test("lp_transport_test.exe", native / "tests" / "lp_transport_test.c",
+                      "transport registry test"):
+        return 1
+
     # Loads lanplayer.dll at runtime and drives the texture path, exactly like
     # the Flutter Windows plugin does.  It also compiles the plugin's own
     # BGRA->RGBA header, so a regression in that conversion fails here instead

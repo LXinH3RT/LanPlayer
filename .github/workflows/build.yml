@@ -301,7 +301,7 @@ jobs:
       - name: texture path preflight (loads lanplayer.dll)
         run: |
           python scripts/make_test_media.py
-          build\win-x64\lp_win32_texture_test.exe build\media\clip.mp4 build\win-x64
+          build\win-x64\lp_win32_texture_test.exe build\media\clip.mp4 build\win-x64 --allow-software
       - name: hardware decode preflight (d3d11va when the runner has a GPU)
         run: |
           build\win-x64\lp_hw_decode_test.exe build\media\colortest\red.mp4 --expect-red --allow-software

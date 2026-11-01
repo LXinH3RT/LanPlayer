@@ -423,6 +423,11 @@ def check_texture_colors() -> None:
         problems.append("plugin does not call lp_bgra_to_rgba() from Copy()")
     if test.exists() and "--expect-red" not in test.read_text(encoding="utf-8"):
         problems.append("texture test lost its --expect-red assertion")
+    # 无 GPU 的 runner 上必须能跳过 GPU 段，否则这个 job 永远是红的。
+    # 断言认的是参数解析那一行，不是 usage 文案里的同名字样。
+    if test.exists() and '"--allow-software") == 0' not in test.read_text(encoding="utf-8"):
+        problems.append("texture test lost its --allow-software switch; a runner without a "
+                        "D3D11 device can never pass it again")
 
     cap = ROOT / "scripts" / "capture_screen.py"
     if cap.exists():
@@ -1996,6 +2001,42 @@ def check_nal_behaviour() -> None:
         return
     notes.append("nal framing: length-prefix vs start-code, both conversions "
                  "and the hw profile guard behave as specified")
+
+def check_transport_behaviour() -> None:
+    """Runs the transport registry test when the build exists.
+
+    check_transport_registry() reads the source and proves the shape; this runs
+    the registry itself and proves the answers: an unknown scheme resolves to
+    nothing, smb2:// is the same entry as smb://, file:// has no default port,
+    and the scheme list is derived from the table rather than typed out again.
+    """
+    out_dir = ROOT / "build" / "win-x64"
+    exe = out_dir / "lp_transport_test.exe"
+    build = ROOT / "scripts" / "build_windows.py"
+    source = ROOT / "native" / "tests" / "lp_transport_test.c"
+    if not source.exists():
+        problems.append("native/tests/lp_transport_test.c is gone; the registry would only be "
+                        "checked by reading its source")
+        return
+    if build.exists() and 'build_test("lp_transport_test.exe"' not in build.read_text(encoding="utf-8"):
+        problems.append("scripts/build_windows.py no longer builds lp_transport_test.exe")
+        return
+    # lp_smoke_test 链接共享库，看不到内部符号；断言必须留在这个可执行文件里。
+    smoke = ROOT / "native" / "tests" / "lp_smoke_test.c"
+    if smoke.exists() and "source_internal.h" in smoke.read_text(encoding="utf-8"):
+        problems.append("lp_smoke_test.c includes source_internal.h again; on Linux the shared "
+                        "library hides internal symbols and the test stops linking")
+    if not exe.exists():
+        notes.append("transport registry: not built (scripts/build_windows.py)")
+        return
+    env = dict(os.environ)
+    env["PATH"] = str(out_dir) + os.pathsep + env.get("PATH", "")
+    code, out = run([str(exe)], env=env, cwd=str(out_dir))
+    if code != 0 or "all transport registry cases passed" not in out:
+        problems.append("transport registry test failed:\n" + out.strip()[-1500:])
+        return
+    notes.append("transport registry: lookup, alias, URL shape and the scheme list all come "
+                 "from the one table")
 
 def dart_exe() -> Path | None:
     """Prefer the standalone SDK, fall back to the one bundled with Flutter.
@@ -5075,6 +5116,7 @@ def main() -> int:
     check_apple_wiring()
     check_hw_decode()
     check_nal_behaviour()
+    check_transport_behaviour()
     check_settings_layout()
     check_settings_groups()
     check_local_picker()

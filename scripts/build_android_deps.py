@@ -126,12 +126,21 @@ def build_libsmb2(src: Path, ndk: Path, work: Path, out: Path, abi: str, api: st
     # generate step dies.  Only plain SMB2/SMB3 is needed, so both probes are
     # turned off explicitly.  CMAKE_POLICY_VERSION_MINIMUM covers libsmb2's
     # cmake_minimum_required(2.8.12) being rejected by CMake >= 4.
+    #
+    # CMP0057 is separate and newer: NDK r27's build/cmake/flags.cmake uses
+    #   if("hwaddress" IN_LIST ANDROID_SANITIZE)
+    # but libsmb2 calls cmake_minimum_required(VERSION 3.2), which sets the
+    # policy stack to OLD and makes IN_LIST a plain string argument, so
+    # configure aborts with "Unknown arguments specified" (r26's flags.cmake
+    # has no IN_LIST and never hit this).  CMAKE_POLICY_VERSION_MINIMUM does
+    # not lift that - only an explicit default does.
     lp.run([
         "cmake", "-S", str(src), "-B", str(build),
         f"-DCMAKE_TOOLCHAIN_FILE={ndk / 'build' / 'cmake' / 'android.toolchain.cmake'}",
         f"-DANDROID_ABI={abi}", f"-DANDROID_PLATFORM=android-{api}",
         f"-DCMAKE_INSTALL_PREFIX={out / 'libsmb2' / 'android'}",
         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+        "-DCMAKE_POLICY_DEFAULT_CMP0057=NEW",
         "-DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=TRUE",
         "-DCMAKE_DISABLE_FIND_PACKAGE_GSSAPI=TRUE",
         "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=ON",
