@@ -143,7 +143,10 @@ jobs:
 
   apple:
     name: apple (iOS build only)
-    runs-on: macos-14
+    # macos-14 images were retired on 2026-11-02; jobs on that label are now
+    # cancelled while still queued (runner_name stays empty, steps is []), which
+    # reads like a build failure in the checks UI but never ran a single step.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -171,7 +174,8 @@ jobs:
 
   macos-app:
     name: macos desktop app (flutter + xcode)
-    runs-on: macos-14
+    # Keep in step with the apple job above: macos-14 was retired on 2026-11-02.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2

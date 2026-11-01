@@ -125,6 +125,13 @@ HOST_BUILDS = (
 AGP_MIN_MINOR = 6
 GRADLE_MIN_MINOR = 7
 
+# GitHub retires macOS runner images roughly a year after the OS ships, and a
+# job asking for a retired label is cancelled while it is still queued: it never
+# starts a single step, `runner_name` stays empty, and the run goes red looking
+# exactly like a build break.  macos-14 was retired on 2026-11-02, so anything
+# numbered below 15 is a job that cannot run any more.
+MACOS_MIN_RUNNER_MAJOR = 15
+
 
 def check_build_matrix() -> None:
     """CI builds every host, and the Android toolchain can be upgraded safely.
@@ -142,6 +149,16 @@ def check_build_matrix() -> None:
             if needle not in text:
                 problems.append(f"build.yml never runs `{needle}`; {what} would "
                                 f"stop being built without anyone noticing")
+
+        # A retired macOS image does not fail the build, it cancels the job
+        # before the runner is assigned.  Nothing in the log says so, so the
+        # label itself is what has to be kept current.
+        for m in re.finditer(r"runs-on:\s*macos-(\d+)", text):
+            major = int(m.group(1))
+            if major < MACOS_MIN_RUNNER_MAJOR:
+                problems.append(f"build.yml still asks for macos-{major}; images that "
+                                f"old are retired and the job is cancelled while "
+                                f"queued, so nothing in it ever runs")
 
     settings = APP / "android" / "settings.gradle"
     if not settings.exists():
