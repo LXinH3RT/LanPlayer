@@ -102,7 +102,9 @@ class MainFlutterWindow: NSWindow {
   /// 这里不用改 `styleMask` 的老办法 —— Windows 那套 `WS_POPUP` 搬到 macOS 上
   /// 只会得到一个铺满屏幕但菜单栏还压在顶上的窗口，用户看不出区别。
   private func setWindowFullscreen(_ on: Bool) {
-    if on == styleMask.contains(.fullscreen) {
+    // 成员名是 `.fullScreen`（大写 S）。写成 `.fullscreen` 时 AppKit 里没有
+    // 这个成员，swiftc 报 "type 'NSWindow.StyleMask' has no member 'fullscreen'"。
+    if on == styleMask.contains(.fullScreen) {
       return
     }
     toggleFullScreen(nil)

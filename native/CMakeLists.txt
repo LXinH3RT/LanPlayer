@@ -326,4 +326,15 @@ endif()
 if(NOT LP_NO_TESTS)
     add_executable(lp_smoke_test tests/lp_smoke_test.c)
     target_link_libraries(lp_smoke_test PRIVATE lanplayer)
+    # The test includes source_internal.h, which pulls in player_internal.h and
+    # with it <libavcodec/avcodec.h>.  Those include dirs are PRIVATE on the
+    # library, so they never reach here.  On Linux the system FFmpeg headers
+    # papered over that; on macOS, where FFmpeg only exists as a prebuilt under
+    # third_party, the test failed with "libavcodec/avcodec.h file not found".
+    if(EXISTS ${LP_FFMPEG_ROOT}/include/libavformat/avformat.h)
+        target_include_directories(lp_smoke_test PRIVATE ${LP_FFMPEG_ROOT}/include)
+    endif()
+    if(LP_SMB2_ROOT AND EXISTS ${LP_SMB2_ROOT}/include/smb2/libsmb2.h)
+        target_include_directories(lp_smoke_test PRIVATE ${LP_SMB2_ROOT}/include)
+    endif()
 endif()

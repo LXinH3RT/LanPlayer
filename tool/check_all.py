@@ -129,7 +129,7 @@ GRADLE_MIN_MINOR = 7
 def check_build_matrix() -> None:
     """CI builds every host, and the Android toolchain can be upgraded safely.
 
-    `docs/code-review.md` found the Android side already out of range (AGP 8.1
+    A code review of 0.1.7 found the Android side already out of range (AGP 8.1
     with compileSdk 35, no 16 KB page alignment) and the workflow without a
     macOS desktop job.  Neither failure shows up when only one host is built
     locally, so they are pinned here.
@@ -2969,7 +2969,7 @@ def check_script_encoding() -> None:
 
 
 def check_dead_code() -> None:
-    """Grep-level guard for the P3 clean-up (docs/code-review.md chapter 5).
+    """Grep-level guard for the P3 clean-up (chapter 5 of the 0.1.7 review).
 
     Every item here was a real bug of the same shape: code that looks alive but
     is not wired to anything. None of them crash or print a warning, so the only
@@ -4297,6 +4297,14 @@ def check_apple_wiring() -> None:
         if "result(false)\n\n      default:" in macos_window:
             problems.append("macOS setFullscreen still answers false; the player then "
                             "shows a fullscreen HUD over an unchanged window")
+        # swiftc 不认 `.fullscreen`：NSWindow.StyleMask 的成员是 `.fullScreen`
+        # （大写 S）。写成小写时整份 Runner 编不过 —
+        # "type 'NSWindow.StyleMask' has no member 'fullscreen'" —
+        # 而这条只在 Mac 上真编一次才会暴露，Windows 侧一直没发现。
+        if "styleMask.contains(.fullscreen)" in macos_window:
+            problems.append("MainFlutterWindow.swift compares styleMask against "
+                            ".fullscreen, but AppKit spells the member .fullScreen; "
+                            "swiftc rejects it and the Runner never builds")
 
     # iOS side of the same class of bug.  Xcode 27 (iOS SDK 27) raised its floor to
     # 15.0, so a pod or target left on 13.0 now fails with:
