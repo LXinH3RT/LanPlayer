@@ -66,7 +66,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// Short-lived on-screen readout for gestures ("音量 60%").
   String? _hud;
   Timer? _hudTimer;
-  double _doubleTapX = 0;
 
   /// Which half of the screen the current vertical drag started on: the right
   /// half adjusts volume, the left half dims the picture.
@@ -402,13 +401,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
         'h=${size.height.toStringAsFixed(1)}');
   }
 
-  void _toggleControls() {
-    if (_controls) {
-      _hideTimer?.cancel();
-      setState(() => _controls = false);
-    } else {
-      _showControls();
-    }
+  /// 单击画面：播放 / 暂停（用户 2026-11-01 要求）。
+  ///
+  /// 以前单击是「显示 / 隐藏控制条」，但控制条本身在鼠标静止 2 秒后就会
+  /// 自己收起，这个开关的实际用处只有「手动藏起来」一种；而对一块正在放
+  /// 视频的画面来说，点一下最常见的意图是暂停。所以单击改成播放暂停，
+  /// 顺带把控制条显示出来 —— 按了却看不到任何反馈，用户会以为没点上。
+  void _togglePlayFromTap() {
+    _player.togglePlay();
+    _showHud(_player.isPlaying ? '播放' : '暂停');
+    _showControls();
   }
 
   /// 鼠标只要在画面上移动就重新显示控件，并重新开始 2 秒倒计时；
@@ -886,8 +888,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           onPointerSignal: _onPointerSignal,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: _toggleControls,
-            onDoubleTapDown: (d) => _doubleTapX = d.localPosition.dx,
+            onTap: _togglePlayFromTap,
             onDoubleTap: _handleDoubleTap,
             onLongPressStart: (_) => _beginSpeedBoost(),
             onLongPressEnd: (_) => _endSpeedBoost(),
@@ -1022,24 +1023,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_hud != null) setState(() => _hud = null);
   }
 
-  /// Double tap: left third rewinds 10 s, right third forwards 10 s, the middle
-  /// keeps the classic play/pause toggle.
+  /// Double tap: 进 / 退全屏（用户 2026-11-01 要求）。
+  ///
+  /// 以前双击按左中右三分之一分成快退 / 播放暂停 / 快进三种，同一块画面上
+  /// 出现三个互不相干的结果，点错位置的代价是一次意料之外的跳转。现在
+  /// 双击只做全屏切换，播放暂停挪到单击（见 [_togglePlayFromTap]），快进
+  /// 快退交给方向键与播放页按钮。
   void _handleDoubleTap() {
-    final width = MediaQuery.sizeOf(context).width;
-    final x = _doubleTapX;
-    if (x > 0 && x < width / 3) {
-      _player.seekBy(-10 * Duration.microsecondsPerSecond);
-      _showHud('« 10 秒');
-      _showControls();
-    } else if (x > width * 2 / 3) {
-      _player.seekBy(10 * Duration.microsecondsPerSecond);
-      _showHud('10 秒 »');
-      _showControls();
-    } else {
-      _player.togglePlay();
-      _showHud(_player.isPlaying ? '播放' : '暂停');
-      _showControls();
-    }
+    _toggleFullscreen();
+    _showControls();
   }
 
   void _beginVerticalDrag(DragStartDetails d) {
@@ -1199,6 +1191,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       case ShortcutAction.subtitleLater:
         _shiftSubtitle(100);
         return true;
+      case ShortcutAction.subtitleReset:
+        _resetSubtitleDelay();
+        return true;
       case ShortcutAction.stats:
         setState(() => _showStats = !_showStats);
         _player.wantsStats = _showStats;
@@ -1231,6 +1226,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _subtitleDelay += deltaMs;
     _player.setSubtitleDelay(_subtitleDelay);
     _showHud('字幕 ${(_subtitleDelay / 1000).toStringAsFixed(1)}s');
+  }
+
+  /// 字幕复位：把「提前 / 延后」累计出来的偏移一起清零。
+  ///
+  /// 字幕错位多半是靠「按几下提前、再按几下延后」边看边试出来的，试完
+  /// 总要有个一口气回到 0 的出口。这里连已经清零的情况也照样打 HUD，
+  /// 否则按下去没反应，用户会怀疑这颗键没绑上。
+  void _resetSubtitleDelay() {
+    _subtitleDelay = 0;
+    _player.setSubtitleDelay(0);
+    _showHud('字幕 0.0s');
   }
 
   void _toggleFullscreen() {

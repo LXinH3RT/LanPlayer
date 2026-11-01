@@ -2671,13 +2671,24 @@ def check_player_layout() -> None:
         main_dart = ROOT / "app" / "lib" / "main.dart"
         if main_dart.exists():
             md = main_dart.read_text(encoding="utf-8")
-            if "themeMode: ThemeMode.system" not in md:
-                problems.append("main.dart must hand the choice to the system "
-                                "(themeMode: ThemeMode.system); otherwise the "
-                                "light theme is built and never used")
+            # 外观可选（用户 2026-11-01）：默认黑、可选白或跟随系统。主入口
+            # 要订阅 ThemeController，把用户选的那一档交给 MaterialApp；写死
+            # ThemeMode.system 等于又把选项吞回去了。
+            if "ThemeController.toThemeMode(" not in md:
+                problems.append("main.dart must derive themeMode from "
+                                "ThemeController.toThemeMode(); a fixed "
+                                "ThemeMode would ignore the appearance setting")
+            if "ValueListenableBuilder<AppThemeMode>" not in md:
+                problems.append("main.dart must rebuild MaterialApp when the "
+                                "appearance setting changes "
+                                "(ValueListenableBuilder<AppThemeMode>)")
             if "darkTheme:" not in md:
                 problems.append("main.dart must set darkTheme as well as theme; "
                                 "one of the two is always missing without it")
+            if "ThemeController.instance.apply(" not in md:
+                problems.append("main.dart must seed the controller from the "
+                                "saved settings during boot; without it the "
+                                "window flashes the default theme first")
 
     # 界面字体必须全局统一：漏一处写死的 monospace 就会在设置/统计里冒出
     # 一套完全不同的字形（用户报的是「音轨」「关闭」字体不一致）。等宽数字
@@ -4757,6 +4768,155 @@ def check_settings_layout() -> None:
                  "one pane, both typed from theme.textTheme.titleMedium")
 
 
+def check_settings_groups() -> None:
+    """Guard the 2026-11-01 rearrangement of the settings tabs.
+
+    Four things the user asked for, each with a failure mode that the widget
+    tests cannot see:
+      * 外观 must be a real setting (persisted, applied immediately), not a
+        hard-coded ThemeMode in main.dart;
+      * 字幕大小 and 字幕延迟 are discrete ladders now — a Slider can produce
+        1.37, which no DropdownButton can select, so the model has to snap;
+      * 进度 / 连播 / 默认倍速 answer one question ("how does this file
+        play"), so they live in one 播放 tab and the old tabs are gone;
+      * 「秒」 moved outside the field because suffixText shrinks the box.
+    """
+    screen = ROOT / "app" / "lib" / "ui" / "settings_screen.dart"
+    model = DATA / "playback_settings.dart"
+    shortcuts = DATA / "shortcuts.dart"
+    for f in (screen, model, shortcuts):
+        if not f.exists():
+            problems.append(f"{f.relative_to(ROOT).as_posix()} is missing")
+            return
+    st = screen.read_text(encoding="utf-8")
+    mt = model.read_text(encoding="utf-8")
+    sl = shortcuts.read_text(encoding="utf-8")
+
+    # --- 外观 ---
+    if "appearance('外观')" not in st:
+        problems.append("settings_screen.dart lost the 外观 tab; there is no "
+                        "entry point for choosing a theme any more")
+    if "RadioListTile<AppThemeMode>" not in st:
+        problems.append("settings_screen.dart must offer the three appearance "
+                        "choices (RadioListTile<AppThemeMode>)")
+    if "ThemeController.instance.apply(" not in st:
+        problems.append("settings_screen.dart must apply the theme immediately; "
+                        "choosing 白色 and seeing no change equals no choice")
+    if "enum AppThemeMode" not in mt:
+        problems.append("playback_settings.dart lost AppThemeMode")
+    # 默认黑色是用户点名的，不是随手取的；把它钉住免得以后又改回 system。
+    if "defaultMode = AppThemeMode.dark" not in mt:
+        problems.append("the appearance default must stay dark "
+                        "(AppThemeMode.defaultMode = AppThemeMode.dark)")
+    if "'theme_mode': themeMode.id" not in mt:
+        problems.append("theme_mode must be persisted; without it the choice "
+                        "resets on every launch")
+
+    # --- 字幕页的两个下拉 ---
+    for key, kind in (("settings-subtitle-scale", "double"),
+                      ("settings-subtitle-delay", "int")):
+        if f"DropdownButton<{kind}>(" not in st or key not in st:
+            problems.append(f"settings_screen.dart: 字幕 {key} must be a "
+                            f"DropdownButton<{kind}>, not a slider")
+    if "subtitleScaleSteps" not in mt or "subtitleDelaySteps" not in mt:
+        problems.append("playback_settings.dart lost the subtitle ladder "
+                        "tables; the dropdown items would come from nowhere")
+    for fn in ("clampSubtitleScale", "clampSubtitleDelay"):
+        if f"static " not in mt or f"{fn}(Object? raw)" not in mt:
+            problems.append(f"playback_settings.dart lost {fn}; a settings.json "
+                            f"written by the slider build would not be "
+                            f"selectable and DropdownButton would throw")
+        if f"{fn}(" not in st:
+            problems.append(f"settings_screen.dart must pass the stored value "
+                            f"through {fn}() before handing it to the dropdown")
+    # 字幕页不能再出现滑杆。
+    subtitle_start = st.find("case SettingsTab.subtitle:")
+    if subtitle_start >= 0:
+        body = st[subtitle_start:subtitle_start + 4000]
+        if "Slider(" in body:
+            problems.append("the 字幕 pane still builds a Slider; the two "
+                            "ladders were supposed to become dropdowns")
+
+    # --- 合并出来的「播放」页 ---
+    if "playback('播放')" not in st:
+        problems.append("settings_screen.dart lost the merged 播放 tab")
+    for gone in ("progress('进度')", "autoplay('连播')"):
+        if gone in st:
+            problems.append(f"settings_screen.dart still has a separate "
+                            f"{gone[gone.find('(') + 1:-2]} tab; 进度、连播与"
+                            f"默认倍速 answer one question and must stay "
+                            f"together in 播放")
+    playback_start = st.find("case SettingsTab.playback:")
+    if playback_start < 0:
+        problems.append("settings_screen.dart no longer builds the 播放 pane")
+    else:
+        body = st[playback_start:playback_start + 6000]
+        for needle, what in (
+            ("快进 / 快退步长", "the seek step row"),
+            ("默认倍速", "the default speed row (moved out of 音频)"),
+            ("当前目录自动连播", "the auto-next switch (came from 连播)"),
+            ("记忆上次播放位置", "the resume switch (came from 连播)"),
+        ):
+            if needle not in body:
+                problems.append(f"the 播放 pane lost {what}")
+    audio_start = st.find("case SettingsTab.audio:")
+    if audio_start >= 0:
+        audio_body = st[audio_start:st.find("case SettingsTab.subtitle:")]
+        if "默认倍速" in audio_body:
+            problems.append("the 音频 pane still carries 默认倍速; it now lives "
+                            "in 播放")
+
+    # --- 「秒」在输入框外 ---
+    if "suffix: '秒'" in st:
+        problems.append("settings_screen.dart writes 秒 into the field suffix "
+                        "again; suffixText shrinks the box and breaks the "
+                        "baseline it sits on")
+    if "Text('秒'" not in st:
+        problems.append("settings_screen.dart no longer renders 秒 as its own "
+                        "Text next to the seek step field")
+
+    # --- 快捷键默认键位与手势 ---
+    for action, key in (
+        ("speedUp", "keyC"),
+        ("speedDown", "keyZ"),
+        ("speedReset", "keyX"),
+        ("fullscreen", "enter"),
+        ("subtitleEarlier", "comma"),
+        ("subtitleLater", "slash"),
+        ("subtitleReset", "period"),
+        ("stats", "tab"),
+    ):
+        if not re.search(rf"{action}\([^)]*LogicalKeyboardKey\.{key}\)", sl):
+            problems.append(f"shortcuts.dart: {action} no longer defaults to "
+                            f"{key}; the keymap the user specified is gone")
+    if "subtitleReset('subtitle_reset'" not in sl:
+        problems.append("shortcuts.dart lost the 字幕复位 action; there would "
+                        "be no way to clear the accumulated subtitle offset")
+    if "_resetSubtitleDelay() {" not in (
+            ROOT / "app" / "lib" / "ui" / "player_screen.dart").read_text(
+                encoding="utf-8"):
+        problems.append("player_screen.dart lost _resetSubtitleDelay; the bound "
+                        "key would fire into nothing")
+    if "出厂" in sl or "出厂" in st or "出厂" in (
+            ROOT / "app" / "lib" / "ui" / "widgets" / "shortcut_section.dart"
+    ).read_text(encoding="utf-8"):
+        problems.append("the shortcut section still says 出厂设置; the user "
+                        "asked for 默认设置 throughout")
+    if "PointerGesture('单击画面'" not in sl or "播放 / 暂停" not in sl:
+        problems.append("shortcuts.dart: 单击画面 must map to 播放 / 暂停")
+    for gone in ("双击画面左侧三分之一", "双击画面右侧三分之一"):
+        if gone in sl:
+            problems.append(f"shortcuts.dart still lists {gone}; the split "
+                            f"double-tap was removed")
+    if "PointerGesture('双击画面'" not in sl:
+        problems.append("shortcuts.dart must list 双击画面 as the fullscreen "
+                        "gesture")
+
+    notes.append("settings groups: 外观 drives the theme, 字幕 ladders snap, "
+                 "进度 / 连播 / 默认倍速 share one 播放 pane, and the default "
+                 "keymap is the one the user dictated")
+
+
 def check_local_picker() -> None:
     """Guard the local file/folder picker and the wide-character file layer.
 
@@ -4894,6 +5054,7 @@ def main() -> int:
     check_hw_decode()
     check_nal_behaviour()
     check_settings_layout()
+    check_settings_groups()
     check_local_picker()
     check_splash()
     check_ui_thread()

@@ -12,13 +12,14 @@ void main() {
       }
     });
 
-    test('出厂绑定时没有两个动作抢同一个键', () {
+    test('默认绑定时没有两个动作抢同一个键', () {
       final seen = <LogicalKeyboardKey, ShortcutAction>{};
       for (final a in ShortcutAction.values) {
         final key = ShortcutBindings.empty.keyFor(a);
         if (key == null) continue;
         expect(seen.containsKey(key), isFalse,
-            reason: '${a.id} 与 ${seen[key]?.id} 都占着 ${ShortcutBindings.label(key)}');
+            reason:
+                '${a.id} 与 ${seen[key]?.id} 都占着 ${ShortcutBindings.label(key)}');
         seen[key] = a;
       }
     });
@@ -27,14 +28,25 @@ void main() {
       const b = ShortcutBindings.empty;
       expect(b.keyFor(ShortcutAction.playPause), LogicalKeyboardKey.space);
       expect(b.keyFor(ShortcutAction.seekBack), LogicalKeyboardKey.arrowLeft);
-      expect(b.keyFor(ShortcutAction.seekForward), LogicalKeyboardKey.arrowRight);
+      expect(
+          b.keyFor(ShortcutAction.seekForward), LogicalKeyboardKey.arrowRight);
     });
 
-    test('倍速三个动作出厂不绑键（键位留给用户）', () {
+    test('倍速三个动作默认绑在 C / Z / X', () {
       const b = ShortcutBindings.empty;
-      expect(b.keyFor(ShortcutAction.speedUp), isNull);
-      expect(b.keyFor(ShortcutAction.speedDown), isNull);
-      expect(b.keyFor(ShortcutAction.speedReset), isNull);
+      expect(b.keyFor(ShortcutAction.speedUp), LogicalKeyboardKey.keyC);
+      expect(b.keyFor(ShortcutAction.speedDown), LogicalKeyboardKey.keyZ);
+      expect(b.keyFor(ShortcutAction.speedReset), LogicalKeyboardKey.keyX);
+    });
+
+    test('字幕三件套默认是「，」「/」「。」，全屏是回车，统计是 Tab', () {
+      const b = ShortcutBindings.empty;
+      expect(
+          b.keyFor(ShortcutAction.subtitleEarlier), LogicalKeyboardKey.comma);
+      expect(b.keyFor(ShortcutAction.subtitleLater), LogicalKeyboardKey.slash);
+      expect(b.keyFor(ShortcutAction.subtitleReset), LogicalKeyboardKey.period);
+      expect(b.keyFor(ShortcutAction.fullscreen), LogicalKeyboardKey.enter);
+      expect(b.keyFor(ShortcutAction.stats), LogicalKeyboardKey.tab);
     });
 
     test('键的显示名：空格 / 方向键 / 字母都有可读写法', () {
@@ -54,30 +66,29 @@ void main() {
 
     test('抢占别人的键时，原主人被解绑（不是两个动作共用一个键）', () {
       final b = ShortcutBindings.empty
-          .bind(ShortcutAction.seekBack, LogicalKeyboardKey.keyS);
-      // keyS 原本属于「解码统计」。
-      expect(b.keyFor(ShortcutAction.seekBack), LogicalKeyboardKey.keyS);
-      expect(b.keyFor(ShortcutAction.stats), isNull);
+          .bind(ShortcutAction.seekBack, LogicalKeyboardKey.keyC);
+      // keyC 默认属于「加速一档」。
+      expect(b.keyFor(ShortcutAction.seekBack), LogicalKeyboardKey.keyC);
+      expect(b.keyFor(ShortcutAction.speedUp), isNull);
     });
 
     test('conflictFor 能提前问出会抢走谁', () {
       final hit = ShortcutBindings.empty
-          .conflictFor(ShortcutAction.seekBack, LogicalKeyboardKey.keyS);
-      expect(hit, ShortcutAction.stats);
+          .conflictFor(ShortcutAction.seekBack, LogicalKeyboardKey.keyC);
+      expect(hit, ShortcutAction.speedUp);
       final none = ShortcutBindings.empty
           .conflictFor(ShortcutAction.seekBack, LogicalKeyboardKey.keyP);
       expect(none, isNull);
     });
 
     test('解绑（传 null）与「没配置」是两回事', () {
-      final b = ShortcutBindings.empty
-          .bind(ShortcutAction.playPause, null);
+      final b = ShortcutBindings.empty.bind(ShortcutAction.playPause, null);
       expect(b.keyFor(ShortcutAction.playPause), isNull);
       expect(b.isDefault, isFalse);
       expect(b.toJson(), {'play_pause': null});
     });
 
-    test('单独重置一个动作会回到出厂键', () {
+    test('单独重置一个动作会回到默认键', () {
       final b = ShortcutBindings.empty
           .bind(ShortcutAction.playPause, LogicalKeyboardKey.keyP);
       final r = b.resetOne(ShortcutAction.playPause);
@@ -106,8 +117,8 @@ void main() {
           .bind(ShortcutAction.speedUp, LogicalKeyboardKey.bracketRight);
       final back = ShortcutBindings.fromJson(b.toJson());
       expect(back.keyFor(ShortcutAction.playPause), LogicalKeyboardKey.keyP);
-      expect(back.keyFor(ShortcutAction.speedUp),
-          LogicalKeyboardKey.bracketRight);
+      expect(
+          back.keyFor(ShortcutAction.speedUp), LogicalKeyboardKey.bracketRight);
     });
 
     test('解绑能存能读', () {
@@ -125,7 +136,7 @@ void main() {
       expect(back.keyFor(ShortcutAction.mute), LogicalKeyboardKey.keyN);
     });
 
-    test('settings.json 里没有 shortcuts 字段时用的是出厂表', () {
+    test('settings.json 里没有 shortcuts 字段时用的是默认表', () {
       final s = PlaybackSettings.fromJson({'version': 1});
       expect(s.shortcuts.isDefault, isTrue);
       expect(s.shortcuts.keyFor(ShortcutAction.playPause),
@@ -134,10 +145,11 @@ void main() {
 
     test('PlaybackSettings 往返后绑定还在', () {
       final s = PlaybackSettings()
-        ..shortcuts =
-            ShortcutBindings.empty.bind(ShortcutAction.mute, LogicalKeyboardKey.keyN);
+        ..shortcuts = ShortcutBindings.empty
+            .bind(ShortcutAction.mute, LogicalKeyboardKey.keyN);
       final back = PlaybackSettings.fromJson(s.toJson());
-      expect(back.shortcuts.keyFor(ShortcutAction.mute), LogicalKeyboardKey.keyN);
+      expect(
+          back.shortcuts.keyFor(ShortcutAction.mute), LogicalKeyboardKey.keyN);
     });
 
     test('没改过时不往 settings.json 里塞空对象', () {
@@ -155,12 +167,25 @@ void main() {
       }
     });
 
-    test('双击左右三分之一与长按倍速都在列表里', () {
-      final all = PointerGesture.all.map((g) => g.gesture).join('|');
-      expect(all.contains('双击画面左侧三分之一'), isTrue);
-      expect(all.contains('双击画面右侧三分之一'), isTrue);
-      expect(all.contains('长按画面'), isTrue);
-      expect(all.contains('滚轮'), isTrue);
+    test('单击播放暂停、双击全屏，左右三分之二的快进退已取消', () {
+      final byGesture = {
+        for (final g in PointerGesture.all) g.gesture: g.effect,
+      };
+      expect(byGesture['单击画面'], '播放 / 暂停');
+      expect(byGesture['双击画面'], '进入 / 退出全屏');
+      // 分区双击被用户点名删掉了：同一块画面上出现三个互不相干的结果，
+      // 点错位置的代价是一次意料之外的跳转。
+      expect(byGesture.containsKey('双击画面左侧三分之一'), isFalse);
+      expect(byGesture.containsKey('双击画面右侧三分之一'), isFalse);
+      expect(byGesture.containsKey('双击画面中间三分之一'), isFalse);
+      expect(byGesture.containsKey('长按画面'), isTrue);
+      expect(byGesture.containsKey('滚轮'), isTrue);
+    });
+
+    test('「单击画面」的说明里没有「显示 / 隐藏控制条」这种旧说法', () {
+      final all =
+          PointerGesture.all.map((g) => '$g.gesture $g.effect').join('|');
+      expect(all.contains('显示 / 隐藏控制条'), isFalse);
     });
   });
 }

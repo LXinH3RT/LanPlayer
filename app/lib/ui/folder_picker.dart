@@ -56,7 +56,7 @@ class _LocalPickerDialog extends StatefulWidget {
   final LocalLister? lister;
 
   /// 用户在设置里把「返回上一级」改成了别的键时传进来；
-  /// 不传就用出厂默认的 Backspace。
+  /// 不传就用默认的 Backspace。
   final LogicalKeyboardKey? backKey;
 
   @override

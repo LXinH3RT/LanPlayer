@@ -1,14 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lanplayer/data/models.dart' show AppThemeMode;
 import 'package:lanplayer/main.dart';
 import 'package:lanplayer/ui/theme.dart';
 
-/// 深浅色跟随系统（评审 4.6）。
+/// 深浅色与「外观」设置（评审 4.6、用户 2026-11-01 的要求）。
 ///
-/// 在此之前 `LanPlayerApp` 只给了 `theme:`，等于把界面钉死在深色：系统设成
-/// 浅色的用户看到的仍是深色底，而 README 承诺「深浅色跟随系统」。这里钉住
-/// 三件事：两套主题都真的给出来了、`themeMode` 交给系统、浅色主题的底色是
-/// 浅的（不是把深色底换个名字）。
+/// 此前 `LanPlayerApp` 的 `themeMode` 固定是 `ThemeMode.system`：用户想要
+/// 「一直黑」或「一直白」都没有入口。现在默认黑，可选白或跟随系统，切换
+/// 立刻生效。这里钉住三件事：两套主题都真的给出来了、默认是黑、切换真的
+/// 换到对应的那套。
 void main() {
   group('LanPlayerTheme 的深浅两套', () {
     test('浅色主题的底色是浅的，深色主题的底色是深的', () {
@@ -46,31 +47,52 @@ void main() {
     });
   });
 
-  testWidgets('应用把 themeMode 交给系统，深色系统下取到深色主题', (tester) async {
-    tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
-    addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+  testWidgets('默认是黑色主题，不是跟着系统走', (tester) async {
+    // 用户 2026-11-01 要求「默认黑色」：系统是浅色时也先给黑底，
+    // 这是播放器，暗底看片更舒服，也让首屏观感稳定。
+    addTearDown(() => ThemeController.instance.reset());
 
     await tester.pumpWidget(const LanPlayerApp());
     await tester.pump();
 
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.themeMode, ThemeMode.system, reason: '交给系统才知道用户选了浅色');
+    expect(app.themeMode, ThemeMode.dark);
     expect(app.theme?.brightness, Brightness.light, reason: 'theme 是浅色那套');
     expect(app.darkTheme?.brightness, Brightness.dark);
 
     final theme = Theme.of(tester.element(find.byType(Scaffold).first));
-    expect(theme.brightness, Brightness.dark, reason: '深色系统应当用 darkTheme');
+    expect(theme.brightness, Brightness.dark);
   });
 
-  testWidgets('浅色系统下取到浅色主题', (tester) async {
+  testWidgets('改成浅色后整个应用立刻变亮，改回跟随系统后听系统的', (tester) async {
+    addTearDown(() => ThemeController.instance.reset());
     tester.platformDispatcher.platformBrightnessTestValue = Brightness.light;
     addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
 
     await tester.pumpWidget(const LanPlayerApp());
-    await tester.pump();
+    await tester.pumpAndSettle();
 
-    final theme = Theme.of(tester.element(find.byType(Scaffold).first));
-    expect(theme.brightness, Brightness.light);
-    expect(theme.scaffoldBackgroundColor.computeLuminance(), greaterThan(0.5));
+    ThemeController.instance.apply(AppThemeMode.light);
+    await tester.pumpAndSettle();
+    expect(
+      Theme.of(tester.element(find.byType(Scaffold).first)).brightness,
+      Brightness.light,
+    );
+    expect(
+      Theme.of(tester.element(find.byType(Scaffold).first))
+          .scaffoldBackgroundColor
+          .computeLuminance(),
+      greaterThan(0.5),
+    );
+
+    // 跟随系统时既不该钉死浅色，也不该钉死深色。
+    ThemeController.instance.apply(AppThemeMode.system);
+    await tester.pumpAndSettle();
+    final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
+    expect(app.themeMode, ThemeMode.system, reason: '交给系统才知道用户选了浅色');
+    expect(
+      Theme.of(tester.element(find.byType(Scaffold).first)).brightness,
+      Brightness.light,
+    );
   });
 }

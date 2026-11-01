@@ -52,6 +52,9 @@ Future<void> _boot() async {
     SettingsStore.instance.load(),
     ProgressStore.instance.load(),
   ]);
+  // 外观设置读盘之后立刻套用：否则启动那一下会先按默认黑色画出来，
+  // 选了「白色」的用户会看到界面闪一次黑再变白。
+  ThemeController.instance.apply(SettingsStore.instance.value.themeMode);
   // ignore: avoid_print
   print("LanPlayer loaded: servers=${ServerStore.instance.servers.length} "
       "folders=${LocalFolderStore.instance.folders.length}");
@@ -230,30 +233,35 @@ class LanPlayerApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      navigatorKey: appNavigatorKey,
-      title: 'LanPlayer',
-      debugShowCheckedModeBanner: false,
-      // 深浅色跟随系统：两套都给，交给 MaterialApp 按系统设置挑。只有
-      // `theme:` 的话，系统设成浅色的用户会看到一个写死深色的界面。
-      theme: LanPlayerTheme.light(),
-      darkTheme: LanPlayerTheme.dark(),
-      themeMode: ThemeMode.system,
-      home: SplashGate(
-        boot: boot ?? () async {},
-        enabled: boot != null && _splashEnabled,
-        onReady: _runProbes,
-        builder: (_) => const HomeScreen(),
+    // 外观设置改了要立刻生效，所以根节点订阅主题控制器：只有 MaterialApp
+    // 这一层跟着换主题，播放页、目录页不会被牵连重建。
+    return ValueListenableBuilder<AppThemeMode>(
+      valueListenable: ThemeController.instance,
+      builder: (context, mode, _) => MaterialApp(
+        navigatorKey: appNavigatorKey,
+        title: 'LanPlayer',
+        debugShowCheckedModeBanner: false,
+        // 深浅色两套都给，具体用哪一套由「设置 → 外观」决定：
+        // 默认黑色（深色是播放主场景），也可以选白色或跟随系统。
+        theme: LanPlayerTheme.light(),
+        darkTheme: LanPlayerTheme.dark(),
+        themeMode: ThemeController.toThemeMode(mode),
+        home: SplashGate(
+          boot: boot ?? () async {},
+          enabled: boot != null && _splashEnabled,
+          onReady: _runProbes,
+          builder: (_) => const HomeScreen(),
+        ),
+        builder: (context, child) {
+          // Subtitles must not be pushed off screen by huge accessibility fonts.
+          final scaler =
+              MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 1.3);
+          return MediaQuery(
+            data: MediaQuery.of(context).copyWith(textScaler: scaler),
+            child: child ?? const SizedBox.shrink(),
+          );
+        },
       ),
-      builder: (context, child) {
-        // Subtitles must not be pushed off screen by huge accessibility fonts.
-        final scaler =
-            MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 1.3);
-        return MediaQuery(
-          data: MediaQuery.of(context).copyWith(textScaler: scaler),
-          child: child ?? const SizedBox.shrink(),
-        );
-      },
     );
   }
 }

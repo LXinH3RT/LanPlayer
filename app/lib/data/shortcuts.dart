@@ -18,18 +18,24 @@ enum ShortcutAction {
   volumeDown(
       'volume_down', '音量减小', ShortcutGroup.audio, LogicalKeyboardKey.arrowDown),
   mute('mute', '静音 / 取消静音', ShortcutGroup.audio, LogicalKeyboardKey.keyM),
-  speedUp('speed_up', '加速一档', ShortcutGroup.playback, null),
-  speedDown('speed_down', '减速一档', ShortcutGroup.playback, null),
-  speedReset('speed_reset', '恢复 1.0 倍速', ShortcutGroup.playback, null),
-  fullscreen(
-      'fullscreen', '全屏 / 退出全屏', ShortcutGroup.window, LogicalKeyboardKey.keyF),
+  speedUp('speed_up', '加速一档', ShortcutGroup.playback, LogicalKeyboardKey.keyC),
+  speedDown(
+      'speed_down', '减速一档', ShortcutGroup.playback, LogicalKeyboardKey.keyZ),
+  speedReset('speed_reset', '恢复 1.0 倍速', ShortcutGroup.playback,
+      LogicalKeyboardKey.keyX),
+  fullscreen('fullscreen', '全屏 / 退出全屏', ShortcutGroup.window,
+      LogicalKeyboardKey.enter),
   escape(
       'escape', '退出全屏，否则返回', ShortcutGroup.window, LogicalKeyboardKey.escape),
   subtitleEarlier('subtitle_earlier', '字幕提前 0.1 秒', ShortcutGroup.subtitle,
-      LogicalKeyboardKey.bracketLeft),
+      LogicalKeyboardKey.comma),
   subtitleLater('subtitle_later', '字幕延后 0.1 秒', ShortcutGroup.subtitle,
-      LogicalKeyboardKey.bracketRight),
-  stats('stats', '显示 / 隐藏解码统计', ShortcutGroup.debug, LogicalKeyboardKey.keyS),
+      LogicalKeyboardKey.slash),
+  // 复位就是把提前/延后累计的时间一起清零。字幕错位经常是靠「按几下提前
+  // 再按几下延后」试出来的，试完总得有个一键回到 0 的出口。
+  subtitleReset('subtitle_reset', '字幕复位（清空提前 / 延后）', ShortcutGroup.subtitle,
+      LogicalKeyboardKey.period),
+  stats('stats', '显示 / 隐藏解码统计', ShortcutGroup.debug, LogicalKeyboardKey.tab),
   back(
       'back', '返回上一级（浏览页）', ShortcutGroup.window, LogicalKeyboardKey.backspace);
 
@@ -41,7 +47,7 @@ enum ShortcutAction {
   final String label;
   final ShortcutGroup group;
 
-  /// 默认键。`null` = 出厂不绑定，等用户自己指定。
+  /// 默认键。`null` = 默认不绑定，等用户自己指定。
   final LogicalKeyboardKey? defaultKey;
 
   static ShortcutAction? byId(String id) {
@@ -196,20 +202,24 @@ class ShortcutBindings {
 }
 
 /// 鼠标侧的手势说明。这些不是「键」，改不了绑定，但用户要求把它们列出来，
-/// 否则界面上看不见、也不知道双击左右三分之一是快进退。
+/// 否则界面上看不见、也不知道双击是干什么的。
+///
+/// 2026-11-01 按用户要求调整：单击改为播放 / 暂停，双击改为进 / 退全屏，
+/// 原来按「左侧三分之一 / 右侧三分之一」分区快退快进的那两条取消 —— 分区
+/// 判定让同一块画面上出现了三种互不相干的结果，用户点错位置的代价是一次
+/// 意料之外的跳转。
 class PointerGesture {
   const PointerGesture(this.gesture, this.effect);
   final String gesture;
   final String effect;
 
   static const List<PointerGesture> all = [
-    PointerGesture('单击画面', '显示 / 隐藏控制条'),
-    PointerGesture('双击画面左侧三分之一', '快退（步长见「进度」段）'),
-    PointerGesture('双击画面中间三分之一', '播放 / 暂停'),
-    PointerGesture('双击画面右侧三分之一', '快进（步长见「进度」段）'),
+    PointerGesture('单击画面', '播放 / 暂停'),
+    PointerGesture('双击画面', '进入 / 退出全屏'),
     PointerGesture('长按画面', '临时 2.0 倍速，松手恢复'),
     PointerGesture('左半边上下拖动', '调节亮度'),
     PointerGesture('右半边上下拖动', '调节音量'),
+    PointerGesture('横向拖动', '拖动进度'),
     PointerGesture('滚轮', '调节音量'),
     PointerGesture('点击底栏音量数字', '静音 / 取消静音'),
     PointerGesture('长按底栏音量数字', '打开音量面板'),

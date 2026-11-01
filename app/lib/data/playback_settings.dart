@@ -16,6 +16,34 @@ PlayerState playerStateFromInt(int v) => v >= 0 && v < PlayerState.values.length
     ? PlayerState.values[v]
     : PlayerState.idle;
 
+/// 界面配色。`system` 跟随操作系统的深浅色设置。
+///
+/// 存进 settings.json 的是 [id] 而不是枚举名：枚举名是重构就会变的东西，
+/// 而用户的偏好不该跟着代码改名一起丢。
+enum AppThemeMode {
+  system('system', '跟随系统'),
+  dark('dark', '黑色'),
+  light('light', '白色');
+
+  const AppThemeMode(this.id, this.label);
+
+  final String id;
+  final String label;
+
+  static AppThemeMode fromId(Object? raw,
+      [AppThemeMode fallback = defaultMode]) {
+    if (raw is String) {
+      for (final m in AppThemeMode.values) {
+        if (m.id == raw) return m;
+      }
+    }
+    return fallback;
+  }
+
+  /// 默认是黑色：播放页本来就要把界面消失掉，深色是主场景。
+  static const AppThemeMode defaultMode = AppThemeMode.dark;
+}
+
 /// User facing playback preferences, persisted as one JSON blob.
 class PlaybackSettings {
   bool hardwareDecoding;
@@ -48,7 +76,86 @@ class PlaybackSettings {
   static const int seekStepMax = 10;
   static const int seekStepDefault = 10;
 
-  /// 键盘快捷键的用户绑定。只存与出厂不同项，见 `shortcuts.dart`。
+  /// 界面配色。默认黑色（见 [AppThemeMode.defaultMode]）。
+  AppThemeMode themeMode;
+
+  /// 字幕字号允许的档位（用户 2026-11-01 要求把滑杆换成下拉）。
+  ///
+  /// 固定档位而不是连续值：滑杆拖出来的 1.37 这种值在界面上既说不清是
+  /// 「大一点」还是「很大」，也没法和别人的配置对比。0.6–2.0 覆盖了实际
+  /// 需要的范围（0.6 给小屏叠满中文双行，2.0 给远距离观看）。
+  static const List<double> subtitleScaleSteps = [
+    0.6,
+    0.7,
+    0.8,
+    0.9,
+    1.0,
+    1.1,
+    1.2,
+    1.3,
+    1.5,
+    1.75,
+    2.0,
+  ];
+
+  /// 字幕延迟允许的档位（毫秒）。负数是提前。
+  ///
+  /// 步长 100 ms：人眼能分辨的字幕错位大约是 100 ms 量级，再细的档位在
+  /// 观感上和相邻档没有区别，只会让下拉列表长到要滚动。
+  static const List<int> subtitleDelaySteps = [
+    -3000,
+    -2000,
+    -1500,
+    -1000,
+    -500,
+    -300,
+    -200,
+    -100,
+    0,
+    100,
+    200,
+    300,
+    500,
+    1000,
+    1500,
+    2000,
+    3000,
+  ];
+
+  /// 把任意来源的字号吸附到最近的合法档位。
+  ///
+  /// 只夹区间不够：老配置里存过 1.37 这类值，下拉框按值精确匹配，
+  /// 不吸附就一个档位都不选中。
+  static double clampSubtitleScale(Object? raw) {
+    final v = raw is num ? raw.toDouble() : 1.0;
+    var best = subtitleScaleSteps.first;
+    var bestGap = (v - best).abs();
+    for (final s in subtitleScaleSteps.skip(1)) {
+      final gap = (v - s).abs();
+      if (gap < bestGap) {
+        best = s;
+        bestGap = gap;
+      }
+    }
+    return best;
+  }
+
+  /// 把任意来源的延迟吸附到最近的合法档位。
+  static int clampSubtitleDelay(Object? raw) {
+    final v = raw is num ? raw.toInt() : 0;
+    var best = subtitleDelaySteps.first;
+    var bestGap = (v - best).abs();
+    for (final s in subtitleDelaySteps.skip(1)) {
+      final gap = (v - s).abs();
+      if (gap < bestGap) {
+        best = s;
+        bestGap = gap;
+      }
+    }
+    return best;
+  }
+
+  /// 键盘快捷键的用户绑定。只存与默认不同项，见 `shortcuts.dart`。
   ShortcutBindings shortcuts;
 
   /// 播放倍速只允许这几档（用户 2026-10-30 指定）。
@@ -117,6 +224,7 @@ class PlaybackSettings {
     this.audioPreference = const TrackPreference(primary: 'zh'),
     this.subtitlePreference = const TrackPreference(primary: 'zh'),
     this.seekStepSeconds = seekStepDefault,
+    this.themeMode = AppThemeMode.defaultMode,
     ShortcutBindings? shortcuts,
   }) : shortcuts = shortcuts ?? ShortcutBindings.empty;
 
@@ -135,6 +243,7 @@ class PlaybackSettings {
         'subtitle_primary': subtitlePreference.primary,
         'subtitle_secondary': subtitlePreference.secondary,
         'seek_step_seconds': seekStepSeconds,
+        'theme_mode': themeMode.id,
         // 空表就整个不写：老版本读到未知字段会原样保留，但没必要让
         // settings.json 多一个空对象。
         if (!shortcuts.isDefault) 'shortcuts': shortcuts.toJson(),
@@ -149,8 +258,8 @@ class PlaybackSettings {
         speed: clampSpeed(j['speed']),
         volume: (j['volume'] as num?)?.toDouble() ?? 1.0,
         autoNext: j['auto_next'] as bool? ?? true,
-        subtitleScale: (j['subtitle_scale'] as num?)?.toDouble() ?? 1.0,
-        subtitleDelayMs: (j['subtitle_delay_ms'] as num?)?.toInt() ?? 0,
+        subtitleScale: clampSubtitleScale(j['subtitle_scale']),
+        subtitleDelayMs: clampSubtitleDelay(j['subtitle_delay_ms']),
         // 默认开启：老版本没有这个字段时就应当继续记进度。
         rememberProgress: j['remember_progress'] as bool? ?? true,
         // 老配置没有这两个字段时：音频和字幕都偏中文。
@@ -166,6 +275,8 @@ class PlaybackSettings {
         ),
         // 老配置里没有这个字段，用默认的 10 秒，与改动前的行为一致。
         seekStepSeconds: clampSeekStep(j['seek_step_seconds']),
+        // 老配置里没有这个字段时按默认设置（黑色）走。
+        themeMode: AppThemeMode.fromId(j['theme_mode']),
         shortcuts: ShortcutBindings.fromJson(j['shortcuts']),
       );
 

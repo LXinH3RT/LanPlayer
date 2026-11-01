@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 
 import '../core/bindings.dart';
 import '../data/build_info.dart';
-import '../data/models.dart' show PlaybackSettings, kLanguageOptions;
+import '../data/models.dart'
+    show AppThemeMode, PlaybackSettings, kLanguageOptions;
 import '../data/probe.dart';
 import '../data/stores.dart';
 import '../data/thumbs.dart' show ThumbnailCache;
+import 'theme.dart' show ThemeController;
 import 'widgets/number_field.dart';
 import 'widgets/shortcut_section.dart';
 import 'widgets/volume_sheet.dart' show VolumeSheet;
@@ -13,13 +15,17 @@ import 'widgets/volume_sheet.dart' show VolumeSheet;
 /// 设置页的分类。左侧目录、右侧内容，两侧都由这张表驱动。
 ///
 /// 顺序就是用户从「最常动的」到「最少动的」的直觉顺序；「关于」固定压尾。
+///
+/// 2026-11-01 按用户要求合并了两格：原来的「进度」与「连播」并成「播放」，
+/// 「音频」里的「默认倍速」也搬了进去 —— 这三样都是「一片片子怎么放」的
+/// 设定，分散在三格目录里，想调全就得来回点三次目录。
 enum SettingsTab {
   decode('解码'),
   picture('画面'),
+  appearance('外观'),
   audio('音频'),
   subtitle('字幕'),
-  progress('进度'),
-  autoplay('连播'),
+  playback('播放'),
   shortcuts('快捷键'),
   about('关于');
 
@@ -217,6 +223,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
         ];
 
+      case SettingsTab.appearance:
+        return [
+          // 默认是黑色：播放页本来就要把界面消失掉，深色是主场景。
+          // 「跟随系统」作为一个选项保留，因为桌面与移动端都可能有用户
+          // 把系统设成浅色，README 也承诺过跟随系统。
+          for (final mode in AppThemeMode.values)
+            RadioListTile<AppThemeMode>(
+              key: ValueKey('settings-theme-${mode.name}'),
+              value: mode,
+              groupValue: _settings.themeMode,
+              title: Text(mode.label),
+              subtitle: Text(_themeHint(mode)),
+              onChanged: (v) {
+                if (v == null) return;
+                setState(() => _settings.themeMode = v);
+                // 主题切换要立刻生效：这里就地重建整棵树，而不是等下一次
+                // 打开设置页 —— 选了「白色」却看不到变化等于没选。
+                ThemeController.instance.apply(v);
+                _persist();
+              },
+            ),
+        ];
+
       case SettingsTab.audio:
         return [
           ListTile(
@@ -235,25 +264,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               suffix: '%',
               onChanged: (v) {
                 setState(() => _settings.volume = VolumeSheet.volumeOf(v));
-                _persist();
-              },
-            ),
-          ),
-          ListTile(
-            title: const Text('默认倍速'),
-            subtitle: const Text('开片时的速度；播放页的倍速按钮用同一组档位。'),
-            // 下拉而不是滑杆：档位是固定的八档，滑杆能拖出 1.3 这种值，
-            // 播放页那边按档位精确匹配就一个都不选中。
-            trailing: DropdownButton<double>(
-              value: PlaybackSettings.clampSpeed(_settings.speed),
-              underline: const SizedBox.shrink(),
-              items: [
-                for (final s in PlaybackSettings.speedSteps)
-                  DropdownMenuItem<double>(value: s, child: Text('${s}x')),
-              ],
-              onChanged: (v) {
-                if (v == null) return;
-                setState(() => _settings.speed = v);
                 _persist();
               },
             ),
@@ -285,28 +295,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return [
           ListTile(
             title: const Text('字幕大小'),
-            subtitle: Slider(
-              value: _settings.subtitleScale,
-              min: 0.6,
-              max: 2.0,
-              divisions: 14,
-              label: '${(_settings.subtitleScale * 100).round()}%',
-              onChanged: (v) => setState(() => _settings.subtitleScale = v),
-              onChangeEnd: (_) => _persist(),
+            // 下拉而不是滑杆（用户 2026-11-01 要求）：字号是几个明确档位，
+            // 滑杆拖出来的 1.37 既说不清是「大一点」还是「很大」，也没法
+            // 和别人的配置对比。档位表在 PlaybackSettings.subtitleScaleSteps，
+            // 播放页的字幕渲染取的是同一个值。
+            subtitle: const Text('播放页字幕的字号倍数，100% 为原始大小。'),
+            trailing: DropdownButton<double>(
+              key: const ValueKey('settings-subtitle-scale'),
+              value:
+                  PlaybackSettings.clampSubtitleScale(_settings.subtitleScale),
+              underline: const SizedBox.shrink(),
+              items: [
+                for (final s in PlaybackSettings.subtitleScaleSteps)
+                  DropdownMenuItem<double>(
+                    value: s,
+                    child: Text('${(s * 100).round()}%'),
+                  ),
+              ],
+              onChanged: (v) {
+                if (v == null) return;
+                setState(() => _settings.subtitleScale = v);
+                _persist();
+              },
             ),
           ),
           ListTile(
             title: const Text('字幕延迟'),
-            subtitle: Slider(
-              value: _settings.subtitleDelayMs.toDouble(),
-              min: -5000,
-              max: 5000,
-              divisions: 100,
-              label:
-                  '${(_settings.subtitleDelayMs / 1000).toStringAsFixed(1)} s',
-              onChanged: (v) =>
-                  setState(() => _settings.subtitleDelayMs = v.round()),
-              onChangeEnd: (_) => _persist(),
+            // 同样是下拉：正值延后、负值提前，档位表在
+            // PlaybackSettings.subtitleDelaySteps。播放页的快捷键（提前 /
+            // 延后 / 复位）改的是同一份播放期偏移，不落到这里。
+            subtitle: const Text('正值延后、负值提前。'),
+            trailing: DropdownButton<int>(
+              key: const ValueKey('settings-subtitle-delay'),
+              value: PlaybackSettings.clampSubtitleDelay(
+                  _settings.subtitleDelayMs),
+              underline: const SizedBox.shrink(),
+              items: [
+                for (final ms in PlaybackSettings.subtitleDelaySteps)
+                  DropdownMenuItem<int>(
+                    value: ms,
+                    child: Text('${(ms / 1000).toStringAsFixed(1)} s'),
+                  ),
+              ],
+              onChanged: (v) {
+                if (v == null) return;
+                setState(() => _settings.subtitleDelayMs = v);
+                _persist();
+              },
             ),
           ),
           _TrackLangTile(
@@ -332,7 +367,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ];
 
-      case SettingsTab.progress:
+      case SettingsTab.playback:
         return [
           // 填数而不是滑杆/下拉：步长是 1..10 的整数，直接输比拖滑杆快。
           // 越界与非法输入由 NumberField 夹到 [seekStepMin, seekStepMax]，
@@ -341,22 +376,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text('快进 / 快退步长'),
             subtitle: const Text('播放页的按钮与方向键一次跳过这么多秒'
                 '（1–10）。'),
-            trailing: NumberField(
-              value: _settings.seekStepSeconds,
-              min: PlaybackSettings.seekStepMin,
-              max: PlaybackSettings.seekStepMax,
-              suffix: '秒',
+            // 单位放在输入框外面（用户 2026-11-01 要求）：写进 suffixText
+            // 时会跟着输入框的边框一起内缩，和整行文字的基线对不齐，
+            // 看上去像输入框里多了一段奇怪的前缀。
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                NumberField(
+                  value: _settings.seekStepSeconds,
+                  min: PlaybackSettings.seekStepMin,
+                  max: PlaybackSettings.seekStepMax,
+                  onChanged: (v) {
+                    setState(() => _settings.seekStepSeconds =
+                        PlaybackSettings.clampSeekStep(v));
+                    _persist();
+                  },
+                ),
+                const SizedBox(width: 6),
+                Text('秒', style: Theme.of(context).textTheme.bodyMedium),
+              ],
+            ),
+          ),
+          ListTile(
+            title: const Text('默认倍速'),
+            subtitle: const Text('开片时的速度；播放页的倍速按钮用同一组档位。'),
+            // 下拉而不是滑杆：档位是固定的八档，滑杆能拖出 1.3 这种值，
+            // 播放页那边按档位精确匹配就一个都不选中。
+            trailing: DropdownButton<double>(
+              value: PlaybackSettings.clampSpeed(_settings.speed),
+              underline: const SizedBox.shrink(),
+              items: [
+                for (final s in PlaybackSettings.speedSteps)
+                  DropdownMenuItem<double>(value: s, child: Text('${s}x')),
+              ],
               onChanged: (v) {
-                setState(() => _settings.seekStepSeconds =
-                    PlaybackSettings.clampSeekStep(v));
+                if (v == null) return;
+                setState(() => _settings.speed = v);
                 _persist();
               },
             ),
           ),
-        ];
-
-      case SettingsTab.autoplay:
-        return [
           SwitchListTile(
             value: _settings.autoNext,
             title: const Text('当前目录自动连播'),
@@ -450,6 +509,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return NativeCore.instance.version;
     } catch (_) {
       return null;
+    }
+  }
+
+  /// 「外观」页每一档的说明。文案要说清「选了会发生什么」，而不是重复选项名。
+  static String _themeHint(AppThemeMode mode) {
+    switch (mode) {
+      case AppThemeMode.system:
+        return '界面深浅由操作系统的深浅色设置决定，跟随系统一起切换。';
+      case AppThemeMode.dark:
+        return '固定深色界面，播放时界面更容易退到背景里。默认使用这一档。';
+      case AppThemeMode.light:
+        return '固定浅色界面，白天的窗边或强光环境下对比更清楚。';
     }
   }
 }

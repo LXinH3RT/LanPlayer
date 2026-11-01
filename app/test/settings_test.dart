@@ -37,9 +37,10 @@ void main() {
       speed: 1.5,
       volume: 0.4,
       autoNext: false,
-      subtitleScale: 1.4,
-      subtitleDelayMs: -350,
+      subtitleScale: 1.5,
+      subtitleDelayMs: -300,
       rememberProgress: false,
+      themeMode: AppThemeMode.light,
     );
     final back = PlaybackSettings.fromJson(s.toJson());
     expect(back.hardwareDecoding, isFalse);
@@ -48,8 +49,42 @@ void main() {
     expect(back.speed, 1.5);
     expect(back.volume, 0.4);
     expect(back.autoNext, isFalse);
-    expect(back.subtitleScale, 1.4);
-    expect(back.subtitleDelayMs, -350);
+    expect(back.subtitleScale, 1.5);
+    expect(back.subtitleDelayMs, -300);
     expect(back.rememberProgress, isFalse);
+    expect(back.themeMode, AppThemeMode.light);
+  });
+
+  test('外观主题默认是黑色，老配置里没有该字段也回到黑色', () {
+    expect(PlaybackSettings().themeMode, AppThemeMode.dark);
+    expect(AppThemeMode.defaultMode, AppThemeMode.dark);
+    final old = PlaybackSettings.fromJson(<String, dynamic>{'speed': 1.0});
+    expect(old.themeMode, AppThemeMode.dark);
+    // 认不出来的值（比如手改错了）同样退回黑色，不是白屏。
+    final bad =
+        PlaybackSettings.fromJson(<String, dynamic>{'theme_mode': 'neon'});
+    expect(bad.themeMode, AppThemeMode.dark);
+  });
+
+  test('字幕大小与延迟吸附到下拉框里真实存在的档位', () {
+    // 老配置里是滑杆的连续值，改下拉之后必须贴到最近的档，否则
+    // DropdownButton 拿到的 value 不在 items 里会直接抛断言。
+    final s = PlaybackSettings.fromJson(<String, dynamic>{
+      'subtitle_scale': 1.4,
+      'subtitle_delay_ms': -350,
+    });
+    expect(
+        PlaybackSettings.subtitleScaleSteps.contains(s.subtitleScale), isTrue);
+    expect(PlaybackSettings.subtitleDelaySteps.contains(s.subtitleDelayMs),
+        isTrue);
+    // 1.4 正好在 1.3 与 1.5 中间，吸附取先遇到的那一档（1.3），
+    // 关键是结果一定落在档位表里，下拉框才选得中。
+    expect(s.subtitleScale, 1.3);
+    expect(s.subtitleDelayMs, -300);
+    // 缺字段与类型不对时回到 1.0 / 0。
+    expect(PlaybackSettings.clampSubtitleScale(null), 1.0);
+    expect(PlaybackSettings.clampSubtitleScale('big'), 1.0);
+    expect(PlaybackSettings.clampSubtitleDelay(null), 0);
+    expect(PlaybackSettings.clampSubtitleDelay('late'), 0);
   });
 }

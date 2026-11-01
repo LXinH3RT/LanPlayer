@@ -1,5 +1,36 @@
 import 'package:flutter/material.dart';
 
+import '../data/models.dart' show AppThemeMode;
+
+/// 当前生效的配色模式，以及它到 [ThemeMode] 的映射。
+///
+/// 「外观」设置要立刻生效，而 `MaterialApp` 是根节点、重建它要一路从
+/// `LanPlayerApp` 下来。这里用一个全局的 [ValueNotifier]，根节点用
+/// `ValueListenableBuilder` 订阅 —— 改主题只重建 MaterialApp 那一层，
+/// 不会把整棵树连同播放页一起重排。
+class ThemeController extends ValueNotifier<AppThemeMode> {
+  ThemeController._() : super(AppThemeMode.defaultMode);
+
+  static final ThemeController instance = ThemeController._();
+
+  /// 设置页选了新的配色后调这里。
+  void apply(AppThemeMode mode) => value = mode;
+
+  /// 测试用：回到默认设置，避免上一个用例的主题漏到下一个。
+  void reset() => value = AppThemeMode.defaultMode;
+
+  static ThemeMode toThemeMode(AppThemeMode mode) {
+    switch (mode) {
+      case AppThemeMode.system:
+        return ThemeMode.system;
+      case AppThemeMode.dark:
+        return ThemeMode.dark;
+      case AppThemeMode.light:
+        return ThemeMode.light;
+    }
+  }
+}
+
 /// 深色为主、跟随系统切换的界面主题。
 ///
 /// 深色是主场景：播放时界面要消失，只剩画面。但桌面与移动端都可能有用户把

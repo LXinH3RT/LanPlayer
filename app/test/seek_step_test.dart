@@ -63,12 +63,12 @@ void main() {
   });
 
   testWidgets('设置页用填数改步长，越界会被夹紧', (tester) async {
-    // 设置页现在左目录右内容，一次只构建一格，所以直接点开「进度」。
+    // 设置页现在左目录右内容，一次只构建一格，所以直接点开「播放」。
     tester.view.physicalSize = const Size(1200, 2600);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(const MaterialApp(
-      home: SettingsScreen(initialTab: SettingsTab.progress)));
+        home: SettingsScreen(initialTab: SettingsTab.playback)));
     await tester.pumpAndSettle();
 
     final tile = find.text('快进 / 快退步长');
@@ -79,7 +79,7 @@ void main() {
       matching: find.byType(TextField),
     );
     expect(field, findsOneWidget);
-    // 这一格里不能有滑杆（倍速/字幕那几格仍是滑杆，所以按格查）。
+    // 这一格里不能有滑杆（倍速/字幕那几格仍是下拉，所以按格查）。
     expect(
       find.descendant(
         of: find.ancestor(of: tile, matching: find.byType(ListTile)),
@@ -87,6 +87,17 @@ void main() {
       ),
       findsNothing,
     );
+    // 「秒」这个单位在输入框外面（用户 2026-11-01 要求）：写进 suffixText
+    // 会跟着输入框边框一起内缩、和整行基线对不齐。这里断言它是一颗独立的
+    // Text，且不在 TextField 的装饰里。
+    expect(
+      find.descendant(
+        of: find.ancestor(of: tile, matching: find.byType(ListTile)),
+        matching: find.text('秒'),
+      ),
+      findsOneWidget,
+    );
+    expect(tester.widget<TextField>(field).decoration?.suffixText, isNull);
 
     Future<void> enter(String text) async {
       await tester.enterText(field, text);
@@ -113,8 +124,8 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     SettingsStore.instance.value = PlaybackSettings(volume: 1.0);
-    await tester.pumpWidget(const MaterialApp(
-      home: SettingsScreen(initialTab: SettingsTab.audio)));
+    await tester.pumpWidget(
+        const MaterialApp(home: SettingsScreen(initialTab: SettingsTab.audio)));
     await tester.pumpAndSettle();
 
     final tile = find.text('默认音量');

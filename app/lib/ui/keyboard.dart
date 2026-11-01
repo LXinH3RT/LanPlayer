@@ -75,7 +75,7 @@ class KeyReleaseTrigger {
 /// 也是 [LogicalKeyboardKey.backspace]，所以不需要为它再单独映射一次。
 ///
 /// 2026-10-30 起这颗键可以改：设置 → 快捷键 →「返回上一级」。所以 [isBackKey]
-/// 降级成出厂默认值，实际判断走 [BackKeyHandler] 里的绑定表。
+/// 降级成默认值，实际判断走 [BackKeyHandler] 里的绑定表。
 bool isBackKey(LogicalKeyboardKey key) => key == LogicalKeyboardKey.backspace;
 
 /// Backspace → 退一层。触发时机由 [KeyReleaseTrigger] 统一决定：抬起才退。

@@ -138,7 +138,7 @@ class ShortcutSection extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  bindings.isDefault ? '键盘快捷键，全部是出厂设置。' : '键盘快捷键，已按你的设置改过。',
+                  bindings.isDefault ? '键盘快捷键，全部是默认设置。' : '键盘快捷键，已按你的设置改过。',
                   style: theme.textTheme.bodySmall
                       ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                 ),
@@ -194,7 +194,7 @@ class ShortcutSection extends StatelessWidget {
     return ListTile(
       title: Text(action.label),
       subtitle: changed && action.defaultKey != null
-          ? Text('出厂：${ShortcutBindings.label(action.defaultKey!)}')
+          ? Text('默认：${ShortcutBindings.label(action.defaultKey!)}')
           : null,
       trailing: TextButton(
         onPressed: () async {

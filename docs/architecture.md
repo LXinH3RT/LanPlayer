@@ -28,16 +28,25 @@ Dart UI ──► PlayerController ──► dart:ffi ──► lp_player_*   �
    （窗口已经出现，不需要遮罩），`LANPLAYER_SPLASH=1/0` 可强制。三端的原生启动画面
    （iOS `LaunchScreen.storyboard`、Android `launch_background.xml` 与 Android 12 的
    `windowSplashScreen*`）用同一个深色底与同一个图标，避免 Dart 起来之前闪白。
-5. **界面字形只有一个来源**。`LanPlayerTheme.dark()` 设全局 `fontFamily: 'MiSans'`，
+5. **界面字形只有一个来源**。`LanPlayerTheme` 设全局 `fontFamily: 'MiSans'`，
    字体是随包分发的可变字体 `app/assets/fonts/MiSansVF.ttf`。界面代码里不再出现
    `monospace` / `Courier` / `Consolas` 这类写死的等宽家族——时间码与统计数字要对齐
    时用 `FontFeature.tabularFigures()`，而不是换字体。字幕例外：字幕的字族来自 ASS
    的 `Fontname` / `\fn`，属于内容而不是界面。
-6. **数据模型按职责分文件，出口只有一个**。`app/lib/data/models.dart` 只做转发，
+6. **配色是用户的设置，不是编译期常量**。`LanPlayerTheme.light()` / `dark()` 给出两套
+   完整的 `ThemeData`，用哪一套由 `ThemeController`（`ValueNotifier<AppThemeMode>`）
+   决定：默认黑色，可选白色或跟随系统，选择存进 `settings.json` 的 `theme_mode`。
+   `main.dart` 用 `ValueListenableBuilder<AppThemeMode>` 订阅它——改配色只重建
+   `MaterialApp` 那一层，不会把播放页一起重排。
+7. **数据模型按职责分文件，出口只有一个**。`app/lib/data/models.dart` 只做转发，
    定义落在四个文件里：`playback_settings.dart`（播放态与持久化偏好）、
    `media_models.dart`（服务器、目录项、流信息与媒体信息）、`directory_view.dart`
    （`DirectoryListing` 与目录页的派生列表）、`subtitle_models.dart`（解析后的字幕
    行、样式与动画）。调用方仍然只 import `models.dart`，改一处职责不会牵动全仓。
+8. **设置页的每一格目录对应一个决策，而不是一份控件清单**。一次只构建一格，
+   所以「怎么放」相关的三件事（步长、默认倍速、连播）合在「播放」页里，而不是
+   按历史上先写哪个控件分三格存放。字号、延迟这类离散量用下拉而不是滑杆：
+   滑杆能拖出 1.37 这种值，既不可复述也不可比对。
 
 ## 2. 线程
 

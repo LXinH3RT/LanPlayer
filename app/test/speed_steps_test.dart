@@ -48,8 +48,9 @@ void main() {
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
     SettingsStore.instance.value = PlaybackSettings(speed: 1.0);
+    // 「默认倍速」2026-11-01 从「音频」页搬进了新的「播放」页。
     await tester.pumpWidget(const MaterialApp(
-      home: SettingsScreen(initialTab: SettingsTab.audio)));
+        home: SettingsScreen(initialTab: SettingsTab.playback)));
     await tester.pumpAndSettle();
 
     final tile = find.text('默认倍速');
@@ -57,10 +58,10 @@ void main() {
 
     // 这一格必须是下拉，不能是滑杆。
     final row = find.ancestor(of: tile, matching: find.byType(ListTile));
-    expect(find.descendant(of: row, matching: find.byType(Slider)),
-        findsNothing);
-    final dropdown = find.descendant(
-        of: row, matching: find.byType(DropdownButton<double>));
+    expect(
+        find.descendant(of: row, matching: find.byType(Slider)), findsNothing);
+    final dropdown =
+        find.descendant(of: row, matching: find.byType(DropdownButton<double>));
     expect(dropdown, findsOneWidget);
 
     await tester.tap(dropdown);
