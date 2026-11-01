@@ -4955,7 +4955,6 @@ def check_local_picker() -> None:
         pc = picker.read_text(encoding="utf-8")
         for needle, why in (
             ("pickLocalPath", "the picker lost its public entry point"),
-            ("askLocalPath", "the manual path dialog was renamed away"),
             ("'list_all': 1", "the picker no longer asks for the unfiltered "
                               "listing, so only playable files would be visible"),
             ("this.isFile = false", "the picker can no longer return a folder "
@@ -4991,6 +4990,21 @@ def check_local_picker() -> None:
                             "files seem to disappear")
     else:
         problems.append("app/lib/ui/folder_picker.dart missing")
+
+    # 2026-11-01：用户要求「添加」菜单里删掉「直接输入路径」。那条路径手写
+    # 对话框既绕过了权限申请，也绕过了窄→宽的路径转换，一直是本地来源出
+    # 问题的入口；现在只剩「添加服务器」与「添加本地文件/文件夹」两项。
+    home = ROOT / "app" / "lib" / "ui" / "home_screen.dart"
+    if home.exists():
+        hc = home.read_text(encoding="utf-8")
+        if "直接输入路径" in hc:
+            problems.append("app/lib/ui/home_screen.dart still offers 直接输入"
+                            "路径 in the add menu; the user removed it")
+        if "askLocalPath" in hc:
+            problems.append("home_screen.dart still calls askLocalPath; the "
+                            "manual path flow was deleted with the menu entry")
+    else:
+        problems.append("app/lib/ui/home_screen.dart missing")
 
     folders = ROOT / "app" / "lib" / "data" / "folders.dart"
     if folders.exists():

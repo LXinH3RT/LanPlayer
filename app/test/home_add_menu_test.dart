@@ -33,6 +33,22 @@ void main() {
     expect(find.text('添加本地文件/文件夹'), findsOneWidget);
   });
 
+  testWidgets('「添加」菜单只有服务器与本地两项，没有手写路径', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: HomeScreen()));
+    await tester.pump();
+
+    await tester.tap(find.text('添加服务器'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('填写 IP、共享名与账号密码'), findsOneWidget);
+    expect(find.text('浏览本机目录，挑一个文件或一块目录'), findsOneWidget);
+    // 2026-11-01：手写路径那一项已按用户要求删除，它既绕过权限申请也绕过
+    // 窄→宽的路径转换，是本地来源打不开的常见来路。
+    expect(find.text('直接输入路径'), findsNothing);
+    expect(find.text('网络盘符、隐藏目录这些点不到的位置'), findsNothing);
+  });
+
   testWidgets('点添加后先等菜单收回去，再压添加服务器页，且页面停住', (tester) async {
     await tester.pumpWidget(const MaterialApp(home: HomeScreen()));
     await tester.pump();
@@ -41,7 +57,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
-    // 菜单里的三项（空状态页那颗按钮被菜单挡住，但它在树里还在）。
+    // 菜单里的两项（空状态页那颗按钮被菜单挡住，但它在树里还在）。
     expect(find.text('填写 IP、共享名与账号密码'), findsOneWidget);
 
     await tester.tap(find.text('填写 IP、共享名与账号密码'));

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
@@ -295,12 +294,6 @@ class _HomeScreenState extends State<HomeScreen> {
               subtitle: const Text('浏览本机目录，挑一个文件或一块目录'),
               onTap: () => Navigator.pop(ctx, 'local'),
             ),
-            ListTile(
-              leading: const Icon(Icons.edit_outlined),
-              title: const Text('直接输入路径'),
-              subtitle: const Text('网络盘符、隐藏目录这些点不到的位置'),
-              onTap: () => Navigator.pop(ctx, 'path'),
-            ),
           ],
         ),
       ),
@@ -329,9 +322,6 @@ class _HomeScreenState extends State<HomeScreen> {
       case 'local':
         // 已经在 _busy 保护中，走内部实现，避免重复置 busy。
         await _addLocalFolderInner();
-        break;
-      case 'path':
-        await _addFolderByPathInner();
         break;
     }
     if (mounted) {
@@ -384,26 +374,6 @@ class _HomeScreenState extends State<HomeScreen> {
       isFile: choice.isFile,
     );
     if (mounted) setState(() {});
-  }
-
-  Future<void> _addFolderByPathInner() async {
-    // 盘符探测在后台 isolate 上跑；等结果期间页面可能已经被弹走。
-    final home = await _repo.localRoots();
-    if (!mounted) return;
-    final path =
-        await askLocalPath(context, home.isEmpty ? '' : home.first.path);
-    if (path == null || !mounted) return;
-    final segments = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty);
-    final isFile = File(path).existsSync() && !Directory(path).existsSync();
-    await LocalFolderStore.instance.add(
-      label: segments.isEmpty ? path : segments.last,
-      path: path,
-      isFile: isFile,
-    );
-    if (mounted) {
-      setState(() {});
-      unawaited(_loadAll());
-    }
   }
 
   // 删除前确认；服务器只移除本机记录，本地来源只是从首页摘掉。

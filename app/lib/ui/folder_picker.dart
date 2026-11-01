@@ -1,12 +1,10 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../data/models.dart';
 import '../data/repository.dart';
-import 'feedback.dart';
 import 'keyboard.dart';
 
 /// 用户选好的本机路径：可能是一块目录，也可能是一个文件。
@@ -431,45 +429,4 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
         v >= 100 || i == 0 ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
     return '$text ${units[i]}';
   }
-}
-
-/// 让用户手写一个路径（网络盘符、隐藏目录这些点不到的位置）。
-///
-/// 目录和文件都接受：填文件夹就是把它加进首页，填文件就是单文件来源。
-Future<String?> askLocalPath(BuildContext context, String hint) async {
-  final ctrl = TextEditingController(text: hint);
-  final picked = await showDialog<String>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text('输入文件或文件夹路径'),
-      content: TextField(
-        controller: ctrl,
-        autofocus: true,
-        decoration: const InputDecoration(
-          labelText: '路径',
-          hintText: r'C:\Users\Public\Videos 或 D:\影片\电影.mkv',
-        ),
-        onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
-      ),
-      actions: [
-        TextButton(
-            onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-        FilledButton(
-          onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-          child: const Text('确定'),
-        ),
-      ],
-    ),
-  );
-  ctrl.dispose();
-  if (picked == null || picked.isEmpty) return null;
-  final dir = Directory(picked);
-  final file = File(picked);
-  if (!dir.existsSync() && !file.existsSync()) {
-    if (context.mounted) {
-      await showError(context, '这个路径不存在或者打不开：$picked');
-    }
-    return null;
-  }
-  return picked;
 }
