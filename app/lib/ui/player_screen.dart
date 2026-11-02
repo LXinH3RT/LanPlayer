@@ -1661,6 +1661,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
               Text('hw      ${_player.hwActive}'),
               Text('fps     ${_player.fps.toStringAsFixed(2)}'),
               Text('dropped ${_player.dropped}'),
+              // 与 dropped 分开显示：这是「内核按时出帧、交付环节丢的」，
+              // 画面卡顿而音频正常时，看这一行才知道卡在哪一端。
+              Text('not shown ${_player.droppedDelivery}'),
               Text(
                   'av_diff ${(_player.avDiffUs / 1000).toStringAsFixed(1)} ms'),
               Text('queued  ${_player.queuedPackets}'),

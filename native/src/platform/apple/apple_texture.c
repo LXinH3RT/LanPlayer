@@ -12,6 +12,7 @@
 #include <CoreVideo/CoreVideo.h>
 
 #include <stdlib.h>
+#include <string.h>
 
 #include "player_internal.h"
 
@@ -40,6 +41,7 @@ void lp_render_close(LpPlayer *p)
         CVPixelBufferRelease((CVPixelBufferRef)p->vout.pixel_buffer);
         p->vout.pixel_buffer = NULL;
     }
+    p->vout.has_new_frame = 0;
     pthread_mutex_unlock(&p->vout.mutex);
 }
 
@@ -70,6 +72,16 @@ int lp_render_publish_pixel_buffer(LpPlayer *p, void *cv_pixel_buffer)
     void *user = NULL;
 
     pthread_mutex_lock(&p->vout.mutex);
+    /* 上一帧还没被引擎取走就来了新帧：它被覆盖，屏幕上永远看不到。
+     *
+     * 交付策略是「最新一帧优先」而不是排队 —— copyPixelBuffer 是引擎在
+     * raster 线程上按 vsync 调用的，那一刻该显示的就是最新帧；排队只会让
+     * 画面越来越滞后。但「没被取走」这件事本身要记下来：解码与同步都按时
+     * 做完了，只是交付没跟上，而原来的统计里这种情况完全隐形
+     * （dropped 恒为 0、fps 满帧），「音频正常、画面卡顿」无从排查。 */
+    if (p->vout.has_new_frame) {
+        p->vout.frames_delivery_lost++;
+    }
     if (p->vout.pixel_buffer) {
         CVPixelBufferRelease((CVPixelBufferRef)p->vout.pixel_buffer);
     }
@@ -162,8 +174,12 @@ void *lp_player_copy_pixel_buffer(LpPlayer *p)
     }
     pthread_mutex_lock(&p->vout.mutex);
     CVPixelBufferRef image = (CVPixelBufferRef)p->vout.pixel_buffer;
-    if (image) {
+    if (image && p->vout.has_new_frame) {
         CVBufferRetain(image);
+    } else {
+        /* 没有新帧就别把旧帧再交一次：引擎会把同一帧画两遍，看起来是
+         * 「卡住了一下」。返回 NULL 让引擎保持上一帧。 */
+        image = NULL;
     }
     p->vout.has_new_frame = 0;
     pthread_mutex_unlock(&p->vout.mutex);

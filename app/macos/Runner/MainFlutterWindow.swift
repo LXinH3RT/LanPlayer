@@ -110,8 +110,14 @@ class MainFlutterWindow: NSWindow {
     toggleFullScreen(nil)
   }
 
-  /// The core notifies us from its decode thread; hop to the main thread before
-  /// touching the Flutter texture registry.
+  /// The core notifies us from its decode thread. `textureFrameAvailable` is
+  /// documented to be safe from any thread ("This will trigger a call to
+  /// -copyPixelBuffer on the raster thread"), so it is called directly —
+  /// hopping through DispatchQueue.main.async added a whole main-runloop
+  /// worth of latency to every single frame, and on a busy main thread the
+  /// core had already replaced the single pixel buffer slot before the
+  /// notification even arrived. That is what made video stutter while audio
+  /// stayed smooth.
   private func installFrameCallback() {
     guard let player else { return }
     let ctx = Unmanaged.passUnretained(self).toOpaque()
@@ -120,10 +126,8 @@ class MainFlutterWindow: NSWindow {
       { user in
         guard let user else { return }
         let delegate = Unmanaged<MainFlutterWindow>.fromOpaque(user).takeUnretainedValue()
-        DispatchQueue.main.async {
-          if let tex = delegate.texture, let registry = delegate.registry {
-            registry.textureFrameAvailable(tex.textureId)
-          }
+        if let tex = delegate.texture, let registry = delegate.registry {
+          registry.textureFrameAvailable(tex.textureId)
         }
       }, ctx)
   }

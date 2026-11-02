@@ -276,14 +276,24 @@ static void *player_tick_fn(void *arg)
             p->stats_fps = fps;
             if (p->event_cb) {
                 int64_t av = p->video.last_pts_us - lp_master_clock_us(p);
+                /* dropped_delivery：内核已经解码、也已经按时交给宿主，但宿主
+                 * 还没来得及取走就被下一帧覆盖的帧数。Apple 平台独有 —— 纹理
+                 * 只有一个槽（apple_texture.c），主线程一忙就会跳帧。
+                 * 不发这个数字，「音频正常、画面卡顿」在统计里永远是 dropped=0、
+                 * fps 满帧，无从排查。桌面平台恒为 0。 */
+                int64_t lost = p->vout.frames_delivery_lost;
+                if (lost < 0) {
+                    lost = 0;
+                }
                 emit_owned_json(p, LP_EVENT_STATS, 0,
                                 lp_str_printf("{\"fps\":%.2f,\"dropped\":%lld,\"decoded\":%lld,"
                                               "\"av_diff\":%lld,\"hw\":\"%s\",\"queued\":%d,"
-                                              "\"buffered_ms\":%d}",
+                                              "\"buffered_ms\":%d,\"dropped_delivery\":%lld}",
                                               fps, (long long)p->stats_dropped,
                                               (long long)p->stats_frames, (long long)av,
                                               p->video.hw_name ? p->video.hw_name : "none",
-                                              lp_pq_size(&p->video.pq), lp_audio_buffered_ms(p)));
+                                              lp_pq_size(&p->video.pq), lp_audio_buffered_ms(p),
+                                              (long long)lost));
             }
         }
 

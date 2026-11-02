@@ -5259,6 +5259,99 @@ def check_windows_single_instance() -> None:
                  "starting a second process with its own playback state")
 
 
+def check_texture_delivery() -> None:
+    """Guard the Apple texture hand-off path.
+
+    "音频正常、画面卡顿" traced back to three separate things on the Apple
+    platforms, none of which shows up in the kernel's own counters:
+
+      * the core kept a single pixel buffer slot that a new frame overwrote
+        whether or not Flutter had taken the previous one, so frames the
+        raster thread never picked up vanished silently;
+      * `lp_player_copy_pixel_buffer` returned the slot without asking
+        whether it held a new frame, so the engine could draw the same frame
+        twice;
+      * both hosts wrapped the frame notification in `DispatchQueue.main.async`
+        even though `textureFrameAvailable` is documented to be callable from
+        any thread, which added a main-runloop of latency to every frame.
+
+    Each of the three is cheap to reintroduce by accident, so assert them.
+    """
+    apple = ROOT / "native" / "src" / "platform" / "apple" / "apple_texture.c"
+    internal = ROOT / "native" / "src" / "player_internal.h"
+    player = ROOT / "native" / "src" / "core" / "player.c"
+    ios = ROOT / "app" / "ios" / "Runner" / "AppDelegate.swift"
+    macos = ROOT / "app" / "macos" / "Runner" / "MainFlutterWindow.swift"
+
+    if not internal.exists():
+        problems.append("native/src/player_internal.h is gone")
+    else:
+        it = internal.read_text(encoding="utf-8")
+        if "int64_t frames_delivery_lost;" not in it:
+            problems.append(
+                "LpVideoOut lost frames_delivery_lost; overwritten frames "
+                "would go back to being invisible in the stats, which is "
+                "exactly how this stutter stayed unfixed for so long")
+        if "LP_VOUT_SLOTS" in it or "frame_slots" in it:
+            problems.append(
+                "player_internal.h has a multi-slot frame queue again; the "
+                "raster thread wants the newest frame, not a backlog")
+
+    if not apple.exists():
+        problems.append("native/src/platform/apple/apple_texture.c is gone; "
+                        "the Apple hosts would lose their texture path")
+    else:
+        at = apple.read_text(encoding="utf-8")
+        for needle, why in (
+            ("frames_delivery_lost++",
+             "publishing no longer counts the frame it overwrote"),
+            ("if (image && p->vout.has_new_frame)",
+             "copyPixelBuffer hands out the slot without checking for a new "
+             "frame; the engine would draw the same frame twice"),
+        ):
+            if needle not in at:
+                problems.append(f"apple_texture.c: {why} ({needle})")
+
+    if not player.exists():
+        problems.append("native/src/core/player.c is gone")
+    else:
+        pt = player.read_text(encoding="utf-8")
+        # Match the format string itself, not the word: the comment above the
+        # emit explains dropped_delivery too, so a bare substring test would
+        # stay green after the field was dropped from the payload.
+        if ',\\"dropped_delivery\\":%lld}' not in pt:
+            problems.append(
+                "the STATS event no longer reports dropped_delivery; the "
+                "debug overlay could not tell 'core never produced the "
+                "frame' from 'Flutter never took it'")
+
+    for path, name in ((ios, "AppDelegate.swift"),
+                       (macos, "MainFlutterWindow.swift")):
+        if not path.exists():
+            problems.append(f"{name} is gone")
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "textureFrameAvailable(" not in text:
+            problems.append(f"{name} never notifies the texture registry")
+        start = text.find("func installFrameCallback()")
+        if start < 0:
+            problems.append(f"{name} lost installFrameCallback()")
+            continue
+        end = text.find("\n  }", start)
+        body = text[start:end if end > 0 else len(text)]
+        if "DispatchQueue.main.async" in body:
+            problems.append(
+                f"{name} hops to the main queue before notifying the texture "
+                "registry; textureFrameAvailable is safe from any thread and "
+                "the extra hop delays every frame by up to a runloop, which "
+                "is what made video stutter while audio stayed smooth")
+
+    notes.append("texture delivery: the Apple hosts hand every decoded frame "
+                 "straight to the texture registry, the core counts the frames "
+                 "a busy raster thread never picked up, and the stats event "
+                 "reports them separately from decode drops")
+
+
 def check_startup_home() -> None:
     """Cold start must land on the home screen, never on the last player.
 
@@ -5643,6 +5736,7 @@ def main() -> int:
     check_settings_groups()
     check_playback_orientation()
     check_windows_single_instance()
+    check_texture_delivery()
     check_startup_home()
     check_surface_tap()
     check_volume_gain()

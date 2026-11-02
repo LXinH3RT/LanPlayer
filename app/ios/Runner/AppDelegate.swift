@@ -249,17 +249,22 @@ import CoreVideo
     requestOrientation(landscape: want)
   }
 
-  /// 内核在解码线程回调，这里切回主线程再动 Flutter 的纹理注册表。
+  /// 内核在解码线程回调；textureFrameAvailable 本身线程安全，直接调用即可。
+  ///
+  /// 以前这里绕了一次 DispatchQueue.main.async 再通知。头文件写得很清楚：
+  /// 「This will trigger a call to -copyPixelBuffer on the raster thread」，
+  /// 引擎本来就是在 raster 线程按 vsync 来取的，先挤进主队列只是给每一帧
+  /// 多加一段主线程延迟。主线程一忙（界面动画、字幕重排），内核那边的单槽
+  /// 缓冲早就被下一帧顶掉，于是画面跳帧而音频照常 —— 这就是「音频正常、
+  /// 画面卡顿」在 iPad 上的来源。
   private func installFrameCallback() {
     guard let player else { return }
     let ctx = Unmanaged.passUnretained(self).toOpaque()
     lp_player_install_frame_callback(player, { user in
       guard let user else { return }
       let delegate = Unmanaged<AppDelegate>.fromOpaque(user).takeUnretainedValue()
-      DispatchQueue.main.async {
-        if let tex = delegate.texture {
-          delegate.textures?.textureFrameAvailable(tex.textureId)
-        }
+      if let tex = delegate.texture {
+        delegate.textures?.textureFrameAvailable(tex.textureId)
       }
     }, ctx)
   }

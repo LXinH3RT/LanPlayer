@@ -4,6 +4,7 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 
 import '../data/models.dart';
+import '../data/trace.dart';
 import 'bindings.dart';
 
 typedef _EventCbNative = Void Function(
@@ -41,6 +42,13 @@ class PlayerController extends ChangeNotifier {
   String hwActive = 'none';
   double fps = 0;
   int dropped = 0;
+
+  /// 内核已按时交帧、但宿主没来得及取走而被覆盖的帧数（仅 Apple 平台非零）。
+  ///
+  /// 与 [dropped] 分开：那个是内核自己判定「这一帧晚了，不显示」，
+  /// 这个是「内核照常出帧，交付环节丢的」。画面卡顿而音频正常时，
+  /// 两者要分别看才能判断该修同步逻辑还是修纹理交付。
+  int droppedDelivery = 0;
   int avDiffUs = 0;
   int queuedPackets = 0;
   bool buffering = false;
@@ -297,10 +305,19 @@ class PlayerController extends ChangeNotifier {
       case LpEvent.stats:
         fps = (map['fps'] as num?)?.toDouble() ?? 0;
         dropped = (map['dropped'] as num?)?.toInt() ?? 0;
+        droppedDelivery = (map['dropped_delivery'] as num?)?.toInt() ?? 0;
         avDiffUs = (map['av_diff'] as num?)?.toInt() ?? 0;
         queuedPackets = (map['queued'] as num?)?.toInt() ?? 0;
         final hw = map['hw'] as String?;
         if (hw != null) hwActive = hw;
+        // 「音频正常、画面卡顿」的两种成因要分开看：内核没出帧（解码 / 同步
+        // 问题，看 dropped），还是内核按时出帧了但 Flutter 侧没画出来
+        // （纹理交付问题，看 dropped_delivery）。后者长期不计数，
+        // 导致这个现象在统计里完全隐形。只有 LANPLAYER_TRACE=1 时落盘。
+        trace('stats fps=$fps dropped=$dropped '
+            'dropped_delivery=$droppedDelivery decoded=${map['decoded']} '
+            'av_diff=${map['av_diff']} queued=$queuedPackets '
+            'buffered=${map['buffered_ms']} hw=$hwActive');
         // Lighter cadence: stats change constantly, do not rebuild the tree
         // unless the user asked for the debugging overlay.
         if (!wantsStats) return;

@@ -324,9 +324,18 @@ typedef struct LpVideoOut {
     int scale_mode;
     LpFrameCallback frame_cb;
     void *frame_cb_user;
-    void *pixel_buffer; /* retained CVPixelBufferRef of the current frame */
+    void *pixel_buffer; /* retained CVPixelBufferRef of the latest frame */
     int has_new_frame;
     int64_t frames_published;
+    /* 被宿主「跳过」的帧数，只有 Apple 平台会累加。
+     *
+     * Apple 这条路上「内核出帧」和「屏幕画出帧」是两件事：内核把最新一帧
+     * 放进唯一的 pixel_buffer 槽，引擎什么时候来 copyPixelBuffer 才什么时候
+     * 拿走；中间被顶掉的帧屏幕上永远看不到。解码和同步都按时做完了，所以
+     * 原来的统计里这件事完全隐形（dropped 恒为 0、fps 满帧）——
+     * 「音频正常、画面卡顿」因此一直查不出来。单独计数，
+     * STATS 事件以 dropped_delivery 上报。桌面与 Android 恒为 0。 */
+    int64_t frames_delivery_lost;
     pthread_mutex_t mutex;
 } LpVideoOut;
 
