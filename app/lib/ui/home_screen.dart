@@ -10,7 +10,9 @@ import '../data/models.dart';
 import '../data/repository.dart';
 import '../data/source_health.dart';
 import '../data/stores.dart';
+import '../data/trace.dart';
 import '../player/playlist.dart';
+import 'add_sheet.dart';
 import 'browser_screen.dart';
 import 'feedback.dart';
 import 'folder_picker.dart';
@@ -258,11 +260,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // 让用户选择手动添加服务器，或把本机文件/文件夹加进首页。
   Future<void> _addMenu() async {
+    trace('addMenu enter busy=$_busy hash=${identityHashCode(this)}');
     if (_busy) return;
     setState(() => _busy = true);
     try {
       await _addMenuInner();
     } finally {
+      trace('addMenu exit mounted=$mounted hash=${identityHashCode(this)}');
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -277,7 +281,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<String?> _showAddSheet() async {
     final navigator = Navigator.of(context);
     final localizations = MaterialLocalizations.of(context);
-    final route = ModalBottomSheetRoute<String>(
+    final route = AddSheetRoute(
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -306,7 +310,9 @@ class _HomeScreenState extends State<HomeScreen> {
           localizations.scrimOnTapHint(localizations.bottomSheetLabel),
     );
     final choice = await navigator.push(route);
+    trace('sheet popped choice=$choice');
     await route.completed;
+    trace('sheet completed choice=$choice');
     return choice;
   }
 

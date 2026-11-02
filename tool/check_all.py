@@ -292,6 +292,8 @@ REQUIRED = [
     "app/lib/core/bindings.dart",
     "app/lib/core/player_controller.dart",
     "app/lib/data/stores.dart",
+    "app/lib/data/trace.dart",
+    "app/lib/ui/add_sheet.dart",
     "app/lib/ui/home_screen.dart",
     "app/lib/ui/media_permission.dart",
     "app/lib/ui/browser_screen.dart",
@@ -1452,10 +1454,34 @@ def check_thumbnails() -> None:
         # `popped`，在退场动画开始时就完成了；iOS 上紧接着 push 会被 UIKit
         # 丢掉，用户看到「点加号弹出的二级页面自己收回」。所以首页必须自己
         # push 路由并等 `completed`。
-        if "ModalBottomSheetRoute<" not in hc:
+        if "AddSheetRoute(" not in hc:
             problems.append("home_screen must push the add sheet itself; "
                             "showModalBottomSheet resolves before the sheet "
                             "is off screen and the next push gets dropped")
+        add_sheet = ROOT / "app" / "lib" / "ui" / "add_sheet.dart"
+        if not add_sheet.is_file():
+            problems.append("app/lib/ui/add_sheet.dart is gone; the add menu "
+                            "would fall back to the framework barrier that "
+                            "accepts the iPad ghost pointer")
+        else:
+            ac = add_sheet.read_text(encoding="utf-8")
+            # iPad 上弹层会自己收回，日志里每次都是「约 348ms 后一个 (0,0)
+            # 的指针事件 + maybePop」。遮罩必须自己认这一手。
+            if "class AddSheetRoute extends ModalBottomSheetRoute<String>" not in ac:
+                problems.append("add_sheet must extend ModalBottomSheetRoute so "
+                                "the barrier can be replaced without losing the "
+                                "sheet animation")
+            if "Widget buildModalBarrier()" not in ac:
+                problems.append("add_sheet must build its own barrier; the "
+                                "framework one treats the (0,0) ghost pointer "
+                                "as a tap outside and closes the sheet")
+            if "_ghostOrigin = Offset.zero" not in ac:
+                problems.append("add_sheet lost the ghost pointer origin; the "
+                                "iPad sheet would close itself again")
+            if "details.globalPosition == _ghostOrigin" not in ac:
+                problems.append("add_sheet must compare the tap position "
+                                "against the origin exactly, not by distance; "
+                                "the top-left corner is the status bar")
         if "route.completed" not in hc:
             problems.append("home_screen must await route.completed before "
                             "opening the next page; otherwise the sheet's exit "

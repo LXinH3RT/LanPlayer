@@ -44,6 +44,12 @@ String? probeFlag(String name) {
     case 'LANPLAYER_SETTINGS_TAB':
       const v = String.fromEnvironment('LANPLAYER_SETTINGS_TAB');
       return v.isEmpty ? null : v;
+    case 'LANPLAYER_TRACE':
+      const v = String.fromEnvironment('LANPLAYER_TRACE');
+      return v.isEmpty ? null : v;
+    case 'LANPLAYER_TRACE_PATH':
+      const v = String.fromEnvironment('LANPLAYER_TRACE_PATH');
+      return v.isEmpty ? null : v;
   }
   return null;
 }

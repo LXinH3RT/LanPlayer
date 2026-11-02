@@ -9,6 +9,7 @@ import 'data/probe.dart';
 import 'data/progress.dart';
 import 'data/repository.dart';
 import 'data/stores.dart';
+import 'data/trace.dart';
 import 'player/playlist.dart';
 import 'ui/browser_screen.dart';
 import 'ui/home_screen.dart';
@@ -27,6 +28,19 @@ Future<void> main() async {
   if (pinnedDir != null) {
     AppStorage.directoryOverride = Directory(pinnedDir);
   }
+  // 排查开关：把导航栈的每一次 push/pop、以及前后台与尺寸变化写进状态目录
+  // 下的 trace.log，或者在 `LANPLAYER_TRACE_PATH` 指定一个可写的绝对路径
+  // （iPad 上拿不到应用容器的绝对路径时，用它指到 Documents 里）。
+  if (traceEnabled) {
+    WidgetsBinding.instance.addObserver(TraceLifecycle());
+    // 指针事件要趁早装上：弹层被点掉还是被拖掉，只有这一路能分开。
+    installPointerTrace();
+    final directPath = probeFlag('LANPLAYER_TRACE_PATH');
+    if (directPath != null && directPath.isNotEmpty) {
+      traceTo(directPath);
+      trace('boot trace-path=$directPath');
+    }
+  }
   // 第一步就把界面挂上去，屏幕立刻有东西（图标动画），不再是系统那张空白
   // 启动图。store 的读取与首页的目录请求都在 SplashGate 后面同时进行。
   runApp(const LanPlayerApp(boot: _boot));
@@ -39,6 +53,10 @@ Future<void> main() async {
 Future<void> _boot() async {
   try {
     final dir = await AppStorage.directory();
+    if (traceEnabled && !traceHasFile) {
+      traceTo('${dir.path}/trace.log');
+      trace('boot storage=${dir.path}');
+    }
     // ignore: avoid_print
     print(
         "LanPlayer storage: ${dir.path} (servers=${ServerStore.instance.servers.length})");
@@ -239,6 +257,10 @@ class LanPlayerApp extends StatelessWidget {
       valueListenable: ThemeController.instance,
       builder: (context, mode, _) => MaterialApp(
         navigatorKey: appNavigatorKey,
+        // 排查开关打开时把导航栈的每一次变化记进 trace.log，
+        // 用来分辨「路由是被谁弹掉的」。
+        navigatorObservers:
+            traceEnabled ? <NavigatorObserver>[TraceObserver()] : const [],
         title: 'LanPlayer',
         debugShowCheckedModeBanner: false,
         // 深浅色两套都给，具体用哪一套由「设置 → 外观」决定：
