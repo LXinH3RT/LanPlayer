@@ -119,36 +119,35 @@ void main() {
     expect(tester.widget<TextField>(field).controller?.text, '1');
   });
 
-  testWidgets('设置页的音量也是填数，且夹在 0..100', (tester) async {
+  testWidgets('设置页的音量增益是下拉，档位 0.1–2.0', (tester) async {
     tester.view.physicalSize = const Size(1200, 2600);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
-    SettingsStore.instance.value = PlaybackSettings(volume: 1.0);
+    SettingsStore.instance.value = PlaybackSettings(volumeGain: 1.0);
     await tester.pumpWidget(
         const MaterialApp(home: SettingsScreen(initialTab: SettingsTab.audio)));
     await tester.pumpAndSettle();
 
-    final tile = find.text('默认音量');
-    final field = find.descendant(
+    final tile = find.text('音量增益');
+    final dropdown = find.descendant(
       of: find.ancestor(of: tile, matching: find.byType(ListTile)),
-      matching: find.byType(TextField),
+      matching: find.byType(DropdownButton<double>),
     );
-    expect(field, findsOneWidget);
-    // 1.0 增益显示成 50。
-    expect(tester.widget<TextField>(field).controller?.text, '50');
+    expect(dropdown, findsOneWidget);
+    // 1.0 倍是默认档，显示成 1.0x。
+    expect(find.text('1.0x'), findsOneWidget);
 
-    Future<void> enter(String text) async {
-      await tester.enterText(field, text);
-      await tester.testTextInput.receiveAction(TextInputAction.done);
+    Future<void> pick(String label) async {
+      await tester.tap(dropdown);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(label).last);
       await tester.pumpAndSettle();
     }
 
-    await enter('80');
-    // 80 显示值 = 1.6 增益。
-    expect(SettingsStore.instance.value.volume, closeTo(1.6, 1e-9));
+    await pick('1.6x');
+    expect(SettingsStore.instance.value.volumeGain, closeTo(1.6, 1e-9));
 
-    await enter('999');
-    expect(tester.widget<TextField>(field).controller?.text, '100');
-    expect(SettingsStore.instance.value.volume, closeTo(2.0, 1e-9));
+    await pick('2.0x');
+    expect(SettingsStore.instance.value.volumeGain, closeTo(2.0, 1e-9));
   });
 }

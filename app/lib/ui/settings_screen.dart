@@ -10,7 +10,6 @@ import '../data/thumbs.dart' show ThumbnailCache;
 import 'theme.dart' show ThemeController;
 import 'widgets/number_field.dart';
 import 'widgets/shortcut_section.dart';
-import 'widgets/volume_sheet.dart' show VolumeSheet;
 
 /// 设置页的分类。左侧目录、右侧内容，两侧都由这张表驱动。
 ///
@@ -249,21 +248,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case SettingsTab.audio:
         return [
           ListTile(
-            title: const Text('默认音量'),
-            // 和播放页的音量面板用同一套刻度：显示 0–100，内部存 0–2.0 的
-            // 增益。两处口径不一致的话，用户会以为设置没生效。
+            title: const Text('音量增益'),
+            // 用户 2026-11-02 要求：这一项不再是「开片时把音量设成多少」，
+            // 而是乘在系统音量上的倍数。1 倍 = 不动，声音大小完全跟系统走；
+            // 0.1–2.0 按 0.1 一档（内核本来就是乘法增益，1.0 不改变采样）。
             //
-            // 文案要按**显示值**说：100 是满刻度（增益 2.0，会削顶），
-            // 原音量（增益 1.0）在显示刻度上是 50。以前这里写的是
-            // 「100 为原音量，上限 200」，与实际映射正好反过来。
-            subtitle: const Text('开片时的音量；50 为原音量，上限 100（再高会削顶）。'),
-            trailing: NumberField(
-              value: VolumeSheet.displayOf(_settings.volume),
-              min: 0,
-              max: VolumeSheet.displayMax,
-              suffix: '%',
+            // 用下拉而不是输入框：`NumberField` 只解析整数，0.7 这种值填不
+            // 进去；档位固定也免得存出 0.85 这种下拉匹配不上的值。
+            subtitle: const Text('乘在系统音量上的倍数。1x 就是和系统音量一样，'
+                '往上放大、往下压低；不动系统音量本身。'),
+            trailing: DropdownButton<double>(
+              value: PlaybackSettings.clampVolumeGain(_settings.volumeGain),
+              underline: const SizedBox.shrink(),
+              items: [
+                for (final g in PlaybackSettings.volumeGainSteps)
+                  DropdownMenuItem<double>(
+                    value: g,
+                    child: Text('${g.toStringAsFixed(1)}x'),
+                  ),
+              ],
               onChanged: (v) {
-                setState(() => _settings.volume = VolumeSheet.volumeOf(v));
+                if (v == null) return;
+                setState(() => _settings.volumeGain = v);
                 _persist();
               },
             ),

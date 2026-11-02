@@ -69,6 +69,14 @@ Dart UI ──► PlayerController ──► dart:ffi ──► lp_player_*   �
     让 `player_screen.dart` 自己 `Platform.isX` 分支，是因为「哪台机器该做哪件事」
     要能被测试单独钉住；设置页那份手势说明也走同一张表
     （`PointerGesture.forHost`），避免在平板上写着鼠标的操作。
+11. **「设置里的默认值」和「这一次的临时调整」是两件事，不能共用一个字段**。
+    设置 → 音频 里的「音量增益」（0.1x–2.0x，1.0x = 跟随系统音量）只在开片时
+    套一次，`PlayerController.open` 把它送进内核的 `volume` 选项，内核乘在解码
+    出的 PCM 上；播放页里的滑杆、滚轮、上下键只改这一次播放的增益，不写回
+    `SettingsStore`。早先两者是同一个值，结果是「我刚才嫌吵调小了」会悄悄变成
+    「以后每一片都这么小声」，而用户没有任何地方能看到这个副作用。
+    `tool/check_all.py` 的 `check_volume_gain` 直接从源码里找
+    `_settings.volume =` / `SettingsStore.instance.value.volume =`，出现即报错。
 
 ## 2. 线程
 

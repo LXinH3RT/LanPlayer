@@ -50,7 +50,17 @@ class PlaybackSettings {
   bool deinterlace;
   int scaleMode; // 0 fit, 1 fill, 2 stretch
   double speed;
-  double volume;
+
+  /// 音量增益：乘在系统音量之上的倍数，1.0 就是「不动」。
+  ///
+  /// 用户 2026-11-02 要求把原来的「默认音量」改成这个：每次开片都从增益起步，
+  /// 而不是把音量钉成某个固定值。内核本来就是这么算的（`lp_player_set_volume`
+  /// 写进 `lp_ring_set_gain`，乘在解码出的 PCM 上），所以系统音量仍然是用户
+  /// 按硬件键调的那个，这一项只在它之上放大或缩小。
+  ///
+  /// 播放页里临时调的音量**不写回这里**：那是「这一片子里我想听大声点」，
+  /// 不是「以后每一片都要这样」。
+  double volumeGain;
   bool autoNext;
   double subtitleScale;
   int subtitleDelayMs;
@@ -209,6 +219,57 @@ class PlaybackSettings {
     return best;
   }
 
+  /// 音量增益的档位：0.1–2.0，步长 0.1，共 20 档（用户 2026-11-02 指定）。
+  ///
+  /// 用固定档位而不是自由输入：`NumberField` 只解析整数，0.7 这种值填不进去；
+  /// 而且增益这种量按 0.1 走已经比耳朵能分辨的细了，再细只会在界面上显示出
+  /// 一串没人看得懂的尾数。上限 2.0 与内核的夹紧范围一致（再高会削顶）。
+  static const List<double> volumeGainSteps = [
+    0.1,
+    0.2,
+    0.3,
+    0.4,
+    0.5,
+    0.6,
+    0.7,
+    0.8,
+    0.9,
+    1.0,
+    1.1,
+    1.2,
+    1.3,
+    1.4,
+    1.5,
+    1.6,
+    1.7,
+    1.8,
+    1.9,
+    2.0,
+  ];
+
+  static const double volumeGainDefault = 1.0;
+
+  static double get volumeGainMin => volumeGainSteps.first;
+  static double get volumeGainMax => volumeGainSteps.last;
+
+  /// 把任意来源的值吸附到最近的合法档位。
+  ///
+  /// 理由同 [clampSpeed]：设置页的下拉用 groupValue 精确匹配，老配置里存过
+  /// 0.85 这种值会让所有档位都不选中。吸附后界面总有落点。
+  static double clampVolumeGain(Object? raw) {
+    final v = raw is num ? raw.toDouble() : volumeGainDefault;
+    var best = volumeGainSteps.first;
+    var bestGap = (v - best).abs();
+    for (final g in volumeGainSteps.skip(1)) {
+      final gap = (v - g).abs();
+      if (gap < bestGap) {
+        best = g;
+        bestGap = gap;
+      }
+    }
+    return best;
+  }
+
   /// 把任意来源的值夹到 [seekStepMin]..[seekStepMax]。
   static int clampSeekStep(Object? raw) {
     final v = raw is num ? raw.toInt() : seekStepDefault;
@@ -222,7 +283,7 @@ class PlaybackSettings {
     this.deinterlace = false,
     this.scaleMode = 0,
     this.speed = 1.0,
-    this.volume = 1.0,
+    this.volumeGain = volumeGainDefault,
     this.autoNext = true,
     this.subtitleScale = 1.0,
     this.subtitleDelayMs = 0,
@@ -241,8 +302,9 @@ class PlaybackSettings {
         'deinterlace': deinterlace,
         'scale_mode': scaleMode,
         'speed': speed,
-        'volume': volume,
-        'auto_next': autoNext,
+        // 键名沿用 `volume`：老配置里的值本来就是增益（1.0 = 不改），
+        // 换键名只会多一条迁移路径，还得让老值有机会被读错。
+        'volume': volumeGain,        'auto_next': autoNext,
         'subtitle_scale': subtitleScale,
         'subtitle_delay_ms': subtitleDelayMs,
         'remember_progress': rememberProgress,
@@ -265,7 +327,7 @@ class PlaybackSettings {
         // 吸附到最近的合法档位：老配置里存过 1.3 这类值，界面上的
         // RadioListTile 精确匹配，不吸附就一个档位都不选中。
         speed: clampSpeed(j['speed']),
-        volume: (j['volume'] as num?)?.toDouble() ?? 1.0,
+        volumeGain: clampVolumeGain(j['volume']),
         autoNext: j['auto_next'] as bool? ?? true,
         subtitleScale: clampSubtitleScale(j['subtitle_scale']),
         subtitleDelayMs: clampSubtitleDelay(j['subtitle_delay_ms']),

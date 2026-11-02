@@ -35,7 +35,7 @@ void main() {
 
     // 默认停在「解码」，右边只有解码那两行，没有别格的内容。
     expect(find.text('硬件解码'), findsOneWidget);
-    expect(find.text('默认音量'), findsNothing, reason: '一次只该构建一格');
+    expect(find.text('音量增益'), findsNothing, reason: '一次只该构建一格');
     expect(find.text('版本'), findsNothing);
 
     // 点「关于」→ 右边换成关于，解码那两行消失。

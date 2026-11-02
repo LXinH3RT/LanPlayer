@@ -35,7 +35,7 @@ void main() {
       deinterlace: true,
       scaleMode: 2,
       speed: 1.5,
-      volume: 0.4,
+      volumeGain: 0.4,
       autoNext: false,
       subtitleScale: 1.5,
       subtitleDelayMs: -300,
@@ -47,7 +47,7 @@ void main() {
     expect(back.deinterlace, isTrue);
     expect(back.scaleMode, 2);
     expect(back.speed, 1.5);
-    expect(back.volume, 0.4);
+    expect(back.volumeGain, 0.4);
     expect(back.autoNext, isFalse);
     expect(back.subtitleScale, 1.5);
     expect(back.subtitleDelayMs, -300);

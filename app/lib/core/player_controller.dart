@@ -121,6 +121,10 @@ class PlayerController extends ChangeNotifier {
     media = MediaInfo.empty;
     cue = SubtitleCue.empty;
     speed = settings.speed;
+    // 每开一片都从设置里的增益起步（1.0 = 跟随系统音量）。播放中调的音量
+    // 只活在这一次播放里，不写回设置 —— 它是「这一片想听大声点」，不是
+    // 「以后每一片都这样」。
+    volume = settings.volumeGain;
     positionUsNotifier.value = 0;
     cueNotifier.value = SubtitleCue.empty;
     final options = <String, dynamic>{
@@ -131,7 +135,7 @@ class PlayerController extends ChangeNotifier {
       'deinterlace': settings.deinterlace,
       'scale_mode': settings.scaleMode,
       'speed': settings.speed,
-      'volume': settings.volume,
+      'volume': settings.volumeGain,
       'subtitle_delay': settings.subtitleDelayMs,
       'auto_play': autoPlay,
     };

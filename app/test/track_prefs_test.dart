@@ -153,7 +153,8 @@ void main() {
 
     test('老配置（没有新字段）不会崩，落回默认', () {
       final back = PlaybackSettings.fromJson({'volume': 0.8});
-      expect(back.volume, 0.8);
+      // 老配置里的 volume 就是增益，语义没变：读进来仍是 0.8 倍。
+      expect(back.volumeGain, 0.8);
       expect(back.audioPreference.primary, 'zh');
       expect(back.subtitlePreference.primary, 'zh');
     });

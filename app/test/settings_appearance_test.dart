@@ -181,7 +181,7 @@ void main() {
 
       // 音频页只剩音量与两条语言。
       expect(find.text('默认倍速'), findsNothing);
-      expect(find.text('默认音量'), findsOneWidget);
+      expect(find.text('音量增益'), findsOneWidget);
       expect(find.text('首选音轨语言'), findsOneWidget);
     });
   });

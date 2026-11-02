@@ -460,6 +460,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   /// 只处理 `PointerScrollEvent`，别的事件原样放过 —— 播放页眼下没有可滚动的
   /// 内容，但将来在画面上叠列表时这里不会被吞掉。静音状态不自动解除：用户按了
   /// 静音还在滚，多半是想把音量调回去，突然出声更糟；HUD 里写明当前是静音。
+  ///
+  /// 只改这一个播放器实例的音量，不写回设置：设置里那项是「音量增益」
+  /// （用户 2026-11-02 改的），说的是每片开头从哪起步，不该被一次临时调整覆盖。
   void _onPointerSignal(PointerSignalEvent event) {
     if (event is! PointerScrollEvent) return;
     if (event.scrollDelta.dy == 0) return;
@@ -467,10 +470,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final shown = VolumeSheet.displayOf(next);
     if (next != _player.volume) {
       _player.setVolume(next);
-      _settings.volume = next;
-      // 与音量面板一致：写进 SettingsStore，下次开片按这次的音量来。
-      SettingsStore.instance.value.volume = next;
-      unawaited(SettingsStore.instance.save());
     }
     _showHud(_player.muted ? '静音（音量 $shown）' : '音量 $shown');
   }
@@ -727,21 +726,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   /// 底栏常驻音量条拖动时走这里：按显示刻度（0–100）换算回增益写进内核。
   ///
-  /// 拖动过程中只改内存里的值，落盘留到 [commitVolume]（onChangeEnd）——
-  /// 滑杆一帧一个 onChanged，每帧写一次 json 会把磁盘拖住。
   /// 与滚轮、键盘上下键走同一套映射，三者对「100」的理解必须一致。
+  /// 同样不写回设置 —— 见 [_onPointerSignal]。
   void _setVolumeFromBar(double display) {
     final next = VolumeSheet.volumeOf(display);
     _player.setVolume(next);
-    _settings.volume = next;
     _showControls();
   }
 
-  /// 音量条松手时落盘。与音量面板里的滑杆同一套写法。
+  /// 音量条松手时收一下控制栏的自动隐藏计时。
+  ///
+  /// 以前这里负责落盘（P0-5 的修复产物）。改成「音量增益」之后播放中的调整
+  /// 不再写回设置，落盘就不需要了；但 `onChangeEnd` 的接线留着，免得以后
+  /// 想在这里做别的事还得重新拉一条线。
   void _commitVolume(double display) {
-    final next = VolumeSheet.volumeOf(display);
-    SettingsStore.instance.value.volume = next;
-    unawaited(SettingsStore.instance.save());
+    _showControls();
   }
 
   /// 键盘上下键与手势共用的音量微调，统一按显示值给反馈。
@@ -754,7 +753,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final next = VolumeSheet.volumeOf(
         VolumeSheet.displayOf(_player.volume) + displayDelta);
     _player.setVolume(next);
-    _settings.volume = next;
     _showHud('音量 ${VolumeSheet.displayOf(next)}');
   }
 
@@ -784,16 +782,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
           muted: _player.muted,
           onVolumeChanged: (v) {
             _player.setVolume(v);
-            _settings.volume = v;
             setSheetState(() {});
           },
-          // 落盘只在松手/点档位时做一次。拖动过程中每帧 save() 会让几次写入
-          // 抢同一个 .tmp，落盘的可能是半截 JSON —— 下次启动设置就全回默认值。
+          // 松手/点档位时也只在内存里收尾，不落盘：播放页的音量是临时的，
+          // 设置里那一项是「音量增益」，两者不再是同一个值。
           onVolumeCommitted: (v) {
-            // 记住音量：下次开片按上次的来。写 SettingsStore 里那份，
-            // 否则重开播放器还会回到 100%。
-            SettingsStore.instance.value.volume = v;
-            unawaited(SettingsStore.instance.save());
+            _showControls();
           },
           onMutedChanged: (m) {
             if (m != _player.muted) _player.toggleMute();

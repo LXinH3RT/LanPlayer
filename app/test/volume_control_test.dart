@@ -56,7 +56,7 @@ void main() {
   });
 
   group('滑杆能真正调节音量', () {
-    testWidgets('滑杆量程是 0–100，默认音量 1.0 显示成 50', (tester) async {
+    testWidgets('滑杆量程是 0–100，1.0 增益显示成 50', (tester) async {
       await pumpSheet(tester);
       final slider =
           tester.widget<Slider>(find.byKey(const Key('volume-slider')));

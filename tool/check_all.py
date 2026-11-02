@@ -2654,8 +2654,9 @@ def check_player_layout() -> None:
         problems.append("the volume bar does not reach the player; dragging it "
                         "would be a no-op")
     if "onChangeEnd: _commitVolume" not in bottom:
-        problems.append("the volume bar must persist the level on release; "
-                        "otherwise a restart forgets it")
+        problems.append("the volume bar must still close out the drag on "
+                        "release; without onChangeEnd a release leaves the "
+                        "auto-hide timer paused")
     if "void _setVolumeFromBar(double" not in text:
         problems.append("_setVolumeFromBar is gone; the bar and the wheel would "
                         "drift apart on the 0-100/0-2.0 mapping")
@@ -5403,6 +5404,90 @@ def check_surface_tap() -> None:
                  "whichever one the current host actually does")
 
 
+def check_volume_gain() -> None:
+    """Guard the 音量增益 setting and the "playback volume is temporary" rule.
+
+    User changed this on 2026-11-02: 设置 → 音频 used to hold 默认音量 as a
+    0–100 percentage that every cold open applied to the player. It is now a
+    multiplicative gain (0.1x–2.0x, step 0.1, 1.0x = leave the system volume
+    alone), and the volume slider inside the player must NOT write back to it.
+    Both halves are easy to get wrong in a way no screenshot would show:
+      * if the player writes back, 设置 stops meaning "where each file starts";
+      * if the core option still reads a stale field name, the gain silently
+        stays at 1.0 and the user cannot tell whether the setting works.
+    """
+    settings = (ROOT / "app" / "lib" / "data" / "playback_settings.dart"
+                ).read_text(encoding="utf-8")
+    for needle, why in (
+        ("double volumeGain;",
+         "PlaybackSettings lost the gain field; the slider would be a dead knob"),
+        ("static const List<double> volumeGainSteps = [",
+         "the gain ladder is gone; the 设置 dropdown would have nothing to show"),
+        ("static const double volumeGainDefault = 1.0;",
+         "the default gain must stay 1.0 - that is 'follow the system volume'"),
+        ("static double clampVolumeGain(Object? raw)",
+         "the dropdown matches values exactly; without snapping, an old 0.85 "
+         "leaves every entry unselected"),
+    ):
+        if needle not in settings:
+            problems.append(f"playback_settings.dart: {why}")
+
+    # 档位表本身要完整：0.1 起步、0.1 一档、到 2.0 收尾。写成字面量比对
+    # 是为了让「手滑删了一档」也红 —— 少一档在下拉里就是凭空少一个选项。
+    ladder = [
+        round(0.1 * n, 1) for n in range(1, 21)
+    ]
+    declared = re.search(
+        r"static const List<double> volumeGainSteps = \[(.*?)\];",
+        settings, re.S)
+    if declared is None:
+        problems.append("playback_settings.dart: volumeGainSteps is not a "
+                        "literal list any more; the ladder cannot be verified")
+    else:
+        values = [float(v) for v in
+                  re.findall(r"\d+\.\d+", declared.group(1))]
+        if values != ladder:
+            problems.append("volumeGainSteps must be 0.1..2.0 in steps of 0.1; "
+                            f"got {values}")
+
+    controller = (ROOT / "app" / "lib" / "core" / "player_controller.dart"
+                  ).read_text(encoding="utf-8")
+    if "'volume': settings.volumeGain," not in controller:
+        problems.append("player_controller.dart: the open options no longer "
+                        "carry settings.volumeGain; the setting would be ignored")
+    if "volume = settings.volumeGain;" not in controller:
+        problems.append("player_controller.dart: a fresh file must start from "
+                        "the gain setting, otherwise yesterday's slider position "
+                        "carries over")
+
+    player = (ROOT / "app" / "lib" / "ui" / "player_screen.dart"
+              ).read_text(encoding="utf-8")
+    for needle in ("_settings.volume =", "SettingsStore.instance.value.volume ="):
+        if needle in player:
+            problems.append(f"player_screen.dart still writes back ({needle} "
+                            "...); the in-player slider must stay local to this "
+                            "playback, or 音量增益 stops meaning anything")
+
+    screen = (ROOT / "app" / "lib" / "ui" / "settings_screen.dart"
+              ).read_text(encoding="utf-8")
+    if "const Text('音量增益')" not in screen:
+        problems.append("settings_screen.dart: the audio page lost the 音量增益 "
+                        "row (user renamed 默认音量 on 2026-11-02)")
+    if "默认音量" in screen:
+        problems.append("settings_screen.dart still shows 默认音量; the setting "
+                        "is a gain now, and the old name promises a fixed level")
+    if "PlaybackSettings.volumeGainSteps" not in screen:
+        problems.append("settings_screen.dart: the gain row must offer the "
+                        "shared ladder, not a hand-written list")
+    if "PlaybackSettings.clampVolumeGain(" not in screen:
+        problems.append("settings_screen.dart: the dropdown value must be "
+                        "snapped, or a stale value leaves it blank")
+
+    notes.append("volume gain: 设置 offers 0.1x-2.0x in 0.1 steps and every file "
+                 "starts from it, while the in-player slider stays local to that "
+                 "one playback instead of writing back")
+
+
 def check_local_picker() -> None:
     """Guard the local file/folder picker and the wide-character file layer.
 
@@ -5560,6 +5645,7 @@ def main() -> int:
     check_windows_single_instance()
     check_startup_home()
     check_surface_tap()
+    check_volume_gain()
     check_local_picker()
     check_splash()
     check_ui_thread()
