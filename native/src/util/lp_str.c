@@ -171,7 +171,8 @@ char *lp_str_take(LpStr *s)
     }
     s->p = NULL;
     s->len = s->cap = 0;
-    return p;}
+    return p;
+}
 
 char *lp_str_dup(const char *v)
 {

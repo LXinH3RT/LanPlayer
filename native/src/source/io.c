@@ -205,9 +205,12 @@ int lp_io_read(LpIo *io, uint8_t *buf, int size)
     long spins = 0;
     while (done < size) {
         if (++spins > 100000) {
+            /* 防御用：正常路径下 refill 每次都会推进，走不到这里。真走到了
+             * 说明状态机卡住了，此时**不能折成短读**返回 —— 上层会把
+             * 一次「还在加载」当成 EOF，直接判定文件读完。 */
             LP_ERROR("io", "read spin guard: pos=%lld size=%d done=%d cache[%lld,%d]",
                      (long long)io->pos, size, done, (long long)io->cache_start, io->cache_len);
-            break;
+            return done > 0 ? done : LP_ERR_IO;
         }
         int64_t pos = io->pos + done;
         int r = io_refill(io, pos);

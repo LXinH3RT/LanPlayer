@@ -346,6 +346,10 @@ static int bitmap_from_rect(const AVSubtitleRect *r, LpSubBitmap *out)
         return -1;
     }
     const uint8_t *pal = r->data[1];
+    /* libavcodec 保证 SUBTITLE_BITMAP 的 data[1] 是 256 项 × 4 字节的
+     * 调色板，而 src[x] 是 uint8_t，取值天然落在 0..255 —— 所以这里不需要
+     * 再夹一次下标。写下来是为了下次有人想「顺手加个长度检查」时知道
+     * FFmpeg 并没有把长度交出来，凭空加判断反而会误伤。 */
     for (int y = 0; y < r->h; y++) {
         const uint8_t *src = r->data[0] + (size_t)y * r->linesize[0];
         uint8_t *dst = rgba + (size_t)y * r->w * 4;
@@ -397,7 +401,9 @@ static int track_ensure_style(LpSubtitleTrack *t, int need)
     if (t->nb_styles >= need) {
         return 0;
     }
-    int cap = need + 4;
+    /* need 是「要放得下第 need 个样式」，所以容量至少要 need；+4 是余量，
+     * 但容量本身不再单独记，只靠 nb_styles 与 realloc 的实参推导。 */
+    const int cap = need + 4;
     LpSubStyle *grown = realloc(t->styles, (size_t)cap * sizeof(LpSubStyle));
     if (!grown) {
         return -1;
@@ -2160,6 +2166,35 @@ static char *trim_ws(char *s)
     return s;
 }
 
+/* 行缓冲按字节截断时会把一个多字节字符切成两半。这里把尾巴上那半个
+ * 序列去掉：从末尾往前数续字节（10xxxxxx），数到首字节时看它声明了
+ * 几个字节；声明数大于实际剩下的，说明这个字符被切断了，整段删掉。 */
+static void truncate_partial_utf8(char *s)
+{
+    size_t n = strlen(s);
+    if (n == 0) {
+        return;
+    }
+    size_t cont = 0;
+    while (cont < n && cont < 3 && ((unsigned char)s[n - 1 - cont] & 0xC0) == 0x80) {
+        cont++;
+    }
+    if (cont >= n) {
+        /* 整行都是续字节：不是合法 UTF-8，清空交给上层丢弃。 */
+        s[0] = '\0';
+        return;
+    }
+    const unsigned char lead = (unsigned char)s[n - 1 - cont];
+    const size_t need = lead < 0x80 ? 1 : (lead < 0xE0 ? 2 : (lead < 0xF0 ? 3 : 4));
+    if (need == 1) {
+        /* 末尾没有续字节，且首字节本身合法：这一行是完整的。 */
+        return;
+    }
+    if (need > cont + 1) {
+        s[n - 1 - cont] = '\0';
+    }
+}
+
 /* SRT (and WebVTT, which shares the shape): a timing line followed by one or
  * more text lines, blank line terminated.  Index lines are simply skipped. */
 static int parse_srt(const char *text, LpSubtitleTrack *t, char *err, size_t errlen)
@@ -2190,6 +2225,10 @@ static int parse_srt(const char *text, LpSubtitleTrack *t, char *err, size_t err
             if (!*txt) {
                 break;
             }
+            /* srt_next_line 按字节拷进 2048 字节的 line，超长行会在多字节
+             * 字符中间断掉。这里把尾巴上那半个字符退回，交给下一轮再拼 ——
+             * 否则整条字幕的 JSON 都会变成非法 UTF-8。 */
+            truncate_partial_utf8(txt);
             lp_str_append(&body, "%s\n", txt);
         }
         if (body.len > 0) {
@@ -2319,7 +2358,6 @@ static int parse_ass(const char *text, LpSubtitleTrack *t, char *err, size_t err
     int f_scalex = -1, f_scaley = -1, f_angle = -1;
     int f_ml = -1, f_mr = -1, f_mv = -1;
     char *e_name = NULL, *e_start = NULL, *e_end = NULL, *e_text = NULL, *e_style = NULL;
-    int e_count = 0;
     int in_styles = 0, in_events = 0, count = 0;
     double play_w = 1920.0;
     double play_h = 1080.0;
@@ -2433,7 +2471,6 @@ static int parse_ass(const char *text, LpSubtitleTrack *t, char *err, size_t err
              * 重算：否则上一条给的 e_style 会留在这一条上，指到一个这条
              * Format: 里根本不存在（或含义不同）的列。 */
             e_name = e_start = e_end = e_text = e_style = NULL;
-            e_count = 0;
             for (int i = 0; i < got; i++) {
                 while (*fields[i] == ' ') fields[i]++;
                 char *end = fields[i] + strlen(fields[i]);
@@ -2442,7 +2479,6 @@ static int parse_ass(const char *text, LpSubtitleTrack *t, char *err, size_t err
                 else if (!strcmp(fields[i], "End")) e_end = (char *)(intptr_t)i;
                 else if (!strcmp(fields[i], "Text")) e_text = (char *)(intptr_t)i;
                 else if (!strcmp(fields[i], "Style")) e_style = (char *)(intptr_t)i;
-                e_count = i > e_count ? i : e_count;
             }
             continue;
         }
@@ -2618,6 +2654,16 @@ static int read_whole_file(const char *url, const char *options_json, uint8_t **
     return LP_OK;
 }
 
+/* t->path 是固定长度缓冲，判重时不能再拿完整 url 去 strcmp：超长路径下
+ * 两条不同的 URL 会被截成同一个 path，判定自然失真。这里按「截断之后
+ * 相等的两个前缀」比较，与实际存下来的内容保持一致。 */
+static int same_subtitle_path(const char *stored, const char *url, size_t cap)
+{
+    const size_t n = strlen(url);
+    const size_t keep = n < cap - 1 ? n : cap - 1;
+    return strncmp(stored, url, keep) == 0 && stored[keep] == '\0';
+}
+
 int lp_subtitle_add_file(LpPlayer *p, const char *url, const char *options_json)
 {
     if (!url || !*url) {
@@ -2629,7 +2675,9 @@ int lp_subtitle_add_file(LpPlayer *p, const char *url, const char *options_json)
      * 每点一次这个文件就调一次本函数，重复点会得到两条一模一样的轨道，用户看到
      * 的就是「同一个字幕出现了两次、还都标着外挂」。 */
     for (int i = 0; i < nb; i++) {
-        if (p->subs.tracks[i].is_external && strcmp(p->subs.tracks[i].path, url) == 0) {
+        if (p->subs.tracks[i].is_external &&
+            same_subtitle_path(p->subs.tracks[i].path, url,
+                                sizeof(p->subs.tracks[i].path))) {
             int existing = p->subs.tracks[i].index;
             pthread_mutex_unlock(&p->subs.mutex);
             return existing;
@@ -2658,8 +2706,22 @@ int lp_subtitle_add_file(LpPlayer *p, const char *url, const char *options_json)
         LP_WARN("subtitle", "%s is not valid UTF-8 and no charset converter is available", url);
     }
 
-    const char *ext = strrchr(url, '.');
-    ext = ext ? ext + 1 : "";
+    /* 扩展名只在最后一段路径里找，并且止步于查询串：整条 URL 上的
+     * `strrchr(url, '.')` 会被目录名或查询串里的句点带偏
+     * （`.../x.vtt?t=1.srt` 取到 `srt`，SRT 结果被交给 ASS 解析器）。 */
+    const char *ext_base = strrchr(url, '/');
+    ext_base = ext_base ? ext_base + 1 : url;
+    const char *query = strpbrk(ext_base, "?#");
+    const char *ext_end = query ? query : ext_base + strlen(ext_base);
+    const char *ext = NULL;
+    for (const char *q = ext_base; q < ext_end; q++) {
+        if (*q == '.') {
+            ext = q + 1;
+        }
+    }
+    if (!ext) {
+        ext = "";
+    }
     pthread_mutex_lock(&p->subs.mutex);
     /* 上面那次解锁去读文件，耗时可能是几十毫秒。这段时间里自动加载、
      * 用户在面板里再点一个文件，都可能占掉 nb 这个槽位或者把 nb_tracks
@@ -2672,7 +2734,9 @@ int lp_subtitle_add_file(LpPlayer *p, const char *url, const char *options_json)
         return LP_ERR_NOMEM;
     }
     for (int i = 0; i < nb; i++) {
-        if (p->subs.tracks[i].is_external && strcmp(p->subs.tracks[i].path, url) == 0) {
+        if (p->subs.tracks[i].is_external &&
+            same_subtitle_path(p->subs.tracks[i].path, url,
+                                sizeof(p->subs.tracks[i].path))) {
             int existing = p->subs.tracks[i].index;
             pthread_mutex_unlock(&p->subs.mutex);
             return existing;

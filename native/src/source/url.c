@@ -158,9 +158,9 @@ int lp_url_parse(const char *url, LpUrl *out)
         const char *end = strchr(p, '/');
         if (end) {
             copy_raw(out->share, sizeof(out->share), p, (size_t)(end - p));
-            char restpath[1024];
-            snprintf(restpath, sizeof(restpath), "%s", end);
-            snprintf(out->path, sizeof(out->path), "%s", restpath);
+            /* 直接写 out->path，不要再经一道 restpath[1024] 中转：
+             * 那样超过 1023 字节的路径会被截两次，且截断点更难解释。 */
+            copy_raw(out->path, sizeof(out->path), end, strlen(end));
         } else {
             copy_raw(out->share, sizeof(out->share), p, strlen(p));
             snprintf(out->path, sizeof(out->path), "/");
