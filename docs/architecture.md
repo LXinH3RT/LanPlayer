@@ -47,6 +47,20 @@ Dart UI ──► PlayerController ──► dart:ffi ──► lp_player_*   �
    所以「怎么放」相关的三件事（步长、默认倍速、连播）合在「播放」页里，而不是
    按历史上先写哪个控件分三格存放。字号、延迟这类离散量用下拉而不是滑杆：
    滑杆能拖出 1.37 这种值，既不可复述也不可比对。
+9. **屏幕方向是播放态的一部分，不是界面的常量**。手机 / 平板进播放页锁横屏、
+   退出时把四个方向一起交还（`app/lib/ui/playback_orientation.dart`），桌面端
+   永远不锁。判定收在三个纯函数里，`player_screen.dart` 只负责在 `initState` /
+   `dispose` 调用它们；纹理尺寸也按物理长 / 短边算，因为 `_bootstrap()` 跑在
+   旋转真正落地之前，照着那一刻的竖屏窗口建纹理会让硬解一直往竖缓冲区里画。
+   另外「跟着机身翻」和「窗口是横的」不是一件事，而且两个移动平台卡在不同
+   的地方，所以除了框架那次调用，宿主还要各自补一半（通道方法 `lockLandscape`）：
+   Android 上 Flutter 把 `[landscapeLeft, landscapeRight]` 翻成
+   `SCREEN_ORIENTATION_FULL_USER`，仍受系统「自动旋转」开关支配，宿主改切只听
+   加速度计与陀螺仪的 `SCREEN_ORIENTATION_SENSOR_LANDSCAPE`；iPad 上框架那次
+   调用**根本不生效**（Flutter 文档写明要在关掉多任务时才会被尊重，而 iPadOS 26
+   起 `UIRequiresFullScreen` 也已被忽略），宿主改发
+   `requestGeometryUpdate(.iOS(interfaceOrientations:))`。两处都靠
+   `tool/check_all.py` 钉住。
 
 ## 2. 线程
 

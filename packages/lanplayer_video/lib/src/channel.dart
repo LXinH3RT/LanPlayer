@@ -53,4 +53,24 @@ abstract final class VideoChannelMethod {
   static const String attachPlayer = 'attachPlayer';
   static const String destroyTexture = 'destroyTexture';
   static const String setFullscreen = 'setFullscreen';
+
+  /// 请宿主把播放页转成横屏（`true`）以后再还回去（`false`）。
+  ///
+  /// 各平台的做法不同，因为「窗口朝向」在它们那里不是同一件事：
+  ///
+  /// - Android：`SystemChrome.setPreferredOrientations` 把「左右两个横屏」
+  ///   翻译成 `SCREEN_ORIENTATION_FULL_USER`，而 FULL_USER 仍然受系统那个
+  ///   「自动旋转」开关管 —— 用户在控制中心关掉自动旋转之后，播放页就再也
+  ///   转不过来。原生的 `SCREEN_ORIENTATION_SENSOR_LANDSCAPE` 不听那个开关，
+  ///   只听加速度计与陀螺仪，所以走这条通道切过去。
+  /// - iOS / iPadOS：`SystemChrome.setPreferredOrientations` 在 iPad 上**不
+  ///   生效**。Flutter 文档原话是 "This setting will only be respected on iPad
+  ///   if multitasking is disabled"；而 iPadOS 26 起所有 app 都跑在可调整大小
+  ///   的窗口里，`UIRequiresFullScreen` 也已经不起作用（实测：加上它之后
+  ///   `devicectl device info displays` 仍报 `Main display orientation:
+  ///   portrait`）。于是由宿主自己向 window scene 发
+  ///   `requestGeometryUpdate(.iOS(interfaceOrientations:))`。
+  ///
+  /// 桌面端不认这个方法，`MissingPluginException` 被静默吞掉。
+  static const String lockLandscape = 'lockLandscape';
 }

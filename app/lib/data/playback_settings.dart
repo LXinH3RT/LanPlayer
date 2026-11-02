@@ -79,6 +79,13 @@ class PlaybackSettings {
   /// 界面配色。默认黑色（见 [AppThemeMode.defaultMode]）。
   AppThemeMode themeMode;
 
+  /// 手机上打开片子时是否强制横屏。
+  ///
+  /// 默认开着：竖屏看横片，画面只占中间一条，字幕和底栏全挤在一起。但平板
+  /// 上有人就是习惯竖着看，所以它留成可关的一项，而不是写死在播放页里 ——
+  /// 桌面端不读这个字段，窗口由用户自己拉。
+  bool lockLandscape;
+
   /// 字幕字号允许的档位（用户 2026-11-01 要求把滑杆换成下拉）。
   ///
   /// 固定档位而不是连续值：滑杆拖出来的 1.37 这种值在界面上既说不清是
@@ -225,6 +232,7 @@ class PlaybackSettings {
     this.subtitlePreference = const TrackPreference(primary: 'zh'),
     this.seekStepSeconds = seekStepDefault,
     this.themeMode = AppThemeMode.defaultMode,
+    this.lockLandscape = true,
     ShortcutBindings? shortcuts,
   }) : shortcuts = shortcuts ?? ShortcutBindings.empty;
 
@@ -244,6 +252,7 @@ class PlaybackSettings {
         'subtitle_secondary': subtitlePreference.secondary,
         'seek_step_seconds': seekStepSeconds,
         'theme_mode': themeMode.id,
+        'lock_landscape': lockLandscape,
         // 空表就整个不写：老版本读到未知字段会原样保留，但没必要让
         // settings.json 多一个空对象。
         if (!shortcuts.isDefault) 'shortcuts': shortcuts.toJson(),
@@ -277,6 +286,8 @@ class PlaybackSettings {
         seekStepSeconds: clampSeekStep(j['seek_step_seconds']),
         // 老配置里没有这个字段时按默认设置（黑色）走。
         themeMode: AppThemeMode.fromId(j['theme_mode']),
+        // 老配置没有这个字段：手机从这一版起默认横屏。
+        lockLandscape: j['lock_landscape'] as bool? ?? true,
         shortcuts: ShortcutBindings.fromJson(j['shortcuts']),
       );
 

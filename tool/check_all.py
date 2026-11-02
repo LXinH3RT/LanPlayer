@@ -2473,9 +2473,11 @@ def check_video_bridge_contract() -> None:
         ("packages/lanplayer_video/windows/lanplayer_video_plugin.cpp",
          ("createTexture", "attachPlayer", "destroyTexture", "setFullscreen")),
         ("app/android/app/src/main/kotlin/dev/lanplayer/app/MainActivity.kt",
-         ("createTexture", "attachPlayer", "destroyTexture")),
+         ("createTexture", "attachPlayer", "destroyTexture",
+          "lockLandscape")),
         ("app/ios/Runner/AppDelegate.swift",
-         ("createTexture", "attachPlayer", "destroyTexture")),
+         ("createTexture", "attachPlayer", "destroyTexture",
+          "lockLandscape")),
         ("app/macos/Runner/MainFlutterWindow.swift",
          ("createTexture", "attachPlayer", "destroyTexture", "setFullscreen")),
     )
@@ -4989,6 +4991,150 @@ def check_settings_groups() -> None:
                  "keymap is the one the user dictated")
 
 
+def check_playback_orientation() -> None:
+    """Guard the forced-landscape behaviour on phones and tablets.
+
+    The user asked for "点击视频播放时，默认强制进入横屏播放". Two failure modes
+    are invisible to the Dart tests, which never rotate a real device:
+      * someone reintroduces a bare `SystemChrome.setPreferredOrientations`
+        call in the player, so the desktop build starts asking the OS for a
+        direction it has no use for;
+      * the switch is added to the 播放 pane but never read on entry, which
+        looks like a settings page that does nothing.
+    The texture size matters too: it is computed before the rotation lands, so
+    it has to be laid out on the long/short edge, not on the stale portrait
+    window.
+    """
+    orientation = ROOT / "app" / "lib" / "ui" / "playback_orientation.dart"
+    player = ROOT / "app" / "lib" / "ui" / "player_screen.dart"
+    model = DATA / "playback_settings.dart"
+    screen = ROOT / "app" / "lib" / "ui" / "settings_screen.dart"
+    for f in (orientation, player, model, screen):
+        if not f.exists():
+            problems.append(f"{f.relative_to(ROOT).as_posix()} is missing")
+            return
+    ot = orientation.read_text(encoding="utf-8")
+    pt = player.read_text(encoding="utf-8")
+    mt = model.read_text(encoding="utf-8")
+    st = screen.read_text(encoding="utf-8")
+
+    for needle, what in (
+            ("isMobileHost", "the host test"),
+            ("shouldLockLandscape(", "the decision function"),
+            ("lockedOrientations(", "the orientation list"),
+            ("surfaceSizeFor(", "the texture sizing helper"),
+            ("SystemChrome.setPreferredOrientations(", "the platform call"),
+    ):
+        if needle not in ot:
+            problems.append(f"playback_orientation.dart lost {what} "
+                            f"({needle}); phone playback would open upright")
+
+    # 只有两个横屏方向。加上竖屏就等于没锁 —— 系统会挑当前这个方向继续用。
+    if "DeviceOrientation.landscapeLeft" not in ot or \
+            "DeviceOrientation.landscapeRight" not in ot:
+        problems.append("playback_orientation.dart must lock to both landscape "
+                        "directions; locking one leaves the other unusable")
+    if "DeviceOrientation.portraitUp" in ot.split("lockedOrientations", 1)[-1] \
+            .split("Future<void> enterPlaybackOrientation", 1)[0]:
+        problems.append("playback_orientation.dart includes a portrait "
+                        "orientation in the locked list; that is the same as "
+                        "not locking at all")
+
+    if "enterPlaybackOrientation(" not in pt:
+        problems.append("player_screen.dart never calls "
+                        "enterPlaybackOrientation; opening a video stays upright")
+    if "leavePlaybackOrientation(" not in pt:
+        problems.append("player_screen.dart never calls "
+                        "leavePlaybackOrientation; the list page stays sideways "
+                        "after playback")
+    if "surfaceSizeFor(" not in pt:
+        problems.append("player_screen.dart builds the texture from the raw "
+                        "portrait window again; hardware decoding would keep "
+                        "drawing into a vertical buffer")
+
+    # 反向断言：方向只允许经 playback_orientation.dart 改，播放页里不许直接调。
+    for lineno, line in enumerate(pt.splitlines(), 1):
+        if "setPreferredOrientations(" in line and "//" not in line:
+            problems.append(f"player_screen.dart:{lineno} calls "
+                            f"setPreferredOrientations directly; route it "
+                            f"through playback_orientation.dart so the desktop "
+                            f"build stays out of it")
+
+    if "bool lockLandscape;" not in mt:
+        problems.append("playback_settings.dart lost lockLandscape; the switch "
+                        "has nothing to persist")
+    if "'lock_landscape': lockLandscape" not in mt:
+        problems.append("lockLandscape must be persisted, otherwise the switch "
+                        "flips back on every launch")
+    if "settings-lock-landscape" not in st:
+        problems.append("settings_screen.dart lost the 手机上强制横屏播放 switch")
+
+    # 5. 锁横屏要靠宿主原生通道，两个移动平台都走，理由不同：
+    #    Android 的 SystemChrome 那套到 Android 上只是 FULL_USER，用户关掉系统
+    #    「自动旋转」之后播放页就不再跟着机身翻；iPad 上 SystemChrome 那套根本
+    #    不生效，得由宿主发 requestGeometryUpdate。
+    activity = (ROOT / "app" / "android" / "app" / "src" / "main" / "kotlin" /
+                "dev" / "lanplayer" / "app" / "MainActivity.kt")
+    appdelegate = ROOT / "app" / "ios" / "Runner" / "AppDelegate.swift"
+    contract = (ROOT / "packages" / "lanplayer_video" / "lib" / "src" /
+                "channel.dart")
+    if not activity.exists():
+        problems.append("MainActivity.kt is gone; Android playback cannot ask "
+                        "for the sensor-driven landscape mode anymore")
+    else:
+        at = activity.read_text(encoding="utf-8")
+        if "SCREEN_ORIENTATION_SENSOR_LANDSCAPE" not in at:
+            problems.append("MainActivity.kt no longer requests "
+                            "SCREEN_ORIENTATION_SENSOR_LANDSCAPE; Android would "
+                            "stay on FULL_USER and stop following the gyroscope "
+                            "once the user turns off auto-rotate")
+        if "lockLandscape" not in at:
+            problems.append("MainActivity.kt no longer answers the "
+                            "lockLandscape method")
+        if "SCREEN_ORIENTATION_UNSPECIFIED" not in at:
+            problems.append("MainActivity.kt never restores "
+                            "SCREEN_ORIENTATION_UNSPECIFIED; leaving the player "
+                            "would pin the whole app to a landscape sensor mode")
+    if not appdelegate.exists():
+        problems.append("app/ios/Runner/AppDelegate.swift is gone; the iPad "
+                        "would go back to ignoring setPreferredOrientations")
+    else:
+        st_ios = appdelegate.read_text(encoding="utf-8")
+        if "requestGeometryUpdate(" not in st_ios:
+            problems.append("AppDelegate.swift never calls requestGeometryUpdate; "
+                            "iPad playback would stay portrait because the system "
+                            "ignores setPreferredOrientations there")
+        if "setNeedsUpdateOfSupportedInterfaceOrientations" not in st_ios:
+            problems.append("AppDelegate.swift does not refresh the supported "
+                            "orientations; the geometry request would be refused "
+                            "whenever the current set does not include landscape")
+        if "lockLandscape" not in st_ios:
+            problems.append("AppDelegate.swift no longer answers the "
+                            "lockLandscape method")
+    if contract.exists():
+        ct = contract.read_text(encoding="utf-8")
+        if "lockLandscape" not in ct:
+            problems.append("channel.dart no longer declares the lockLandscape "
+                            "method; both mobile hosts and the Dart side would be "
+                            "back to private string literals")
+    if "shouldAskHostForLandscape(" not in ot:
+        problems.append("playback_orientation.dart lost the host-landscape "
+                        "decision; the player would stop asking the hosts")
+    for needle, why in (
+            ("VideoTextureBridge.lockLandscape(true)",
+             "entering playback never asks the host to turn the window"),
+            ("VideoTextureBridge.lockLandscape(false)",
+             "leaving playback never gives the orientation back")):
+        if needle not in ot:
+            problems.append(f"playback_orientation.dart {why} ({needle})")
+
+    notes.append("orientation: phones and tablets lock to landscape when a "
+                 "video opens, desktops never do, the texture is sized on "
+                 "the long/short edge, Android follows the gyroscope through "
+                 "SENSOR_LANDSCAPE, and iPad takes requestGeometryUpdate "
+                 "because it ignores the framework call")
+
+
 def check_local_picker() -> None:
     """Guard the local file/folder picker and the wide-character file layer.
 
@@ -5142,6 +5288,7 @@ def main() -> int:
     check_transport_behaviour()
     check_settings_layout()
     check_settings_groups()
+    check_playback_orientation()
     check_local_picker()
     check_splash()
     check_ui_thread()

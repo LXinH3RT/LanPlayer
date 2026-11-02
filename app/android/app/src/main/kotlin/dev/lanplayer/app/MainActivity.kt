@@ -1,6 +1,7 @@
 package dev.lanplayer.app
 
 import android.Manifest
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.view.Surface
@@ -52,8 +53,38 @@ class MainActivity : FlutterActivity() {
                     releaseTexture()
                     result.success(null)
                 }
+                "lockLandscape" -> {
+                    lockLandscape(call.arguments as? Boolean ?: false)
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    /**
+     * 播放页要锁横屏时用这一档。
+     *
+     * Dart 的 `SystemChrome.setPreferredOrientations([landscapeLeft,
+     * landscapeRight])` 到 Android 上变成 `SCREEN_ORIENTATION_FULL_USER`。那一档
+     * 只保证窗口是横的，仍然受系统「自动旋转」开关管：用户在控制中心把自动旋转
+     * 关掉之后，播放页会钉死在进入时的那个横向上，把机身翻到另一侧画面不动，
+     * 只有把机器立起来再放平才会重排 —— 这正是「不跟陀螺仪转」的观感。
+     *
+     * `SCREEN_ORIENTATION_SENSOR_LANDSCAPE` 不看那个开关，只听加速度计与陀螺仪，
+     * 并且不会让画面变成竖的。Flutter 没有暴露这一档，所以由宿主直接调。
+     *
+     * 传 false 时还原成 `UNSPECIFIED`：让 Dart 侧随后那次
+     * `setPreferredOrientations(DeviceOrientation.values)` 重新决定方向。
+     *
+     * iOS 侧同名方法走的是另一条路（`requestGeometryUpdate`），见 Runner/
+     * AppDelegate.swift。
+     */
+    private fun lockLandscape(on: Boolean) {
+        requestedOrientation = if (on) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 

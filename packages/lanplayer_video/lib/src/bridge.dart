@@ -107,6 +107,30 @@ class VideoTextureBridge {
     }
   }
 
+  /// 请宿主按平台能力把播放页转成横屏 / 还回去。
+  ///
+  /// `on == true`：
+  /// - Android 切到 `SCREEN_ORIENTATION_SENSOR_LANDSCAPE`：只听加速度计与
+  ///   陀螺仪，把机身从左侧横放翻到右侧横放，画面立刻跟着翻，不受系统
+  ///   「自动旋转」开关影响。
+  /// - iOS / iPadOS 向 window scene 请求横屏几何。Dart 侧的
+  ///   `SystemChrome.setPreferredOrientations` 在 iPad 上不生效（系统要
+  ///   自己分配窗口，程序无权转向），必须由宿主直接请求。
+  ///
+  /// `on == false`：Android 还回 `SCREEN_ORIENTATION_UNSPECIFIED`，iOS 请求
+  /// 竖屏几何，都不再干预系统。
+  ///
+  /// 桌面端没有这个方法，`MissingPluginException` 会被吞掉。
+  static Future<void> lockLandscape(bool on) async {
+    try {
+      await _channel.invokeMethod<void>(
+        VideoChannelMethod.lockLandscape,
+        on,
+      );
+    } on PlatformException catch (_) {
+    } on MissingPluginException catch (_) {}
+  }
+
   static Future<void> destroy() async {
     _current = null;
     try {

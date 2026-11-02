@@ -417,6 +417,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           SwitchListTile(
+            key: const ValueKey('settings-lock-landscape'),
+            value: _settings.lockLandscape,
+            title: const Text('手机上强制横屏播放'),
+            subtitle: const Text('手机 / 平板打开片子时锁横屏，退出播放页再还回去。'
+                '桌面端不受影响。'),
+            onChanged: (v) {
+              _settings.lockLandscape = v;
+              _persist();
+            },
+          ),
+          SwitchListTile(
             value: _settings.autoNext,
             title: const Text('当前目录自动连播'),
             subtitle: const Text('一集结束后自动播放同目录的下一集，按 SxxExx / 第 N 集 识别顺序。'),

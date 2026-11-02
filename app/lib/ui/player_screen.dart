@@ -13,6 +13,7 @@ import '../data/stores.dart';
 import '../player/playlist.dart';
 import '../util/format.dart';
 import 'keyboard.dart';
+import 'playback_orientation.dart';
 import 'theme.dart';
 import 'video_texture.dart';
 import 'widgets/media_info_dialog.dart';
@@ -105,6 +106,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void initState() {
     super.initState();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    // 手机 / 平板进播放页先锁横屏，见 playback_orientation.dart。
+    // 放在 initState 而不是 _bootstrap：_bootstrap 要等第一帧之后才跑，
+    // 那一帧还是竖的，横屏过程中会先闪一下再转过去。
+    unawaited(enterPlaybackOrientation(
+      mobile: isMobileHost,
+      preference: _settings.lockLandscape,
+    ));
     // The controller is created synchronously: build() already reads it, so
     // deferring it to the post-frame callback (which runs after the first
     // frame) left `_player` uninitialised and threw LateInitializationError.
@@ -117,13 +125,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> _bootstrap() async {
     if (!mounted) return;
+    // 锁横屏之后窗口一定宽大于高，而这个回调跑在旋转真正落地之前 ——
+    // MediaQuery 此刻报的还是竖屏尺寸。照着它建纹理，硬解会一直往竖着的
+    // 缓冲区里画，转过来之后 Flutter 只能把竖纹理塞进横窗口，四周全是黑边。
+    // 所以这里改成按屏幕的长 / 短边分配，方向一落定就正好对上。
     final size = MediaQuery.sizeOf(context);
-    final width = (size.width * MediaQuery.devicePixelRatioOf(context))
-        .round()
-        .clamp(320, 3840);
-    final height = (size.height * MediaQuery.devicePixelRatioOf(context))
-        .round()
-        .clamp(240, 2160);
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final surface = surfaceSizeFor(
+      logicalWidth: size.width,
+      logicalHeight: size.height,
+      devicePixelRatio: dpr,
+      landscape: shouldLockLandscape(
+        mobile: isMobileHost,
+        preference: _settings.lockLandscape,
+      ),
+    );
+    final width = surface.width;
+    final height = surface.height;
 
     // LANPLAYER_NO_TEXTURE=1 skips the texture entirely.  The Windows embedder
     // composites external textures through a path that screen capture cannot
@@ -453,6 +471,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _player.dispose();
     VideoTextureBridge.destroy();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    // 方向也要还回去，否则看完片回列表页也还是横的。
+    unawaited(leavePlaybackOrientation(
+      mobile: isMobileHost,
+      preference: _settings.lockLandscape,
+    ));
     super.dispose();
   }
 

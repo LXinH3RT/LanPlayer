@@ -88,5 +88,16 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+
+	<!-- iPad 上 `SystemChrome.setPreferredOrientations` 默认不生效：支持 Slide
+	     Over / Split View 的 app 由系统分配窗口，程序无权把窗口转成横的
+	     （Flutter 文档原话是 "This setting will only be respected on iPad if
+	     multitasking is disabled"）。这一项在老系统上仍然能让 Dart 侧那次调用
+	     生效，所以留着；但 iPadOS 26 起所有 app 都跑在可调整大小的窗口里，这一项
+	     已被系统忽略（实测：加上它之后仍报 Main display orientation: portrait），
+	     真正让播放页转横的是宿主自己的几何请求，见 Runner/AppDelegate.swift 的
+	     `requestOrientation(landscape:)`。iPhone 上此键无副作用。 -->
+	<key>UIRequiresFullScreen</key>
+	<true/>
 </dict>
 </plist>

@@ -21,6 +21,9 @@ import CoreVideo
   /// 栈顶 `-[FlutterEngine registrarForPlugin:]`）。
   private var registrar: FlutterPluginRegistrar?
   private var textures: FlutterTextureRegistry?
+  /// 最近一次「播放页要不要横屏」的请求。scene 尚未接好窗口时请求会被系统
+  /// 丢掉，靠它在前台之后补发，见 applyPendingOrientation()。
+  private var pendingLandscape: Bool?
 
   override func application(
     _ application: UIApplication,
@@ -122,10 +125,128 @@ import CoreVideo
         }
         self.texture = nil
         result(nil)
+      case "lockLandscape":
+        self.requestOrientation(landscape: (call.arguments as? Bool) ?? false)
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
     }
+  }
+
+  /// 把当前窗口转成横屏（`landscape == true`）或还回竖屏。
+  ///
+  /// 为什么不用 `SystemChrome.setPreferredOrientations`：在 iPad 上那条路
+  /// 不生效。Flutter 文档写得很清楚 —— "This setting will only be respected
+  /// on iPad if multitasking is disabled"；而 iPadOS 26 起窗口一律由系统按
+  /// 可调整大小窗口分配，`UIRequiresFullScreen` 也被忽略了（实测加上它之后
+  /// `devicectl device info displays` 仍报 `Main display orientation:
+  /// portrait`）。想在 iPad 上真正把窗口转横，只能自己发几何请求。
+  ///
+  /// iOS 16 起用 `requestGeometryUpdate`：系统接受后会把 scene 的尺寸一起
+  /// 调整，FlutterViewController 随窗口重排，画面自然铺满。
+  /// iOS 15 及以下没有这个 API，退回到 `attemptRotationToDeviceOrientation`，
+  /// 配合 Dart 侧已经下发的 `setPreferredOrientations` 生效。
+  ///
+  /// 两个方向都请求 `.landscape`（左右都允许）：把机身从一侧翻到另一侧时，
+  /// 系统自己按设备朝向在左右之间切换，这才是「跟着陀螺仪转」。
+  private func requestOrientation(landscape: Bool, attempt: Int = 0) {
+    // 记下这次请求：scene 还没接好窗口时请求会被系统直接丢掉，得等到
+    // `sceneDidBecomeActive` 再补发一次，见 applyPendingOrientation()。
+    pendingLandscape = landscape
+    guard let scene = activeWindowScene() else {
+      NSLog("LanPlayer orientation: no window scene to ask (landscape=\(landscape))")
+      return
+    }
+    // 先更新「这个窗口支持哪些方向」，否则系统会因为不支持目标方向而拒绝
+    // 几何请求。iOS 16 起这个方法才存在。
+    if #available(iOS 16.0, *) {
+      // scene 还没 attach 时 requestGeometryUpdate 会被静默丢弃（连失败回调
+      // 都不会调）。播放页是在引擎启动后第一帧就打开的，那一刻 scene 往往
+      // 还在连接中，所以这里要等它进入 foregroundActive 再发。
+      guard scene.activationState == .foregroundActive else {
+        if attempt < 24 {
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.requestOrientation(landscape: landscape, attempt: attempt + 1)
+          }
+        } else {
+          NSLog("LanPlayer orientation: scene never became active "
+                  + "(state=\(scene.activationState.rawValue)); request dropped")
+        }
+        return
+      }
+      let prefs = UIWindowScene.GeometryPreferences.iOS(
+        interfaceOrientations: landscape ? .landscape : .portrait)
+      let root = scene.keyWindow?.rootViewController
+      let vcMask = root?.supportedInterfaceOrientations.rawValue ?? 0
+      let win = scene.keyWindow
+      let bounds = win?.bounds ?? .zero
+      // iPadOS 26 起窗口由系统分配：只在「scene 居中、与屏幕同尺寸、未被遮挡」
+      // 三项都成立时才允许锁定界面方向（见 UIViewController.h 的
+      // prefersInterfaceOrientationLocked）。所以日志里要把屏幕尺寸、窗口实际
+      // frame、当前方向锁状态一起打出来，才能分清「系统拒绝方向」和「窗口不是
+      // 全屏」；`requestGeometryUpdate` 的成功不回调，只有失败才回调，前后两次
+      // 尺寸对比是唯一能证明请求生效的证据。
+      let screen = scene.screen.bounds
+      // `isInterfaceOrientationLocked` 是 iOS 26 才有的，老系统上按「没锁」记。
+      var locked = false
+      if #available(iOS 26.0, *) {
+        locked = scene.effectiveGeometry.isInterfaceOrientationLocked
+      }
+      NSLog("LanPlayer orientation: requesting geometry (landscape=\(landscape), "
+              + "attempt=\(attempt), scene=\(scene.activationState.rawValue), "
+              + "interfaceOrientation=\(scene.interfaceOrientation.rawValue), "
+              + "vcMask=\(vcMask), windows=\(scene.windows.count), "
+              + "screen=\(Int(screen.width))x\(Int(screen.height)), "
+              + "frame=\(Int(bounds.width))x\(Int(bounds.height)), "
+              + "locked=\(locked))")
+      // 关键顺序：先让 FlutterViewController 放开对目标方向的支持，再请求几何。
+      // 反过来的话系统看到「当前窗口只支持竖屏」，直接把这个请求丢掉。
+      root?.setNeedsUpdateOfSupportedInterfaceOrientations()
+      scene.requestGeometryUpdate(prefs) { error in
+        // 请求被拒绝时留下证据：真机上分不清「没转」和「请求没发出去」。
+        NSLog("LanPlayer orientation: geometry request failed: "
+                + "\(error.localizedDescription)")
+      }
+      // 请求已经交给系统，别让下次前台再补发一遍。
+      pendingLandscape = nil
+      // 记一行结果：`requestGeometryUpdate` 成功时没有任何回调，只靠前后尺寸
+      // 对比才能证明请求真的生效。隔三秒读，避开动画的中间态（半秒时窗口往往
+      // 还在过渡，读到的是旧尺寸）。
+      DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+        guard let s = self?.activeWindowScene() else { return }
+        let b = s.keyWindow?.bounds ?? .zero
+        NSLog("LanPlayer orientation: after request (landscape=\(landscape), "
+                + "interfaceOrientation=\(s.interfaceOrientation.rawValue), "
+                + "frame=\(Int(b.width))x\(Int(b.height)))")
+      }
+    } else {
+      UIDevice.current.setValue(
+        landscape ? UIInterfaceOrientation.landscapeRight.rawValue
+                  : UIInterfaceOrientation.portrait.rawValue,
+        forKey: "orientation")
+      UIViewController.attemptRotationToDeviceOrientation()
+    }
+  }
+
+  /// 取当前前台窗口所在的 scene。
+  ///
+  /// 多 scene 是关闭的（Info.plist 里 `UIApplicationSupportsMultipleScenes`
+  /// 为 false），所以这里只会有一个窗口 scene；它可能还没进入
+  /// `.foregroundActive`（启动瞬间就是），调用方要自己判断。
+  private func activeWindowScene() -> UIWindowScene? {
+    let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+    return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+  }
+
+  /// 前台之后补发一次被丢掉的横屏请求。
+  ///
+  /// 播放页可能在 scene 进入 `.foregroundActive` 之前就打开（引擎起来得比
+  /// 窗口快），那一刻 `requestGeometryUpdate` 会被系统静默丢弃 —— 实测连
+  /// 失败回调都不触发，日志里只有一行 requesting geometry 就没了。
+  func applyPendingOrientation() {
+    guard let want = pendingLandscape else { return }
+    requestOrientation(landscape: want)
   }
 
   /// 内核在解码线程回调，这里切回主线程再动 Flutter 的纹理注册表。
@@ -175,7 +296,10 @@ import CoreVideo
   /// 来电、闹钟、其它 app 抢过音频之后，系统的「播放」类别会被取消激活；
   /// 回到前台时再激活一次，否则下次播放会没有声音。
   func sceneDidBecomeActive(_ scene: UIScene) {
-    (UIApplication.shared.delegate as? AppDelegate)?.configureAudioSession()
+    let app = UIApplication.shared.delegate as? AppDelegate
+    app?.configureAudioSession()
+    // 启动瞬间 scene 还没接好，那次横屏请求会被系统丢掉，这里补发。
+    app?.applyPendingOrientation()
   }
 }
 
