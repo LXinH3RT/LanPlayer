@@ -88,16 +88,8 @@ static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial, double
              * 匀速；Windows 的 d3d11va 也是同步 avcodec_receive_frame。给它们
              * 中间插一个帧周期的等待只会让解码线程追不上 —— Windows 上实测：
              * 加上等待后 12 秒里丢 24–32 帧（此前 0 帧）。真正会「成批吐」
-             * 的是 VideoToolbox 与 MediaCodec（解完两三帧才一起交出来）。
-             *
-             * 还要再加一道闸：解码器的待处理量必须先吃饱。这个等待是在解码
-             * 线程里睡的，睡着的时候没人喂包，异步解码器把手上那几帧吐完就
-             * 断了顿，醒来再一口气补 —— 节拍本意是摊平，结果自己制造了下一次
-             * 抖动。macOS 上同一份片子同一台机器实测：无条件节拍 22.30 fps、
-             * av_diff 每秒恶化 100 ms（−215 → −606 ms）；关掉节拍 23.70 fps、
-             * av_diff 稳定在 −1.7 ~ −45 ms；只在待处理量吃饱时节拍，两者兼得。 */
+             * 的是 VideoToolbox 与 MediaCodec（解完两三帧才一起交出来）。 */
             if (p->video.hw && lp_hw_decoder_is_async(p->video.hw) &&
-                p->video.in_flight >= LP_HW_PREFETCH &&
                 p->video.frames_decoded > 0 && frame_dur > 0) {
                 const int64_t period = (int64_t)(frame_dur * 900000.0);
                 const int64_t since = av_gettime_relative() - p->video.last_present_at_us;
