@@ -5379,6 +5379,20 @@ def check_texture_delivery() -> None:
             ("int64_t pull_stall_count;",
              "LpVideoOut lost pull_stall_count; you could no longer tell a "
              "smooth run from one with occasional 100 ms hiccups"),
+            # 取帧那侧被 vsync 量化过，光有 pull_* 分不清「解码吐得不均」与
+            # 「引擎取帧对不齐」，所以内核侧的送帧间隔要单独记。
+            ("int64_t push_gap_max_us;",
+             "LpVideoOut lost push_gap_max_us; pull_gap alone cannot tell a "
+             "bursty decoder from a raster thread that pulls at the wrong time"),
+            ("int64_t push_gap_sum_us;",
+             "LpVideoOut lost push_gap_sum_us; the average publish interval "
+             "could not be computed"),
+            ("int64_t push_gap_count;",
+             "LpVideoOut lost push_gap_count; there would be no denominator "
+             "for the average publish interval"),
+            ("int64_t last_push_at_us;",
+             "LpVideoOut lost last_push_at_us; publish intervals could not be "
+             "measured at all"),
         ):
             if needle not in it:
                 problems.append(f"player_internal.h: {why} ({needle})")
@@ -5403,6 +5417,11 @@ def check_texture_delivery() -> None:
             ("pull_stall_count++",
              "copyPixelBuffer stopped counting uneven pull spacing; a stream "
              "that delivers all 24 frames in bursts would look perfect again"),
+            # 内核侧的送帧间隔在 publish 里量，别挪到 copyPixelBuffer：
+            # 那是「取」不是「送」，量出来的还是同一个被量化过的数。
+            ("push_gap_sum_us += push_gap;",
+             "publish no longer accumulates the interval between frames; the "
+             "average would always read 0"),
         ):
             if needle not in at:
                 problems.append(f"apple_texture.c: {why} ({needle})")
@@ -5424,6 +5443,11 @@ def check_texture_delivery() -> None:
                 "the STATS event no longer reports pull_gap_ms / pull_stalls; "
                 "a run where every frame arrives but unevenly would look "
                 "identical to a smooth one")
+        if '\\"push_gap_ms\\":%lld,\\"push_avg_ms\\":%lld' not in pt:
+            problems.append(
+                "the STATS event no longer reports push_gap_ms / push_avg_ms; "
+                "there would be no way to tell a bursty decoder from a raster "
+                "thread that pulls at the wrong moment")
 
     if not video.exists():
         problems.append("native/src/core/video.c is gone")
@@ -5525,10 +5549,12 @@ def check_texture_delivery() -> None:
 
     notes.append("texture delivery: the Apple hosts hand every decoded frame "
                  "straight to the texture registry, the core counts the frames "
-                 "a busy raster thread never picked up and the uneven gaps "
-                 "between the ones it did, the stats event reports both "
-                 "separately from decode drops, and late frames are spaced by "
-                 "the real frame period instead of being flushed as a batch")
+                 "a busy raster thread never picked up and reports the spacing "
+                 "on both sides of that hand-off (publish intervals inside the "
+                 "core, pull intervals as the engine asks for frames), the "
+                 "stats event keeps them apart from decode drops, and late "
+                 "frames are spaced by the real frame period instead of being "
+                 "flushed as a batch")
 
 
 def check_startup_home() -> None:

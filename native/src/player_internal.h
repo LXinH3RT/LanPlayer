@@ -351,10 +351,21 @@ typedef struct LpVideoOut {
      * 这里记两件事：
      *   pull_gap_max_us——相邻两次取帧的最大间隔；
      *   pull_stall_count——间隔超过 1.5 个帧周期的次数。
-     * 一秒钟里 stall_count 只要有 3，人眼就能看出来。 */
+     * 一秒钟里 stall_count 只要有 3，人眼就能看出来。
+     *
+     * 取帧是引擎按 vsync 来要的，所以 pull_gap 天生会被 vsync 量化
+     * （60 Hz 上只会出现 50 / 66 / 83 ms 这种台阶）。要分清「解码吐得不均」
+     * 与「引擎取帧对不齐」，还得单独量内核这边的送帧间隔：
+     *   push_gap_max_us——相邻两次 publish 的最大间隔；
+     *   push_gap_avg_us——本秒内所有 publish 间隔的均值。
+     * 两个数都远小于 pull_gap、但画面仍然一顿一冲，问题就在引擎侧。 */
     int64_t pull_gap_max_us;
     int64_t pull_stall_count;
     int64_t last_pull_at_us;
+    int64_t push_gap_max_us;
+    int64_t push_gap_sum_us;
+    int64_t push_gap_count;
+    int64_t last_push_at_us;
     pthread_mutex_t mutex;
 } LpVideoOut;
 

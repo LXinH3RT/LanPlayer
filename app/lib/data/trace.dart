@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 import 'probe.dart';
@@ -99,6 +100,65 @@ class TraceLifecycle extends WidgetsBindingObserver {
     final view = WidgetsBinding.instance.platformDispatcher.views.first;
     trace('metrics ${view.physicalSize} dpr=${view.devicePixelRatio}');
   }
+}
+
+/// 记每一帧的构建与光栅耗时。
+///
+/// 只覆盖「UI 有更新的帧」。视频播放本身不产生 `FrameTiming` ——
+/// 外部纹理由引擎直接合成，不经过 widget 重建 —— 所以这里的数据用来判断
+/// 「界面线程有没有被拖慢」，不能用来解释视频本身的卡顿。iPad 上实测
+/// `worst_total` 12 ms、`slow` 0，说明卡顿不在 Dart 这一侧。
+///
+/// 每秒汇总一次，避免每帧写一行把 IO 本身变成噪声源。
+class _FrameTrace {
+  int _frames = 0;
+  int _buildUs = 0;
+  int _rasterUs = 0;
+  int _worstBuildUs = 0;
+  int _worstRasterUs = 0;
+  int _worstTotalUs = 0;
+  int _slow = 0;
+  int _flushedAtMs = 0;
+
+  void add(List<FrameTiming> timings) {
+    for (final t in timings) {
+      _frames++;
+      final build = t.buildDuration.inMicroseconds;
+      final raster = t.rasterDuration.inMicroseconds;
+      final total = t.totalSpan.inMicroseconds;
+      _buildUs += build;
+      _rasterUs += raster;
+      if (build > _worstBuildUs) _worstBuildUs = build;
+      if (raster > _worstRasterUs) _worstRasterUs = raster;
+      if (total > _worstTotalUs) _worstTotalUs = total;
+      // 一帧的正常预算按 60 Hz 算就是 16.7 ms，超过它必然错过一次 vsync。
+      if (total > 16667) _slow++;
+    }
+    // 用墙钟节流：累加帧时长在「每秒只有零星几帧」时会迟迟不到一秒。
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_flushedAtMs == 0) _flushedAtMs = now;
+    if (now - _flushedAtMs < 1000 || _frames == 0) return;
+    _flushedAtMs = now;
+    trace('frame n=$_frames avg_build=${_buildUs ~/ _frames}us '
+        'avg_raster=${_rasterUs ~/ _frames}us '
+        'worst_build=${_worstBuildUs}us worst_raster=${_worstRasterUs}us '
+        'worst_total=${_worstTotalUs}us slow=$_slow');
+    _frames = 0;
+    _buildUs = 0;
+    _rasterUs = 0;
+    _worstBuildUs = 0;
+    _worstRasterUs = 0;
+    _worstTotalUs = 0;
+    _slow = 0;
+  }
+}
+
+_FrameTrace? _frameTrace;
+
+void installFrameTrace() {
+  if (!traceEnabled || _frameTrace != null) return;
+  final collector = _frameTrace = _FrameTrace();
+  SchedulerBinding.instance.addTimingsCallback(collector.add);
 }
 
 /// 记全局指针事件。

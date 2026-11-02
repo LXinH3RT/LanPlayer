@@ -42,6 +42,15 @@ void lp_render_close(LpPlayer *p)
         p->vout.pixel_buffer = NULL;
     }
     p->vout.has_new_frame = 0;
+    /* 换片时把节奏统计归零：上一部片子最后那次 publish 的时间戳留着，
+     * 下一部片子的第一帧会被算成一个「跨越换片的巨大间隔」。 */
+    p->vout.last_pull_at_us = 0;
+    p->vout.pull_gap_max_us = 0;
+    p->vout.pull_stall_count = 0;
+    p->vout.last_push_at_us = 0;
+    p->vout.push_gap_max_us = 0;
+    p->vout.push_gap_sum_us = 0;
+    p->vout.push_gap_count = 0;
     pthread_mutex_unlock(&p->vout.mutex);
 }
 
@@ -70,6 +79,7 @@ int lp_render_publish_pixel_buffer(LpPlayer *p, void *cv_pixel_buffer)
     CVPixelBufferRef image = (CVPixelBufferRef)cv_pixel_buffer;
     LpFrameCallback cb = NULL;
     void *user = NULL;
+    const int64_t published_at = av_gettime_relative();
 
     pthread_mutex_lock(&p->vout.mutex);
     /* 上一帧还没被引擎取走就来了新帧：它被覆盖，屏幕上永远看不到。
@@ -88,6 +98,20 @@ int lp_render_publish_pixel_buffer(LpPlayer *p, void *cv_pixel_buffer)
     p->vout.pixel_buffer = CVBufferRetain(image);
     p->vout.has_new_frame = 1;
     p->vout.frames_published++;
+    /* 内核这一侧的送帧间隔。取帧那侧（pull_gap）被 vsync 量化过，单看它
+     * 分不清「解码吐得不均」与「引擎取帧对不齐」；这里量的是 publish 之间
+     * 的真实间隔，两个数一对就能定性。 */
+    if (p->vout.last_push_at_us > 0) {
+        const int64_t push_gap = published_at - p->vout.last_push_at_us;
+        if (push_gap > 0) {
+            if (push_gap > p->vout.push_gap_max_us) {
+                p->vout.push_gap_max_us = push_gap;
+            }
+            p->vout.push_gap_sum_us += push_gap;
+            p->vout.push_gap_count++;
+        }
+    }
+    p->vout.last_push_at_us = published_at;
     p->vout.frame_w = (int)CVPixelBufferGetWidth(image);
     p->vout.frame_h = (int)CVPixelBufferGetHeight(image);
     cb = p->vout.frame_cb;

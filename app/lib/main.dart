@@ -36,6 +36,8 @@ Future<void> main() async {
     WidgetsBinding.instance.addObserver(TraceLifecycle());
     // 指针事件要趁早装上：弹层被点掉还是被拖掉，只有这一路能分开。
     installPointerTrace();
+    // 帧耗时：区分「内核送帧偏晚」与「光栅线程错过 vsync」。
+    installFrameTrace();
     final directPath = probeFlag('LANPLAYER_TRACE_PATH');
     if (directPath != null && directPath.isNotEmpty) {
       traceTo(directPath);

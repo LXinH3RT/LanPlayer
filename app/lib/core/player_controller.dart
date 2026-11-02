@@ -62,6 +62,16 @@ class PlayerController extends ChangeNotifier {
   ///
   /// 每秒有 3 次以上就说明节奏是坏的，而 fps / dropped 两项都可能完全正常。
   int pullStalls = 0;
+
+  /// 同一周期内，内核相邻两次「交出帧」的最大间隔与平均间隔（毫秒）。
+  ///
+  /// [pullGapMs] 量的是引擎按 vsync 来要帧的间隔，天生被刷新率量化
+  /// （60 Hz 上只会出现 50 / 66 / 83 这种台阶），分不清「解码吐得不均」
+  /// 与「引擎取帧对不齐」。这两个数在内核侧量，两个一对比就能定性：
+  /// 内核侧也很乱 → 解码节奏有问题；内核侧很稳而 [pullGapMs] 在跳
+  /// → 问题在引擎侧，改内核没用。
+  int pushGapMs = 0;
+  int pushAvgMs = 0;
   int avDiffUs = 0;
   int queuedPackets = 0;
   bool buffering = false;
@@ -332,6 +342,8 @@ class PlayerController extends ChangeNotifier {
         droppedDelivery = (map['dropped_delivery'] as num?)?.toInt() ?? 0;
         pullGapMs = (map['pull_gap_ms'] as num?)?.toInt() ?? 0;
         pullStalls = (map['pull_stalls'] as num?)?.toInt() ?? 0;
+        pushGapMs = (map['push_gap_ms'] as num?)?.toInt() ?? 0;
+        pushAvgMs = (map['push_avg_ms'] as num?)?.toInt() ?? 0;
         avDiffUs = (map['av_diff'] as num?)?.toInt() ?? 0;
         queuedPackets = (map['queued'] as num?)?.toInt() ?? 0;
         final hw = map['hw'] as String?;
@@ -344,7 +356,8 @@ class PlayerController extends ChangeNotifier {
         // 只有 LANPLAYER_TRACE=1 时落盘。
         trace('stats fps=$fps dropped=$dropped '
             'dropped_delivery=$droppedDelivery gap=${pullGapMs}ms '
-            'stalls=$pullStalls decoded=${map['decoded']} '
+            'stalls=$pullStalls push=$pushGapMs/$pushAvgMs ms '
+            'decoded=${map['decoded']} '
             'av_diff=${map['av_diff']} queued=$queuedPackets '
             'buffered=${map['buffered_ms']} hw=$hwActive');
         // Lighter cadence: stats change constantly, do not rebuild the tree

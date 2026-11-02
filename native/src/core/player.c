@@ -291,19 +291,28 @@ static void *player_tick_fn(void *arg)
                  * 从开播算起的最大值。 */
                 int64_t gap = p->vout.pull_gap_max_us;
                 int64_t stalls = p->vout.pull_stall_count;
+                int64_t push_max = p->vout.push_gap_max_us;
+                int64_t push_avg = p->vout.push_gap_count > 0
+                                       ? p->vout.push_gap_sum_us / p->vout.push_gap_count
+                                       : 0;
                 p->vout.pull_gap_max_us = 0;
                 p->vout.pull_stall_count = 0;
+                p->vout.push_gap_max_us = 0;
+                p->vout.push_gap_sum_us = 0;
+                p->vout.push_gap_count = 0;
                 emit_owned_json(p, LP_EVENT_STATS, 0,
                                 lp_str_printf("{\"fps\":%.2f,\"dropped\":%lld,\"decoded\":%lld,"
                                               "\"av_diff\":%lld,\"hw\":\"%s\",\"queued\":%d,"
                                               "\"buffered_ms\":%d,\"dropped_delivery\":%lld,"
-                                              "\"pull_gap_ms\":%lld,\"pull_stalls\":%lld}",
+                                              "\"pull_gap_ms\":%lld,\"pull_stalls\":%lld,"
+                                              "\"push_gap_ms\":%lld,\"push_avg_ms\":%lld}",
                                               fps, (long long)p->stats_dropped,
                                               (long long)p->stats_frames, (long long)av,
                                               p->video.hw_name ? p->video.hw_name : "none",
                                               lp_pq_size(&p->video.pq), lp_audio_buffered_ms(p),
                                               (long long)lost, (long long)(gap / 1000),
-                                              (long long)stalls));
+                                              (long long)stalls, (long long)(push_max / 1000),
+                                              (long long)(push_avg / 1000)));
             }
         }
 

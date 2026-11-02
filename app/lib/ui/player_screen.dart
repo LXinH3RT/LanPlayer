@@ -1676,6 +1676,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
               Text('not shown ${_player.droppedDelivery}'),
               // 帧没丢但到得忽快忽慢，同样会卡。正常应贴着帧周期。
               Text('pull gap ${_player.pullGapMs} ms / ${_player.pullStalls}'),
+              // 内核这一侧的送帧间隔。与上一行一起看：内核侧也乱说明解码
+              // 节奏有问题；内核侧很稳而上一行在跳，问题在引擎取帧。
+              Text('push gap ${_player.pushGapMs} / ${_player.pushAvgMs} ms'),
               Text(
                   'av_diff ${(_player.avDiffUs / 1000).toStringAsFixed(1)} ms'),
               Text('queued  ${_player.queuedPackets}'),
