@@ -152,6 +152,62 @@ static void test_url_shape(void)
     check(strncmp(built, "file://", 7) == 0, "lp_url_build must use the parsed scheme for files");
 }
 
+/* 主机名后面不许凭空多出字符。
+ *
+ * 这里钉的是一次真实事故：lp_url_authority 用 "%s://%s%s%d" 配
+ * `with_port ? ":" : ""` 和 `with_port ? port : 0`，默认端口时那个 %d 仍然会
+ * 打印出 0，于是 "smb://192.168.5.7" 变成 "smb://192.168.5.70"。首页的根目录
+ * URL 由 Dart 侧拼，所以照样列得出来；点进任何子目录都是内核拼的 URL，全部
+ * 连不上 —— 表现就是「主目录能看到，进下级文件夹就报错」。
+ *
+ * 主机名必须用点分 IP：域名里带数字结尾（nas1）时那个多余的 0 会拼成
+ * nas10，同样连不上，但不看字符数是看不出来的。 */
+static void test_authority_shape(void)
+{
+    LpUrl u;
+    memset(&u, 0, sizeof(u));
+    check(lp_url_parse("smb://192.168.5.7/share/dir", &u) == LP_OK, "smb:// URL must parse");
+    char auth[128];
+    memset(auth, 0, sizeof(auth));
+    lp_url_authority(&u, auth, sizeof(auth));
+    check(strcmp(auth, "smb://192.168.5.7") == 0,
+          "the default port must not leave a stray character behind the host");
+
+    /* 整条拼回来的 URL 也要逐字对得上，只看 host 会漏掉后面几段。 */
+    char built[256];
+    memset(built, 0, sizeof(built));
+    lp_url_build(&u, built, sizeof(built));
+    check(strcmp(built, "smb://192.168.5.7/share/dir") == 0,
+          "lp_url_build must reproduce the URL that was parsed");
+
+    /* 非默认端口要真的出现，且只出现一次。 */
+    memset(&u, 0, sizeof(u));
+    check(lp_url_parse("smb://192.168.5.7:4450/share/dir", &u) == LP_OK,
+          "smb:// URL with a custom port must parse");
+    check(u.port == 4450, "a custom port must survive the parse");
+    memset(built, 0, sizeof(built));
+    lp_url_build(&u, built, sizeof(built));
+    check(strcmp(built, "smb://192.168.5.7:4450/share/dir") == 0,
+          "a non-default port must appear exactly once");
+
+    /* 域名以数字结尾时同理：不许变成 nas10。根目录的 path 是 "/"，拼回来
+     * 自带尾斜杠，所以这里只钉主机段。 */
+    memset(&u, 0, sizeof(u));
+    check(lp_url_parse("smb://nas1/share", &u) == LP_OK, "a hostname may end with a digit");
+    memset(built, 0, sizeof(built));
+    lp_url_build(&u, built, sizeof(built));
+    check(strncmp(built, "smb://nas1/", 11) == 0,
+          "a hostname ending in a digit must not grow another digit");
+
+    /* 默认端口显式写出来时，拼回去要收敛成不带端口的那种写法。 */
+    memset(&u, 0, sizeof(u));
+    check(lp_url_parse("smb://192.168.5.7:445/share", &u) == LP_OK, "an explicit default port parses");
+    memset(built, 0, sizeof(built));
+    lp_url_build(&u, built, sizeof(built));
+    check(strncmp(built, "smb://192.168.5.7/", 18) == 0,
+          "an explicit default port must collapse back to the implicit form");
+}
+
 int main(void)
 {
     printf("transport registry: %d entries\n", lp_transport_count());
@@ -159,6 +215,7 @@ int main(void)
     test_lookup();
     test_entries();
     test_url_shape();
+    test_authority_shape();
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
         return 1;

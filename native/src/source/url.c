@@ -180,9 +180,16 @@ void lp_url_authority(const LpUrl *u, char *out, size_t outlen)
         snprintf(out, outlen, "%s://", u->scheme);
         return;
     }
-    int with_port = u->port > 0 && u->port != lp_transport_default_port(u->scheme);
-    snprintf(out, outlen, "%s://%s%s%d", u->scheme, u->host, with_port ? ":" : "",
-             with_port ? u->port : 0);
+    /* 端口要不要出现必须分成两条完整的格式串写。以前写成
+     * "%s://%s%s%d" 配 `with_port ? ":" : ""` 与 `with_port ? port : 0`，
+     * 不需要端口时那个 `%d` 照样会把 0 打出来：smb://192.168.5.7 拼成
+     * "smb://192.168.5.70"，主机名凭空多一位，于是首页列得出主目录（那条
+     * URL 是 Dart 侧拼的，不走这里）、点进任何子目录都连不上。 */
+    if (u->port > 0 && u->port != lp_transport_default_port(u->scheme)) {
+        snprintf(out, outlen, "%s://%s:%d", u->scheme, u->host, u->port);
+    } else {
+        snprintf(out, outlen, "%s://%s", u->scheme, u->host);
+    }
 }
 
 void lp_url_insert_credentials(const LpUrl *u, const char *url, char *out, size_t outlen)

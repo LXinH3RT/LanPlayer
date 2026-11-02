@@ -2038,6 +2038,12 @@ def check_transport_behaviour() -> None:
     if build.exists() and 'build_test("lp_transport_test.exe"' not in build.read_text(encoding="utf-8"):
         problems.append("scripts/build_windows.py no longer builds lp_transport_test.exe")
         return
+    # URL 拼装的回归用例必须真的被调用：删掉那一行，exe 照样打印 "all cases
+    # passed"，主机的端口就悄悄退回事故时的写法。
+    if "test_authority_shape();" not in source.read_text(encoding="utf-8"):
+        problems.append("native/tests/lp_transport_test.c no longer calls test_authority_shape; "
+                        "the default port could leak a stray character into the host again")
+        return
     # lp_smoke_test 链接共享库，看不到内部符号；断言必须留在这个可执行文件里。
     smoke = ROOT / "native" / "tests" / "lp_smoke_test.c"
     if smoke.exists() and "source_internal.h" in smoke.read_text(encoding="utf-8"):
