@@ -5465,7 +5465,9 @@ def check_texture_delivery() -> None:
              "batches would hit the screen back to back again"),
             # 异步解码器才需要节拍。这条被删掉会变成「所有硬解都补等待」，
             # Windows 的 d3d11va 是同步取帧，插等待直接掉帧（实测 12 秒丢 32）。
-            ("lp_hw_decoder_is_async(p->video.hw)",
+            # 带尾随 && 才唯一：下面补料分支里那处是 `is_async(...)) {`，
+            # 不带 &&。裸查函数名两边都能命中，删了也不会红。
+            ("lp_hw_decoder_is_async(p->video.hw) &&",
              "the pacer no longer restricts itself to asynchronous decoders; "
              "a synchronous one like d3d11va would fall behind and drop frames"),
             # 异步解码器要被喂饱几帧，否则它自己的调度抖动直接变成出帧间隔
@@ -5481,6 +5483,15 @@ def check_texture_delivery() -> None:
             ("if (p->video.hw && lp_hw_decoder_is_async(p->video.hw)) {",
              "the prefetch loop no longer excludes synchronous decoders; "
              "d3d11va would stall at 0 fps"),
+            # 节拍闸门：解码器待处理量没吃饱就不许睡。这个等待发生在解码
+            # 线程里，睡着的时候没人喂包，异步解码器吐完手上几帧就断了顿，
+            # 醒来再一口气补 —— 节拍本意是摊平，结果自己制造下一次抖动。
+            # macOS 实测：无条件节拍 22.30 fps、av_diff 每秒恶化约 100 ms；
+            # 关掉节拍 23.70 fps、av_diff 稳定；加闸门后 23.83 fps、尖峰减半。
+            ("p->video.in_flight >= LP_HW_PREFETCH &&",
+             "the pacer no longer waits for the decoder backlog; it sleeps "
+             "while nothing feeds the decoder, so VideoToolbox starves and "
+             "bursts and the frame rate drops below the source"),
         ):
             if needle not in vt:
                 problems.append(f"video.c: {why} ({needle})")
@@ -5567,7 +5578,8 @@ def check_texture_delivery() -> None:
                  "core, pull intervals as the engine asks for frames), the "
                  "stats event keeps them apart from decode drops, and late "
                  "frames are spaced by the real frame period instead of being "
-                 "flushed as a batch")
+                 "flushed as a batch, and that spacing only kicks in once the "
+                 "async decoder already has a backlog to chew on")
 
 
 def check_startup_home() -> None:
