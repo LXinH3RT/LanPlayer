@@ -254,6 +254,14 @@ int lp_hw_decoder_receive(LpVideoDecoder *d, LpDecodedFrame *out)
     return LP_OK;
 }
 
+int lp_hw_decoder_is_async(LpVideoDecoder *d)
+{
+    (void)d;
+    /* d3d11va 走的是同步 avcodec_receive_frame：喂一包、取一帧，不存在
+     * 「攒够几帧再一起交出来」的节奏，所以内核不需要给上屏补最小间隔。 */
+    return 0;
+}
+
 int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f)
 {
     if (!d || !f) {

@@ -1674,6 +1674,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
               // 与 dropped 分开显示：这是「内核按时出帧、交付环节丢的」，
               // 画面卡顿而音频正常时，看这一行才知道卡在哪一端。
               Text('not shown ${_player.droppedDelivery}'),
+              // 帧没丢但到得忽快忽慢，同样会卡。正常应贴着帧周期。
+              Text('pull gap ${_player.pullGapMs} ms / ${_player.pullStalls}'),
               Text(
                   'av_diff ${(_player.avDiffUs / 1000).toStringAsFixed(1)} ms'),
               Text('queued  ${_player.queuedPackets}'),

@@ -172,10 +172,34 @@ void *lp_player_copy_pixel_buffer(LpPlayer *p)
     if (!p) {
         return NULL;
     }
+    /* 取帧节奏单独量一遍。
+     *
+     * 帧数与丢帧数都对不上观感时，剩下的解释只有一个：帧到了，但间隔不均。
+     * 一秒 24 帧照样可以看起来一顿一顿的——只要其中几帧晚到了 100 ms 以上。
+     * 这里记下相邻两次取帧的间隔与「超过 1.5 个帧周期」的次数，由 STATS
+     * 事件带出去；桌面与 Android 不走这条路径，恒为 0。 */
+    const int64_t now = av_gettime_relative();
+    int64_t frame_us = 40000;
+    const double dur = p->video.frame_duration;
+    if (dur > 0.0) {
+        frame_us = (int64_t)(dur * 1000000.0);
+    }
     pthread_mutex_lock(&p->vout.mutex);
     CVPixelBufferRef image = (CVPixelBufferRef)p->vout.pixel_buffer;
     if (image && p->vout.has_new_frame) {
         CVBufferRetain(image);
+        /* 只在真的交出一帧时量间隔：引擎每 vsync 都会来调用，没新帧的那些
+         * 调用不算「画面上跳了一下」。 */
+        if (p->vout.last_pull_at_us > 0) {
+            const int64_t gap = now - p->vout.last_pull_at_us;
+            if (gap > p->vout.pull_gap_max_us) {
+                p->vout.pull_gap_max_us = gap;
+            }
+            if (gap > frame_us * 3 / 2) {
+                p->vout.pull_stall_count++;
+            }
+        }
+        p->vout.last_pull_at_us = now;
     } else {
         /* 没有新帧就别把旧帧再交一次：引擎会把同一帧画两遍，看起来是
          * 「卡住了一下」。返回 NULL 让引擎保持上一帧。 */

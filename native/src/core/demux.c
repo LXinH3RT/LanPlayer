@@ -285,6 +285,25 @@ static int open_input(LpPlayer *p, char *err, size_t errlen)
     return LP_OK;
 }
 
+/* 记下视频轨的真实帧周期。
+ *
+ * 视频线程原本把帧周期写死成 0.04 秒（25 fps），节拍控制据此推导最小间隔；
+ * 24 fps 的片子会算快 4%、23.976 的会算快 4.3%，长期跑下来每十几秒就要
+ * 多吐一帧。这里按容器报的帧率覆盖一次，读不出来就保留缺省值。 */
+static void note_frame_duration(LpPlayer *p)
+{
+    if (!p->fmt || p->video.stream_index < 0) {
+        return;
+    }
+    AVStream *st = p->fmt->streams[p->video.stream_index];
+    AVRational fr = st->avg_frame_rate.num > 0 ? st->avg_frame_rate : st->r_frame_rate;
+    const double fps = av_q2d(fr);
+    /* 有些分轨不给帧率（可变帧率、裸流），宁可少做一次平滑也不要按 0 去算。 */
+    if (fps > 0.1 && fps < 200.0) {
+        p->video.frame_duration = 1.0 / fps;
+    }
+}
+
 /* 按码率折算预读窗口。
  *
  * 定长的 24 MB 对两端都不合适：4 Mbps 的老片能预读 48 秒（SMB 抖动早就
@@ -496,6 +515,7 @@ int lp_demux_open(LpPlayer *p)
         lp_emit_error(p, LP_ERR_UNSUPPORTED, "no playable stream found");
         return LP_ERR_UNSUPPORTED;
     }
+    note_frame_duration(p);
     apply_readahead(p);
     if (lp_subtitle_open(p) != LP_OK) {
         LP_WARN("demux", "subtitle init failed");

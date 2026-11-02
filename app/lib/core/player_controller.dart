@@ -49,6 +49,19 @@ class PlayerController extends ChangeNotifier {
   /// 这个是「内核照常出帧，交付环节丢的」。画面卡顿而音频正常时，
   /// 两者要分别看才能判断该修同步逻辑还是修纹理交付。
   int droppedDelivery = 0;
+
+  /// 最近一个统计周期内，相邻两次取帧的最大间隔（毫秒，仅 Apple 平台非零）。
+  ///
+  /// [droppedDelivery] 统计的是「这一帧根本没被取走」；[pullGapMs] 统计的是
+  /// 「取走了，但隔了很久才取」。后者更接近卡顿的观感：一秒交满 24 帧、一帧
+  /// 不丢，只要其中几帧晚到 100 ms 以上，屏幕就是一跳一跳的。正常值应当
+  /// 贴着帧周期（24 fps ≈ 42 ms），超过 100 ms 就能看出来。
+  int pullGapMs = 0;
+
+  /// 同一周期内，取帧间隔超过 1.5 个帧周期的次数。
+  ///
+  /// 每秒有 3 次以上就说明节奏是坏的，而 fps / dropped 两项都可能完全正常。
+  int pullStalls = 0;
   int avDiffUs = 0;
   int queuedPackets = 0;
   bool buffering = false;
@@ -317,16 +330,21 @@ class PlayerController extends ChangeNotifier {
         fps = (map['fps'] as num?)?.toDouble() ?? 0;
         dropped = (map['dropped'] as num?)?.toInt() ?? 0;
         droppedDelivery = (map['dropped_delivery'] as num?)?.toInt() ?? 0;
+        pullGapMs = (map['pull_gap_ms'] as num?)?.toInt() ?? 0;
+        pullStalls = (map['pull_stalls'] as num?)?.toInt() ?? 0;
         avDiffUs = (map['av_diff'] as num?)?.toInt() ?? 0;
         queuedPackets = (map['queued'] as num?)?.toInt() ?? 0;
         final hw = map['hw'] as String?;
         if (hw != null) hwActive = hw;
-        // 「音频正常、画面卡顿」的两种成因要分开看：内核没出帧（解码 / 同步
-        // 问题，看 dropped），还是内核按时出帧了但 Flutter 侧没画出来
-        // （纹理交付问题，看 dropped_delivery）。后者长期不计数，
-        // 导致这个现象在统计里完全隐形。只有 LANPLAYER_TRACE=1 时落盘。
+        // 「音频正常、画面卡顿」的三种成因要分开看：内核没出帧（解码 / 同步
+        // 问题，看 dropped）；内核按时出帧了但 Flutter 侧没画出来
+        // （纹理交付问题，看 dropped_delivery）；两样都正常但帧到得忽快忽慢
+        // （看 pull_gap / pull_stalls）。第三种最常见，也最难看出来 ——
+        // fps 显示 24、dropped 显示 0，屏幕照样一跳一跳。
+        // 只有 LANPLAYER_TRACE=1 时落盘。
         trace('stats fps=$fps dropped=$dropped '
-            'dropped_delivery=$droppedDelivery decoded=${map['decoded']} '
+            'dropped_delivery=$droppedDelivery gap=${pullGapMs}ms '
+            'stalls=$pullStalls decoded=${map['decoded']} '
             'av_diff=${map['av_diff']} queued=$queuedPackets '
             'buffered=${map['buffered_ms']} hw=$hwActive');
         // Lighter cadence: stats change constantly, do not rebuild the tree

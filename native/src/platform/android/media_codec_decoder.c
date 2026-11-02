@@ -407,6 +407,14 @@ int lp_hw_decoder_receive(LpVideoDecoder *d, LpDecodedFrame *out)
     }
 }
 
+int lp_hw_decoder_is_async(LpVideoDecoder *d)
+{
+    (void)d;
+    /* MediaCodec 也是异步的：dequeueOutputBuffer 一次可能连着吐出几块
+     * （编解码器内部有个输出缓冲池），视频线程拿到的是一批。 */
+    return 1;
+}
+
 int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f)
 {
     if (!d || !d->codec || !f) {

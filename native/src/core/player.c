@@ -285,15 +285,25 @@ static void *player_tick_fn(void *arg)
                 if (lost < 0) {
                     lost = 0;
                 }
+                /* pull_gap / pull_stall：交付节奏的抖动。帧数与丢帧数都对不上
+                 * 观感时（fps 正常、dropped 为 0，画面仍一跳一跳），问题就在
+                 * 间隔不均。超时立刻清零，统计按「最近一个周期」说话而不是
+                 * 从开播算起的最大值。 */
+                int64_t gap = p->vout.pull_gap_max_us;
+                int64_t stalls = p->vout.pull_stall_count;
+                p->vout.pull_gap_max_us = 0;
+                p->vout.pull_stall_count = 0;
                 emit_owned_json(p, LP_EVENT_STATS, 0,
                                 lp_str_printf("{\"fps\":%.2f,\"dropped\":%lld,\"decoded\":%lld,"
                                               "\"av_diff\":%lld,\"hw\":\"%s\",\"queued\":%d,"
-                                              "\"buffered_ms\":%d,\"dropped_delivery\":%lld}",
+                                              "\"buffered_ms\":%d,\"dropped_delivery\":%lld,"
+                                              "\"pull_gap_ms\":%lld,\"pull_stalls\":%lld}",
                                               fps, (long long)p->stats_dropped,
                                               (long long)p->stats_frames, (long long)av,
                                               p->video.hw_name ? p->video.hw_name : "none",
                                               lp_pq_size(&p->video.pq), lp_audio_buffered_ms(p),
-                                              (long long)lost));
+                                              (long long)lost, (long long)(gap / 1000),
+                                              (long long)stalls));
             }
         }
 

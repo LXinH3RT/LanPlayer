@@ -298,6 +298,13 @@ int lp_hw_decoder_init(LpVideoDecoder *d, const LpVideoDecoderConfig *cfg, char 
 int lp_hw_decoder_available(void);
 const char *lp_hw_decoder_name(void);
 int lp_hw_decoder_send(LpVideoDecoder *d, const AVPacket *pkt);
+/* 1 = 这个解码器是异步的，一帧进来不保证马上能取走，解完两三帧才一起交出来。
+ *
+ * VideoToolbox 与 MediaCodec 都是这样：喂一包进去，回调攒够了才让
+ * lp_hw_decoder_receive 取到帧，于是视频线程拿到的是一批而不是匀速的一帧。
+ * 只有这类解码器需要内核补最小间隔（见 video.c 的 wait_for_presentation）；
+ * Windows 的 d3d11va 就是同步 avcodec_receive_frame，插等待只会让它掉队。 */
+int lp_hw_decoder_is_async(LpVideoDecoder *d);
 /* 0 = frame out, LP_ERR_AGAIN = more input needed, <0 fatal */
 int lp_hw_decoder_receive(LpVideoDecoder *d, LpDecodedFrame *out);
 /* Present at the sync deadline (Android releases the buffer; Apple publishes
@@ -336,6 +343,18 @@ typedef struct LpVideoOut {
      * 「音频正常、画面卡顿」因此一直查不出来。单独计数，
      * STATS 事件以 dropped_delivery 上报。桌面与 Android 恒为 0。 */
     int64_t frames_delivery_lost;
+    /* 交付节奏的抖动，只有 Apple 平台会累加。
+     *
+     * 帧数与丢帧数都对不上卡顿的观感时，问题往往在「间隔不均」：
+     * 一秒钟交出去 24 帧，但其中 20 帧挤在 200 ms 里、剩下 4 帧拖到另外
+     * 800 ms，屏幕上看就是一跳一跳的，而 fps 统计显示 24、dropped 显示 0。
+     * 这里记两件事：
+     *   pull_gap_max_us——相邻两次取帧的最大间隔；
+     *   pull_stall_count——间隔超过 1.5 个帧周期的次数。
+     * 一秒钟里 stall_count 只要有 3，人眼就能看出来。 */
+    int64_t pull_gap_max_us;
+    int64_t pull_stall_count;
+    int64_t last_pull_at_us;
     pthread_mutex_t mutex;
 } LpVideoOut;
 
@@ -606,6 +625,10 @@ typedef struct LpVideoStream {
     atomic_int eof;
     int64_t frames_decoded;
     int64_t frames_dropped;
+    /* 上一次真正上屏的时刻（av_gettime_relative，微秒）。用来给「已经落后于
+     * 主时钟」的帧补一个最小间隔：硬解是一次一批地吐帧的，只按主时钟判断
+     * 会让一批帧在几毫秒内连续上屏、随后空等下一批，观感是一顿一冲。 */
+    int64_t last_present_at_us;
     LpVideoDecoder *hw; /* non-NULL when decoding on the platform decoder */
     /* deinterlace / enhancement filter chain, created lazily */
     AVFilterGraph *fg;

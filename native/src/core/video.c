@@ -23,7 +23,7 @@ static int64_t pts_to_us(AVRational tb, int64_t pts)
 
 /* Waits until the master clock reaches pts_us.
  * Returns 0 = present, 1 = too late (drop), <0 = interrupted. */
-static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial)
+static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial, double frame_dur)
 {
     for (;;) {
         if (lp_is_abort(p) || serial != atomic_load(&p->serial)) {
@@ -49,7 +49,38 @@ static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial)
              * 把正常出帧当成落后丢掉 —— 实测 30 秒丢 127 帧。阈值放宽到
              * 500 ms：仍然拦得住真正跟不上的情况（软解来不及、机器太慢），
              * 但不再误伤解码延迟。 */
-            return diff < -500000 ? 1 : 0;
+            if (diff < -500000) {
+                return 1;
+            }
+            /* 落后不等于「可以立刻连续刷屏」。VideoToolbox 是一次一批地吐帧
+             * 的（异步解完两三帧再回调），而这里原本对任何 diff <= 0 都直接
+             * 返回 0，于是一批帧在几毫秒内接二连三地上屏，接着线程没事干、
+             * 等下一批 —— 平均帧率看着是 24，观感却是「一顿一冲」。
+             *
+             * iPad 上实测（把每两次取帧的间隔记成 pull_gap）：每秒有 6 次
+             * 超过 60 ms 的停顿，最大 145–216 ms，而内核 dropped 始终是 0，
+             * 也就是说统计里完全看不见。
+             *
+             * 处理办法是给「已经在后面」的帧补一个最小间隔：按帧周期缩放
+             * 到 0.9，把一批帧摊平到它们本该占用的那段时间里。它不改变
+             * A/V 偏移的稳态（本来就已经落后），只是把「挤在一起 + 随后
+             * 长停顿」换成匀速。
+             *
+             * 只对异步解码器生效。软解是自己一帧一帧解、解完就上屏，本来就
+             * 匀速；Windows 的 d3d11va 也是同步 avcodec_receive_frame。给它们
+             * 中间插一个帧周期的等待只会让解码线程追不上 —— Windows 上实测：
+             * 加上等待后 12 秒里丢 24–32 帧（此前 0 帧）。真正会「成批吐」
+             * 的是 VideoToolbox 与 MediaCodec（解完两三帧才一起交出来）。 */
+            if (p->video.hw && lp_hw_decoder_is_async(p->video.hw) &&
+                p->video.frames_decoded > 0 && frame_dur > 0) {
+                const int64_t period = (int64_t)(frame_dur * 900000.0);
+                const int64_t since = av_gettime_relative() - p->video.last_present_at_us;
+                if (period > 0 && since >= 0 && since < period) {
+                    av_usleep((unsigned)(period - since));
+                    continue;
+                }
+            }
+            return 0;
         }
         unsigned nap = diff > 10000 ? 10000u : (unsigned)diff;
         if (nap < 1000) {
@@ -260,6 +291,7 @@ static void present_hw(LpPlayer *p, LpDecodedFrame *hf, int drop)
     p->video.frames_decoded++;
     p->stats_frames++;
     p->video.last_pts_us = hf->pts_us;
+    p->video.last_present_at_us = av_gettime_relative();
     lp_note_position(p, hf->pts_us);
 }
 
@@ -364,7 +396,7 @@ void *lp_video_thread_fn(void *arg)
                     break;
                 }
                 int64_t pts_us = hf.pts_us > 0 ? hf.pts_us : last_pts_us + (int64_t)(frame_dur * 1e6);
-                int drop = wait_for_presentation(p, pts_us, serial);
+                int drop = wait_for_presentation(p, pts_us, serial, frame_dur);
                 if (drop < 0) {
                     /* Seek or stop: release the buffer and let the outer loop
                      * re-sync (do NOT exit the thread). */
@@ -401,7 +433,7 @@ void *lp_video_thread_fn(void *arg)
                 pts_us = last_pts_us + (int64_t)(frame_dur * 1e6);
             }
             AVFrame *shown = maybe_deinterlace(p, frame);
-            int drop = wait_for_presentation(p, pts_us, serial);
+            int drop = wait_for_presentation(p, pts_us, serial, frame_dur);
             if (drop < 0) {
                 av_frame_unref(frame);
                 break;
@@ -414,6 +446,7 @@ void *lp_video_thread_fn(void *arg)
                 p->video.frames_decoded++;
                 p->stats_frames++;
                 p->video.last_pts_us = pts_us;
+                p->video.last_present_at_us = av_gettime_relative();
                 lp_note_position(p, pts_us);
             }
             last_pts_us = pts_us;
@@ -465,6 +498,7 @@ int lp_video_start(LpPlayer *p)
      * 判断「本片是否已经出过画面」（见 wait_for_presentation）。不在这里
      * 清零，播放列表里第二个文件之后的头两秒仍会被当成晚到丢掉。 */
     p->video.frames_decoded = 0;
+    p->video.last_present_at_us = 0;
     lp_pq_start(&p->video.pq);
     if (pthread_create(&p->video.thread, NULL, lp_video_thread_fn, p) != 0) {
         return LP_ERR_NOMEM;

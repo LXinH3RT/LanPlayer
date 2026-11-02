@@ -146,6 +146,13 @@ int lp_hw_decoder_receive(LpVideoDecoder *d, LpDecodedFrame *out)
     return LP_ERR_UNSUPPORTED;
 }
 
+int lp_hw_decoder_is_async(LpVideoDecoder *d)
+{
+    (void)d;
+    /* 这个后端根本没有硬件解码器，返回值无人使用。 */
+    return 0;
+}
+
 int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f)
 {
     (void)d;

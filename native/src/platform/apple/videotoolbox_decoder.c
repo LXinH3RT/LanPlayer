@@ -468,6 +468,15 @@ int lp_hw_decoder_receive(LpVideoDecoder *d, LpDecodedFrame *out)
     return LP_OK;
 }
 
+int lp_hw_decoder_is_async(LpVideoDecoder *d)
+{
+    (void)d;
+    /* VideoToolbox 是异步的：send 只是把样本丢给会话，帧通过 output
+     * handler 攒进 queue，receive 时可能一次取到两三帧。视频线程因此拿到
+     * 的是一批而不是匀速的一帧，内核需要给上屏补最小间隔。 */
+    return 1;
+}
+
 int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f)
 {
     if (!d || !f) {

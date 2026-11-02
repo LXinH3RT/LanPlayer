@@ -5342,10 +5342,21 @@ def check_texture_delivery() -> None:
         any thread, which added a main-runloop of latency to every frame.
 
     Each of the three is cheap to reintroduce by accident, so assert them.
+
+    A fourth cause lives in the core's frame pacing.  VideoToolbox hands
+    frames over in batches (it decodes two or three asynchronously and then
+    calls back), and `wait_for_presentation` used to present every frame whose
+    timestamp was already in the past without any spacing at all.  A batch
+    therefore hit the screen within a couple of milliseconds and the thread
+    then idled until the next one: 24 fps on the counter, one lurch per batch
+    on the screen.  iPad traces showed a pull interval of 145 ms on average
+    and 216 ms at worst while `dropped` stayed at 0 throughout.
     """
     apple = ROOT / "native" / "src" / "platform" / "apple" / "apple_texture.c"
     internal = ROOT / "native" / "src" / "player_internal.h"
     player = ROOT / "native" / "src" / "core" / "player.c"
+    video = ROOT / "native" / "src" / "core" / "video.c"
+    demux = ROOT / "native" / "src" / "core" / "demux.c"
     ios = ROOT / "app" / "ios" / "Runner" / "AppDelegate.swift"
     macos = ROOT / "app" / "macos" / "Runner" / "MainFlutterWindow.swift"
 
@@ -5358,6 +5369,19 @@ def check_texture_delivery() -> None:
                 "LpVideoOut lost frames_delivery_lost; overwritten frames "
                 "would go back to being invisible in the stats, which is "
                 "exactly how this stutter stayed unfixed for so long")
+        # 交付节奏的抖动：帧数与丢帧数都对不上观感时，剩下的解释就是「到了，
+        # 但间隔不均」。没有这两个计数，24 fps 里夹着几次 100 ms 的停顿在
+        # 统计上永远看不出来。
+        for needle, why in (
+            ("int64_t pull_gap_max_us;",
+             "LpVideoOut lost pull_gap_max_us; uneven frame spacing would go "
+             "back to being invisible"),
+            ("int64_t pull_stall_count;",
+             "LpVideoOut lost pull_stall_count; you could no longer tell a "
+             "smooth run from one with occasional 100 ms hiccups"),
+        ):
+            if needle not in it:
+                problems.append(f"player_internal.h: {why} ({needle})")
         if "LP_VOUT_SLOTS" in it or "frame_slots" in it:
             problems.append(
                 "player_internal.h has a multi-slot frame queue again; the "
@@ -5374,6 +5398,11 @@ def check_texture_delivery() -> None:
             ("if (image && p->vout.has_new_frame)",
              "copyPixelBuffer hands out the slot without checking for a new "
              "frame; the engine would draw the same frame twice"),
+            # 间隔只在「真的交出一帧」时量。挪到函数开头（每次 vsync 都量）
+            # 会把「没新帧的空转」也算成停顿，读数立刻失真。
+            ("pull_stall_count++",
+             "copyPixelBuffer stopped counting uneven pull spacing; a stream "
+             "that delivers all 24 frames in bursts would look perfect again"),
         ):
             if needle not in at:
                 problems.append(f"apple_texture.c: {why} ({needle})")
@@ -5385,11 +5414,93 @@ def check_texture_delivery() -> None:
         # Match the format string itself, not the word: the comment above the
         # emit explains dropped_delivery too, so a bare substring test would
         # stay green after the field was dropped from the payload.
-        if ',\\"dropped_delivery\\":%lld}' not in pt:
+        if '\\"dropped_delivery\\":%lld' not in pt:
             problems.append(
                 "the STATS event no longer reports dropped_delivery; the "
                 "debug overlay could not tell 'core never produced the "
                 "frame' from 'Flutter never took it'")
+        if '\\"pull_gap_ms\\":%lld,\\"pull_stalls\\":%lld' not in pt:
+            problems.append(
+                "the STATS event no longer reports pull_gap_ms / pull_stalls; "
+                "a run where every frame arrives but unevenly would look "
+                "identical to a smooth one")
+
+    if not video.exists():
+        problems.append("native/src/core/video.c is gone")
+    else:
+        vt = video.read_text(encoding="utf-8")
+        for needle, why in (
+            ("wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial, double frame_dur)",
+             "wait_for_presentation stopped taking the frame period; the "
+             "spacing below cannot be derived without it"),
+            ("p->video.last_present_at_us = av_gettime_relative();",
+             "nothing records when a frame actually reached the screen, so the "
+             "pacer has no reference point and every late frame presents at once"),
+            ("const int64_t period = (int64_t)(frame_dur * 900000.0);",
+             "the minimum spacing between late frames is gone; VideoToolbox "
+             "batches would hit the screen back to back again"),
+            # 异步解码器才需要节拍。这条被删掉会变成「所有硬解都补等待」，
+            # Windows 的 d3d11va 是同步取帧，插等待直接掉帧（实测 12 秒丢 32）。
+            ("lp_hw_decoder_is_async(p->video.hw)",
+             "the pacer no longer restricts itself to asynchronous decoders; "
+             "a synchronous one like d3d11va would fall behind and drop frames"),
+        ):
+            if needle not in vt:
+                problems.append(f"video.c: {why} ({needle})")
+        # 上屏时刻必须两处都记：硬解走 present_hw，软解走内联分支。只补一处
+        # 会让「一半片子卡、一半不卡」这种最难查的现象重新出现。
+        if vt.count("p->video.last_present_at_us = av_gettime_relative();") < 2:
+            problems.append(
+                "video.c only stamps last_present_at_us on one of the two "
+                "present paths; hardware and software playback would then be "
+                "paced differently")
+        if "p->video.last_present_at_us = 0;" not in vt:
+            problems.append(
+                "lp_video_start never resets last_present_at_us; the first "
+                "frame of the next file is paced against the previous file's "
+                "last present time")
+
+    if not demux.exists():
+        problems.append("native/src/core/demux.c is gone")
+    else:
+        dt = demux.read_text(encoding="utf-8")
+        for needle, why in (
+            ("static void note_frame_duration(LpPlayer *p)",
+             "nothing records the stream's real frame rate any more"),
+            ("note_frame_duration(p);",
+             "note_frame_duration is defined but never called; the pacer would "
+             "keep assuming 25 fps for 24 and 23.976 fps material"),
+            ("p->video.frame_duration = 1.0 / fps;",
+             "the frame period is no longer written to the player"),
+        ):
+            if needle not in dt:
+                problems.append(f"demux.c: {why} ({needle})")
+
+    # 每个平台后端都必须回答「你是不是异步的」。漏一个就是链接失败，
+    # 答错一个（同步的说成异步）会让那条路径凭空掉帧。
+    for rel, want_async in (
+        ("native/src/platform/apple/videotoolbox_decoder.c", "1"),
+        ("native/src/platform/android/media_codec_decoder.c", "1"),
+        ("native/src/platform/win32/d3d11va_decoder.c", "0"),
+        ("native/src/platform/stub/stub_platform.c", "0"),
+    ):
+        path = ROOT / rel
+        if not path.exists():
+            problems.append(f"{rel} is gone")
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "int lp_hw_decoder_is_async(LpVideoDecoder *d)" not in text:
+            problems.append(f"{rel} does not answer lp_hw_decoder_is_async; the "
+                            f"pacer cannot tell a batching decoder from a "
+                            f"synchronous one")
+            continue
+        start = text.find("int lp_hw_decoder_is_async(LpVideoDecoder *d)")
+        end = text.find("\n}", start)
+        body = text[start:end if end > 0 else len(text)]
+        if f"return {want_async};" not in body:
+            problems.append(
+                f"{rel} answers lp_hw_decoder_is_async with the wrong verdict; "
+                f"it must return {want_async}")
 
     for path, name in ((ios, "AppDelegate.swift"),
                        (macos, "MainFlutterWindow.swift")):
@@ -5414,8 +5525,10 @@ def check_texture_delivery() -> None:
 
     notes.append("texture delivery: the Apple hosts hand every decoded frame "
                  "straight to the texture registry, the core counts the frames "
-                 "a busy raster thread never picked up, and the stats event "
-                 "reports them separately from decode drops")
+                 "a busy raster thread never picked up and the uneven gaps "
+                 "between the ones it did, the stats event reports both "
+                 "separately from decode drops, and late frames are spaced by "
+                 "the real frame period instead of being flushed as a batch")
 
 
 def check_startup_home() -> None:
