@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../data/shortcuts.dart';
+import '../pointer_input.dart';
 import '../theme.dart';
 
 /// 录制结果：要么绑到一颗键，要么是「清除绑定」。
@@ -177,7 +178,9 @@ class ShortcutSection extends StatelessWidget {
             ),
           ),
         ),
-        for (final g in PointerGesture.all)
+        // 按宿主取表：触屏上单击是「叫出控制栏」，鼠标上是暂停，
+        // 在错的机器上写出错的那条比不写更糟。
+        for (final g in PointerGesture.forHost(mouseDriven: isMouseDrivenHost))
           ListTile(
             dense: true,
             title: Text(g.gesture),

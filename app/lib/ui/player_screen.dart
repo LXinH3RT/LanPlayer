@@ -14,6 +14,7 @@ import '../player/playlist.dart';
 import '../util/format.dart';
 import 'keyboard.dart';
 import 'playback_orientation.dart';
+import 'pointer_input.dart';
 import 'theme.dart';
 import 'video_texture.dart';
 import 'widgets/media_info_dialog.dart';
@@ -419,16 +420,29 @@ class _PlayerScreenState extends State<PlayerScreen> {
         'h=${size.height.toStringAsFixed(1)}');
   }
 
-  /// 单击画面：播放 / 暂停（用户 2026-11-01 要求）。
+  /// 单击画面：鼠标宿主上播放 / 暂停，触屏宿主上叫出控制栏。
   ///
-  /// 以前单击是「显示 / 隐藏控制条」，但控制条本身在鼠标静止 2 秒后就会
-  /// 自己收起，这个开关的实际用处只有「手动藏起来」一种；而对一块正在放
-  /// 视频的画面来说，点一下最常见的意图是暂停。所以单击改成播放暂停，
-  /// 顺带把控制条显示出来 —— 按了却看不到任何反馈，用户会以为没点上。
-  void _togglePlayFromTap() {
-    _player.togglePlay();
-    _showHud(_player.isPlaying ? '播放' : '暂停');
-    _showControls();
+  /// 桌面端沿用 2026-11-01 的语义：一块正在放的画面上点一下，最常见的意图
+  /// 是暂停，而控制栏本来就会跟着鼠标移动冒出来，不需要再点一次去叫。
+  ///
+  /// 触屏端反过来：手指没有「划过」这回事，控制栏收起之后就再没有别的入口，
+  /// 所以这一下必须是「叫出来」。暂停在底栏中间另有按钮，长按画面也还在。
+  void _handleSurfaceTap() {
+    switch (surfaceTapAction(mouseDriven: isMouseDrivenHost)) {
+      case SurfaceTapAction.togglePlay:
+        _player.togglePlay();
+        _showHud(_player.isPlaying ? '播放' : '暂停');
+        _showControls();
+      case SurfaceTapAction.revealControls:
+        // 触屏：收起状态点出来，已经显示着就点回去 —— 「显示 / 隐藏」在触屏上
+        // 是同一颗按钮的两面，用户按下时就近看得到结果。
+        if (_controls) {
+          _hideTimer?.cancel();
+          setState(() => _controls = false);
+        } else {
+          _showControls();
+        }
+    }
   }
 
   /// 鼠标只要在画面上移动就重新显示控件，并重新开始 2 秒倒计时；
@@ -911,7 +925,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           onPointerSignal: _onPointerSignal,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: _togglePlayFromTap,
+            onTap: _handleSurfaceTap,
             onDoubleTap: _handleDoubleTap,
             onLongPressStart: (_) => _beginSpeedBoost(),
             onLongPressEnd: (_) => _endSpeedBoost(),
@@ -1050,7 +1064,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   ///
   /// 以前双击按左中右三分之一分成快退 / 播放暂停 / 快进三种，同一块画面上
   /// 出现三个互不相干的结果，点错位置的代价是一次意料之外的跳转。现在
-  /// 双击只做全屏切换，播放暂停挪到单击（见 [_togglePlayFromTap]），快进
+  /// 双击只做全屏切换，播放暂停挪到单击（见 [_handleSurfaceTap]），快进
   /// 快退交给方向键与播放页按钮。
   void _handleDoubleTap() {
     _toggleFullscreen();

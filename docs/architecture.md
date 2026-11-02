@@ -61,6 +61,14 @@ Dart UI ──► PlayerController ──► dart:ffi ──► lp_player_*   �
    起 `UIRequiresFullScreen` 也已被忽略），宿主改发
    `requestGeometryUpdate(.iOS(interfaceOrientations:))`。两处都靠
    `tool/check_all.py` 钉住。
+10. **同一块画面上的同一个手势，不同宿主可以有不同含义，但必须只有一处判定**。
+    播放页的单击在鼠标宿主（Windows / macOS）上是播放暂停，在触屏宿主上是
+    「显示 / 隐藏控制栏」（`app/lib/ui/pointer_input.dart` 的 `surfaceTapAction`）。
+    两种设计各有其理：桌面端控制栏跟着鼠标移动自己会回来，点一下的意图是暂停；
+    触屏上控制栏收起后没有别的入口，点一下必须先把它叫出来。判定写成纯函数而不是
+    让 `player_screen.dart` 自己 `Platform.isX` 分支，是因为「哪台机器该做哪件事」
+    要能被测试单独钉住；设置页那份手势说明也走同一张表
+    （`PointerGesture.forHost`），避免在平板上写着鼠标的操作。
 
 ## 2. 线程
 

@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lanplayer/data/models.dart';
+import 'package:lanplayer/ui/pointer_input.dart';
 
 void main() {
   group('快捷键目录', () {
@@ -186,6 +187,29 @@ void main() {
       final all =
           PointerGesture.all.map((g) => '$g.gesture $g.effect').join('|');
       expect(all.contains('显示 / 隐藏控制条'), isFalse);
+    });
+
+    test('鼠标宿主上单击仍是播放暂停，触屏宿主上改成叫控制栏', () {
+      Map<String, String> table(bool mouseDriven) => {
+            for (final g in PointerGesture.forHost(mouseDriven: mouseDriven))
+              g.gesture: g.effect,
+          };
+      expect(table(true)['单击画面'], '播放 / 暂停');
+      expect(table(false)['单击画面'], PointerGesture.revealControlsEffect);
+      // 其余几条两个档位必须一模一样，否则就是在触屏上写错了鼠标的说明。
+      for (final g in PointerGesture.all) {
+        if (g.gesture == '单击画面') continue;
+        expect(table(true)[g.gesture], g.effect);
+        expect(table(false)[g.gesture], g.effect);
+      }
+      // 条数不能因为分档而丢条。
+      expect(table(false).length, PointerGesture.all.length);
+    });
+
+    test('单击画面的语义分档由宿主决定', () {
+      expect(surfaceTapAction(mouseDriven: true), SurfaceTapAction.togglePlay);
+      expect(surfaceTapAction(mouseDriven: false),
+          SurfaceTapAction.revealControls);
     });
   });
 }

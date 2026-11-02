@@ -5330,6 +5330,79 @@ def check_startup_home() -> None:
                  "side collapses any inherited stack before the hooks run")
 
 
+def check_surface_tap() -> None:
+    """单击画面在鼠标宿主与触屏宿主上要做不同的事。
+
+    用户 2026-11-02 要求把两端分开：桌面端仍然是「点一下暂停」，
+    手机 / 平板上改成「把控制栏叫出来」。
+
+    这条容易在以后的重构里悄悄退回去，因为三个症状都很难被发现：
+      * 播放页直接写死 `togglePlay`，触屏上控制栏收起之后就没有入口了；
+      * 分档判定散在界面代码里，而不是一个能被测试的纯函数；
+      * 设置页那份手势说明不跟着宿主变，在触屏上写着「播放 / 暂停」。
+    """
+    host = ROOT / "app" / "lib" / "ui" / "pointer_input.dart"
+    if not host.exists():
+        problems.append("app/lib/ui/pointer_input.dart is gone; the player "
+                        "would have no way to tell a mouse host from a touch "
+                        "host")
+        return
+    ht = host.read_text(encoding="utf-8")
+    for needle, why in (
+        ("bool get isMouseDrivenHost", "the host split needs one named answer"),
+        ("Platform.isWindows", "Windows has to count as a mouse host"),
+        ("Platform.isMacOS", "macOS has to count as a mouse host"),
+        ("enum SurfaceTapAction", "the two outcomes must be named, not a bool "
+                                  "that reads differently at each call site"),
+        ("SurfaceTapAction surfaceTapAction({required bool mouseDriven})",
+         "the decision has to be a pure function so it can be tested without "
+         "building a decoder"),
+        ("mouseDriven ? SurfaceTapAction.togglePlay",
+         "mouse hosts still pause on a click"),
+        (": SurfaceTapAction.revealControls",
+         "touch hosts must reveal the controls instead of pausing"),
+    ):
+        if needle not in ht:
+            problems.append(f"app/lib/ui/pointer_input.dart no longer has "
+                            f"{needle!r}: {why}")
+
+    player = ROOT / "app" / "lib" / "ui" / "player_screen.dart"
+    pt = player.read_text(encoding="utf-8")
+    if "onTap: _handleSurfaceTap," not in pt:
+        problems.append("player_screen.dart no longer routes the surface tap "
+                        "through _handleSurfaceTap; one of the two hosts would "
+                        "get the other one's behaviour")
+    if "surfaceTapAction(mouseDriven: isMouseDrivenHost)" not in pt:
+        problems.append("player_screen.dart does not consult surfaceTapAction; "
+                        "the tap handler would have to guess the host itself")
+    if "SurfaceTapAction.togglePlay" not in pt or \
+            "SurfaceTapAction.revealControls" not in pt:
+        problems.append("player_screen.dart handles only one of the two tap "
+                        "outcomes")
+    if "setState(() => _controls = false)" not in pt:
+        problems.append("the touch path can reveal the controls but never hide "
+                        "them again; the bar would be stuck on screen")
+
+    sc = (ROOT / "app" / "lib" / "data" / "shortcuts.dart").read_text(
+        encoding="utf-8")
+    if "static List<PointerGesture> forHost({required bool mouseDriven})" not in sc:
+        problems.append("shortcuts.dart lost PointerGesture.forHost; the 快捷键 "
+                        "page would document pause-on-click on a tablet")
+    if "static const String revealControlsEffect" not in sc:
+        problems.append("shortcuts.dart lost revealControlsEffect; the touch "
+                        "wording would drift away from the player behaviour")
+
+    sec = (ROOT / "app" / "lib" / "ui" / "widgets" / "shortcut_section.dart"
+           ).read_text(encoding="utf-8")
+    if "PointerGesture.forHost(mouseDriven: isMouseDrivenHost)" not in sec:
+        problems.append("the 快捷键 section still renders PointerGesture.all; "
+                        "a tablet would list the mouse behaviour")
+
+    notes.append("surface tap: a mouse host pauses on a click, a touch host "
+                 "brings the controls up, and the 快捷键 page documents "
+                 "whichever one the current host actually does")
+
+
 def check_local_picker() -> None:
     """Guard the local file/folder picker and the wide-character file layer.
 
@@ -5486,6 +5559,7 @@ def main() -> int:
     check_playback_orientation()
     check_windows_single_instance()
     check_startup_home()
+    check_surface_tap()
     check_local_picker()
     check_splash()
     check_ui_thread()

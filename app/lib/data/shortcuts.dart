@@ -208,10 +208,32 @@ class ShortcutBindings {
 /// 原来按「左侧三分之一 / 右侧三分之一」分区快退快进的那两条取消 —— 分区
 /// 判定让同一块画面上出现了三种互不相干的结果，用户点错位置的代价是一次
 /// 意料之外的跳转。
+///
+/// 2026-11-02 再按用户要求分档：鼠标宿主（Windows / macOS）的单击仍是暂停，
+/// 触屏宿主（手机 / 平板）的单击改成「叫出控制栏」。理由见 [forHost]。
 class PointerGesture {
   const PointerGesture(this.gesture, this.effect);
   final String gesture;
   final String effect;
+
+  /// 触屏宿主上单击画面的效果。
+  ///
+  /// 触屏没有「鼠标划过」这回事，控制栏不能靠指针移动自己冒出来；而一块
+  /// 正在放的画面上点一下，用户的意图多半是「让我看看进度条和按钮」，而不是
+  /// 「停住」。暂停另有底栏中间那颗按钮，也还有长按画面。
+  static const String revealControlsEffect = '显示 / 隐藏控制栏';
+
+  /// 按宿主给出这份说明表。
+  ///
+  /// 只有第一条随宿主变 —— 其余（双击全屏、长按倍速、上下拖动调亮度音量、
+  /// 横向拖动调进度）两个档位完全一样，所以这里只是替换首项，不复制整张表。
+  static List<PointerGesture> forHost({required bool mouseDriven}) => [
+        for (final g in all)
+          if (g.gesture == '单击画面')
+            PointerGesture(g.gesture, mouseDriven ? g.effect : revealControlsEffect)
+          else
+            g,
+      ];
 
   static const List<PointerGesture> all = [
     PointerGesture('单击画面', '播放 / 暂停'),
