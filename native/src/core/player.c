@@ -305,14 +305,16 @@ static void *player_tick_fn(void *arg)
                                               "\"av_diff\":%lld,\"hw\":\"%s\",\"queued\":%d,"
                                               "\"buffered_ms\":%d,\"dropped_delivery\":%lld,"
                                               "\"pull_gap_ms\":%lld,\"pull_stalls\":%lld,"
-                                              "\"push_gap_ms\":%lld,\"push_avg_ms\":%lld}",
+                                              "\"push_gap_ms\":%lld,\"push_avg_ms\":%lld,"
+                                              "\"published\":%lld}",
                                               fps, (long long)p->stats_dropped,
                                               (long long)p->stats_frames, (long long)av,
                                               p->video.hw_name ? p->video.hw_name : "none",
                                               lp_pq_size(&p->video.pq), lp_audio_buffered_ms(p),
                                               (long long)lost, (long long)(gap / 1000),
                                               (long long)stalls, (long long)(push_max / 1000),
-                                              (long long)(push_avg / 1000)));
+                                              (long long)(push_avg / 1000),
+                                              (long long)p->vout.frames_published));
             }
         }
 

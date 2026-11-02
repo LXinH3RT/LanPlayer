@@ -39,6 +39,12 @@ static int64_t pts_to_us(AVRational tb, int64_t pts)
  * 4 帧约合 170 ms 的缓冲，足够吸收一次调度抖动。 */
 #define LP_HW_PREFETCH 4
 
+/* 落后超过这个量才让节拍临时加快。整周期摊平不看落后多少，落后量会被
+ * 锁死在那里一路漂到丢帧线（-500 ms）才纠正 —— iPad 实测 av_diff 稳定
+ * 停在 -0.4 ~ -0.5 s、30 秒丢 46 帧。120 ms 大约是三帧，比解码器的
+ * 固有管线延迟小、比渲染抖动大：正常情况下永远进不到这一支。 */
+#define LP_PACE_CATCHUP_US 120000
+
 /* Waits until the master clock reaches pts_us.
  * Returns 0 = present, 1 = too late (drop), <0 = interrupted. */
 static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial, double frame_dur)
@@ -91,10 +97,44 @@ static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial, double
              * 的是 VideoToolbox 与 MediaCodec（解完两三帧才一起交出来）。 */
             if (p->video.hw && lp_hw_decoder_is_async(p->video.hw) &&
                 p->video.frames_decoded > 0 && frame_dur > 0) {
-                const int64_t period = (int64_t)(frame_dur * 900000.0);
+                /* 摊平用的最小间隔必须正好等于帧周期，不能比它短。
+                 *
+                 * 这里曾经写 0.9（37.5 ms 对 41.67 ms 的帧周期），本意是
+                 * 「落后时慢慢追回来」。实际上帧的 pts 间距本来就是 41.67 ms，
+                 * 用 37.5 ms 出帧等于比内容自身的节奏快 10%：线程会一直比
+                 * 解码器快，把手上那点缓冲抽干，然后干等下一批 —— 每秒
+                 * 稳定出现一两次 90 ms 以上的空档。
+                 *
+                 * iPad 实测（24 fps 内容、60 Hz 屏）：平均送帧间隔 41.2 ms
+                 * （折合 24.3 fps，总体是实时的），但每秒内最大间隔平均
+                 * 92.6 ms。反解这一秒：2 次 92 ms + 21 次 38.9 ms ——
+                 * 38.9 正是被 0.9 压短后的出帧间隔，抽干后才有那两次空档。
+                 *
+                 * 改成整周期后，出帧节奏与 pts 间距一致：既不抽干缓冲，也
+                 * 仍然把「一次吐两三帧」摊平到它们本该占用的时间里。
+                 *
+                 * 但是只按整周期摊平也有代价：它对「已经落后多少」完全不看，
+                 * 落后量就被锁死在那里，只能一路漂到丢帧线才被纠正 —— iPad
+                 * 实测 av_diff 稳定停在 -0.4 ~ -0.5 s，30 秒丢 46 帧。所以
+                 * 加一条：落后超过 LP_PACE_CATCHUP_US 才临时加快到 0.7 倍
+                 * 周期把差距拉回来，回到窗口内立刻恢复整周期。加快只发生在
+                 * 真的落后时，不会像 0.9 那版那样常态抽干缓冲。
+                 *
+                 * 还试过两种「更聪明」的写法，都被 iPad 实测否决：
+                 * 按相邻两帧的 pts 差逐帧等 —— VideoToolbox 一次并发交出
+                 * 好几帧，逐帧等等于把整批按顺序排开，fps 掉到 4–6、每秒
+                 * 丢 19 帧；改成对着「下一帧最早该上屏的绝对时刻」推进 ——
+                 * 出帧是匀速了（av_diff 从 -0.4 s 收到 -0.1 s、dropped 归零），
+                 * 但引擎那边反而拉不到帧：每秒有一次 165 ms 的空档，
+                 * dropped_delivery 30 秒涨到 303，实际渲染只剩 14 fps。 */
+                const int64_t period = (int64_t)(frame_dur * 1000000.0);
                 const int64_t since = av_gettime_relative() - p->video.last_present_at_us;
-                if (period > 0 && since >= 0 && since < period) {
-                    av_usleep((unsigned)(period - since));
+                int64_t spacing = period;
+                if (diff < -LP_PACE_CATCHUP_US) {
+                    spacing = (int64_t)(period * 0.7);
+                }
+                if (spacing > 0 && since >= 0 && since < spacing) {
+                    av_usleep((unsigned)(spacing - since));
                     continue;
                 }
             }
@@ -579,6 +619,7 @@ int lp_video_start(LpPlayer *p)
      * 清零，播放列表里第二个文件之后的头两秒仍会被当成晚到丢掉。 */
     p->video.frames_decoded = 0;
     p->video.last_present_at_us = 0;
+    p->video.next_present_at_us = 0;
     p->video.in_flight = 0;
     lp_pq_start(&p->video.pq);
     if (pthread_create(&p->video.thread, NULL, lp_video_thread_fn, p) != 0) {

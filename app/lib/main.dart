@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'data/folders.dart';
 import 'data/location.dart';
@@ -103,8 +104,10 @@ void _runProbes() {
   // opens that file in the player right after startup.
   final autoOpen = probeFlag('LANPLAYER_OPEN');
   if (autoOpen != null && autoOpen.isNotEmpty) {
-    WidgetsBinding.instance
-        .addPostFrameCallback((_) => _openLocalFile(autoOpen));
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final resolved = await _resolveProbePath(autoOpen);
+      _openLocalFile(resolved);
+    });
   }
 
   // Same idea for the browser: jumps straight into a share so the desktop
@@ -220,6 +223,26 @@ Future<void> _openLocation(String url) async {
     // ignore: avoid_print
     print('LanPlayer browse failed: $e');
   }
+}
+
+/// 把探针里的相对路径解析成绝对路径。
+///
+/// 移动端每次重装，应用数据容器的 UUID 都会变，`--dart-define` 里写死的绝对
+/// 路径下次就失效了。所以 `LANPLAYER_OPEN=/Documents/x.mp4` 这种写法按「应用
+/// 文档目录」解析：容器换了也照样找得到同一个文件。桌面端本来就是绝对路径，
+/// 只有以 `/` 开头且不是 Windows 盘符时才在这里改写。
+Future<String> _resolveProbePath(String target) async {
+  if (!target.startsWith('/')) return target;
+  if (!Platform.isIOS && !Platform.isAndroid) return target;
+  final docs = await getApplicationDocumentsDirectory();
+  // getApplicationDocumentsDirectory() 在移动端本来就以 /Documents 结尾，
+  // 探针写成 /Documents/x.mp4 时再拼一次就成了 .../Documents/Documents/x.mp4。
+  // 两种写法都认：先去掉前导斜杠，再剥掉与文档目录重名的那一段。
+  var relative = target.replaceFirst(RegExp(r'^/+'), '');
+  if (relative.startsWith('Documents/')) {
+    relative = relative.substring('Documents/'.length);
+  }
+  return '${docs.path}/$relative';
 }
 
 void _openLocalFile(String target) {

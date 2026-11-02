@@ -5460,9 +5460,24 @@ def check_texture_delivery() -> None:
             ("p->video.last_present_at_us = av_gettime_relative();",
              "nothing records when a frame actually reached the screen, so the "
              "pacer has no reference point and every late frame presents at once"),
-            ("const int64_t period = (int64_t)(frame_dur * 900000.0);",
+            ("const int64_t period = (int64_t)(frame_dur * 1000000.0);",
              "the minimum spacing between late frames is gone; VideoToolbox "
              "batches would hit the screen back to back again"),
+            # 节拍必须对着「绝对时刻」推进，不能以上一帧上屏时刻为起点。
+            # 以它为起点时，av_usleep 睡过头的误差会原样带进下一帧，一秒
+            # 二十几次累积下来就是稳定落后；iPad 实测 0.9 倍周期版每秒最大
+            # 间隔 92.6 ms，整周期版 av_diff 长期停在 -0.3 ~ -0.5 s、30 秒
+            # 丢 46 帧。按相邻 pts 差逐帧等更糟：VideoToolbox 一次并发交出
+            # 好几帧，实测 fps 掉到 4–6、每秒丢 19 帧。
+            # 落后超过 LP_PACE_CATCHUP_US 时必须临时加快，否则落后量会被
+            # 整周期摊平锁死，一路漂到 -500 ms 丢帧线才纠正（iPad 实测
+            # av_diff 稳定停在 -0.4 ~ -0.5 s、30 秒丢 46 帧）。
+            ("#define LP_PACE_CATCHUP_US 120000",
+             "the pacer lost its catch-up threshold; a steady lag would never be "
+             "paid back until frames start being dropped"),
+            ("if (diff < -LP_PACE_CATCHUP_US) {",
+             "the pacer never shortens its spacing; it stays a fixed period even "
+             "when the stream is running behind"),
             # 异步解码器才需要节拍。这条被删掉会变成「所有硬解都补等待」，
             # Windows 的 d3d11va 是同步取帧，插等待直接掉帧（实测 12 秒丢 32）。
             ("lp_hw_decoder_is_async(p->video.hw)",
