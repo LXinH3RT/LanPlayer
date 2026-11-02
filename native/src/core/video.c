@@ -3,8 +3,12 @@
  *
  * One worker thread decodes and presents.  Presentation waits on the master
  * clock (driven by the audio sink), which is what produces A/V sync; the
- * bounded packet queue is the only back-pressure towards the demuxer, so the
- * decoder never runs further than one frame ahead of what is on screen.
+ * bounded packet queue is the only back-pressure towards the demuxer.
+ *
+ * The async hardware decoders (VideoToolbox, MediaCodec) are kept a few frames
+ * deep: feeding them one packet per received frame made their own scheduling
+ * jitter show up as uneven presentation, which is exactly the stutter that
+ * "dropped" never reports.  See LP_HW_PREFETCH.
  */
 #include <stdlib.h>
 
@@ -20,6 +24,20 @@ static int64_t pts_to_us(AVRational tb, int64_t pts)
 {
     return av_rescale_q(pts, tb, AV_TIME_BASE_Q);
 }
+
+/* 异步硬解要「喂饱」的深度。
+ *
+ * 原来的循环是「取一个包 → 喂进去 → 立刻收一帧 → 上屏」，解码器手上永远
+ * 只有一帧待处理：它自己的线程什么时候跑、跑多久，全都直接体现在出帧间隔
+ * 上。iPad 实测（内核侧 publish 间隔，与引擎取帧无关）：
+ *
+ *   push 间隔 平均 41 ms（正好一个帧周期），每秒 11 次超过 84 ms、最大 151 ms
+ *
+ * 也就是说每秒 24 帧一帧不少，但节奏每秒要断十几次 —— 屏幕上看就是一顿
+ * 一冲，而 dropped 统计恒为 0。软解与 Windows 的 d3d11va 是同步的
+ * （send 之后立刻能 receive），预读反而会让延迟变大，所以只给异步解码器用。
+ * 4 帧约合 170 ms 的缓冲，足够吸收一次调度抖动。 */
+#define LP_HW_PREFETCH 4
 
 /* Waits until the master clock reaches pts_us.
  * Returns 0 = present, 1 = too late (drop), <0 = interrupted. */
@@ -308,6 +326,7 @@ void *lp_video_thread_fn(void *arg)
     int draining = 0;
     int drained = 0;
     int drain_rounds = 0;
+    int hw_eos_sent = 0;
     int64_t last_pts_us = 0;
     double frame_dur = 0.04;
 
@@ -323,50 +342,108 @@ void *lp_video_thread_fn(void *arg)
             draining = 0;
             drained = 0;
             drain_rounds = 0;
+            hw_eos_sent = 0;
+            /* flush 之后解码器里什么都不剩，在途计数要跟着归零，否则
+             * 补料循环会以为还有货，一直不去要新的包。 */
+            p->video.in_flight = 0;
             serial = atomic_load(&p->serial);
             continue;
         }
 
-        if (!pending && !draining) {
-            int qserial = serial;
-            pending = lp_pq_get(&p->video.pq, &qserial, 0);
-            if (pending) {
-                serial = qserial;
-            } else if (lp_pq_aborted(&p->video.pq)) {
-                /* 停止 / 换轨：队列里还有包也立刻退出，否则 lp_video_stop
-                 * 的 pthread_join 会一直等到超时。 */
-                break;
-            } else if (lp_pq_eof(&p->video.pq)) {
-                draining = 1;
-            } else {
-                /* 队列空：睡在条件变量上等解复用线程广播。以前是
-                 * av_usleep(2000) 每 2 ms 醒一次轮询，既白烧 500 次/秒的
-                 * 加解锁，也把 queue.c 里的 cond_wait 分支架空了。 */
-                lp_pq_wait_more(&p->video.pq, 0);
-                continue;
+        int r = LP_OK;
+        int again = 0;
+        if (p->video.hw && lp_hw_decoder_is_async(p->video.hw)) {
+            /* 异步硬解（VideoToolbox / MediaCodec）先补料，理由见
+             * LP_HW_PREFETCH 的注释。同步解码器**不能**走这一支：它 send 完
+             * 只是把包交进 FFmpeg 的重排队列，要连喂几个包才吐第一帧，
+             * 而 in_flight 一满就不再取包，receive 永远返回 AGAIN。 */
+            int stop = 0;
+            while (!draining && p->video.in_flight < LP_HW_PREFETCH) {
+                if (!pending) {
+                    int qserial = serial;
+                    pending = lp_pq_get(&p->video.pq, &qserial, 0);
+                    if (pending) {
+                        serial = qserial;
+                    } else if (lp_pq_aborted(&p->video.pq)) {
+                        /* 停止 / 换轨：队列里还有包也立刻退出，否则
+                         * lp_video_stop 的 pthread_join 会一直等到超时。 */
+                        stop = 1;
+                        break;
+                    } else if (lp_pq_eof(&p->video.pq)) {
+                        draining = 1;
+                        break;
+                    } else if (p->video.in_flight == 0) {
+                        /* 队列空、解码器里也没货：睡在条件变量上等解复用线程
+                         * 广播，别让 receive 的 10 ms 超时变成空转。 */
+                        lp_pq_wait_more(&p->video.pq, 0);
+                        continue;
+                    } else {
+                        /* 队列暂时空着，但解码器里还有在途的包：先把手上的
+                         * 帧收掉，下一轮再来要包。 */
+                        break;
+                    }
+                }
+                r = lp_hw_decoder_send(p->video.hw, pending);
+                again = (r == LP_ERR_AGAIN);
+                if (again) {
+                    break;
+                }
+                if (r < 0 && r != AVERROR_EOF) {
+                    LP_WARN("video", "send_packet: %d", r);
+                }
+                av_packet_free(&pending);
+                p->video.in_flight++;
             }
-        }
+            if (stop) {
+                break;
+            }
+            /* EOS 只发一次：VideoToolbox 收到 NULL 会 WaitForAsynchronousFrames，
+             * 反复发会让排空阶段一直等在那上面。 */
+            if (draining && !hw_eos_sent) {
+                lp_hw_decoder_send(p->video.hw, NULL);
+                hw_eos_sent = 1;
+            }
+        } else {
+            if (!pending && !draining) {
+                int qserial = serial;
+                pending = lp_pq_get(&p->video.pq, &qserial, 0);
+                if (pending) {
+                    serial = qserial;
+                } else if (lp_pq_aborted(&p->video.pq)) {
+                    /* 停止 / 换轨：队列里还有包也立刻退出，否则 lp_video_stop
+                     * 的 pthread_join 会一直等到超时。 */
+                    break;
+                } else if (lp_pq_eof(&p->video.pq)) {
+                    draining = 1;
+                } else {
+                    /* 队列空：睡在条件变量上等解复用线程广播。以前是
+                     * av_usleep(2000) 每 2 ms 醒一次轮询，既白烧 500 次/秒的
+                     * 加解锁，也把 queue.c 里的 cond_wait 分支架空了。 */
+                    lp_pq_wait_more(&p->video.pq, 0);
+                    continue;
+                }
+            }
 
-        int r;
-        int again;
-        if (p->video.hw) {
-            r = lp_hw_decoder_send(p->video.hw, draining ? NULL : pending);
-            /* 硬解走的是我们自己的接口，用的是 LP_ERR_AGAIN(-7)；软解走
-             * FFmpeg，用的是 AVERROR(EAGAIN)(-11)。两者编号不同，早先这里
-             * 只判 AVERROR(EAGAIN)，于是硬解返回 -7 时掉进下面的 r < 0 分支
-             * 把包 av_packet_free 掉 —— MediaCodec 一帧都收不到，画面全黑。 */
-            again = (r == LP_ERR_AGAIN);
-        } else {
-            r = avcodec_send_packet(p->video.avctx, draining ? NULL : pending);
-            again = (r == AVERROR(EAGAIN));
-        }
-        if (again) {
-            /* Keep the packet, drain below, retry on the next iteration. */
-        } else if (r < 0 && r != AVERROR_EOF) {
-            LP_WARN("video", "send_packet: %d", r);
-            av_packet_free(&pending);
-        } else {
-            av_packet_free(&pending);
+            if (p->video.hw) {
+                /* 同步硬解（d3d11va）：喂一包、收一帧，和同步软解同节奏。 */
+                r = lp_hw_decoder_send(p->video.hw, draining ? NULL : pending);
+                /* 硬解走的是我们自己的接口，用的是 LP_ERR_AGAIN(-7)；软解走
+                 * FFmpeg，用的是 AVERROR(EAGAIN)(-11)。两者编号不同，早先这里
+                 * 只判 AVERROR(EAGAIN)，于是硬解返回 -7 时掉进下面的 r < 0 分支
+                 * 把包 av_packet_free 掉 —— MediaCodec 一帧都收不到，画面全黑。 */
+                again = (r == LP_ERR_AGAIN);
+            } else {
+                r = avcodec_send_packet(p->video.avctx, draining ? NULL : pending);
+                again = (r == AVERROR(EAGAIN));
+            }
+            if (again) {
+                /* Keep the packet, drain below, retry on the next iteration. */
+            } else if (r < 0 && r != AVERROR_EOF) {
+                LP_WARN("video", "send_packet: %d", r);
+                av_packet_free(&pending);
+            } else {
+                av_packet_free(&pending);
+            }
         }
 
         for (;;) {
@@ -396,6 +473,9 @@ void *lp_video_thread_fn(void *arg)
                     break;
                 }
                 int64_t pts_us = hf.pts_us > 0 ? hf.pts_us : last_pts_us + (int64_t)(frame_dur * 1e6);
+                if (p->video.in_flight > 0) {
+                    p->video.in_flight--;
+                }
                 int drop = wait_for_presentation(p, pts_us, serial, frame_dur);
                 if (drop < 0) {
                     /* Seek or stop: release the buffer and let the outer loop
@@ -499,6 +579,7 @@ int lp_video_start(LpPlayer *p)
      * 清零，播放列表里第二个文件之后的头两秒仍会被当成晚到丢掉。 */
     p->video.frames_decoded = 0;
     p->video.last_present_at_us = 0;
+    p->video.in_flight = 0;
     lp_pq_start(&p->video.pq);
     if (pthread_create(&p->video.thread, NULL, lp_video_thread_fn, p) != 0) {
         return LP_ERR_NOMEM;

@@ -5468,6 +5468,19 @@ def check_texture_delivery() -> None:
             ("lp_hw_decoder_is_async(p->video.hw)",
              "the pacer no longer restricts itself to asynchronous decoders; "
              "a synchronous one like d3d11va would fall behind and drop frames"),
+            # 异步解码器要被喂饱几帧，否则它自己的调度抖动直接变成出帧间隔
+            # 的抖动（iPad 实测 publish 间隔每秒 11 次超过 84 ms、最大 151 ms，
+            # 而 dropped 恒为 0）。
+            ("#define LP_HW_PREFETCH 4",
+             "the async decoders are back to one frame of work in flight; their "
+             "own scheduling jitter becomes jitter on screen again"),
+            ("while (!draining && p->video.in_flight < LP_HW_PREFETCH)",
+             "nothing keeps the async decoder fed; prefetching was the fix"),
+            # 同步解码器绝不能走补料那一支：send 只是把包交给 FFmpeg 的重排
+            # 队列，连喂几个才吐第一帧，in_flight 一满就永远收不到帧。
+            ("if (p->video.hw && lp_hw_decoder_is_async(p->video.hw)) {",
+             "the prefetch loop no longer excludes synchronous decoders; "
+             "d3d11va would stall at 0 fps"),
         ):
             if needle not in vt:
                 problems.append(f"video.c: {why} ({needle})")

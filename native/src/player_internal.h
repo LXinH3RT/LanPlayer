@@ -640,6 +640,14 @@ typedef struct LpVideoStream {
      * 主时钟」的帧补一个最小间隔：硬解是一次一批地吐帧的，只按主时钟判断
      * 会让一批帧在几毫秒内连续上屏、随后空等下一批，观感是一顿一冲。 */
     int64_t last_present_at_us;
+    /* 已经喂给异步解码器、但还没被取走解码结果的包数。
+     *
+     * 循环原本是「取一个包 → 喂 → 收一帧 → 上屏 → 再来」，异步解码器手上
+     * 永远只有一帧的活，它自己的调度抖动就直接变成出帧间隔的抖动。iPad
+     * 实测：内核侧 publish 间隔的平均值是 41 ms（正好一个帧周期），但每秒
+     * 有 11 次超过 84 ms、最大 151 ms —— 这就是「帧数不缺、节奏在跳」。
+     * 让解码器保持几帧的待处理量，它的抖动就被队列吸收掉。 */
+    int in_flight;
     LpVideoDecoder *hw; /* non-NULL when decoding on the platform decoder */
     /* deinterlace / enhancement filter chain, created lazily */
     AVFilterGraph *fg;
