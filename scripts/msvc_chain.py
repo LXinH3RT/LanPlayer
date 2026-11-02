@@ -24,11 +24,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tool"))
 import lpscript as lp  # noqa: E402
 
 # /W4 /WX with the warnings that the Flutter templates trip over suppressed.
-CXX_FLAGS = ["/nologo", "/EHsc", "/std:c++17", "/W4", "/WX", "/wd4100", "/MD", "/O2", "/DNDEBUG"]
+# /utf-8 与 app/windows/CMakeLists.txt 的 APPLY_STANDARD_SETTINGS 保持一致：
+# 本项目的 C++ 源码用 UTF-8 保存、注释里带简体中文，MSVC 默认按系统代码页
+# （中文 Windows 是 GBK）读，会把注释读成乱码并触发 C4819，/WX 下直接失败。
+CXX_FLAGS = ["/nologo", "/EHsc", "/std:c++17", "/W4", "/WX", "/wd4100", "/MD", "/O2",
+             "/DNDEBUG", "/utf-8"]
 
 RUNNER_SOURCES = [
     "app/windows/runner/main.cpp",
     "app/windows/runner/flutter_window.cpp",
+    "app/windows/runner/single_instance.cpp",
     "app/windows/runner/win32_window.cpp",
     "app/windows/runner/utils.cpp",
     "app/windows/flutter/generated_plugin_registrant.cc",

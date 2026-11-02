@@ -312,6 +312,8 @@ REQUIRED = [
     "app/ios/Runner/Info.plist",
     "app/windows/CMakeLists.txt",
     "app/windows/runner/main.cpp",
+    "app/windows/runner/single_instance.h",
+    "app/windows/runner/single_instance.cpp",
     "app/windows/runner/win32_window.cpp",
     "app/windows/flutter/generated_plugin_registrant.cc",
     "packages/lanplayer_video/pubspec.yaml",
@@ -5135,6 +5137,100 @@ def check_playback_orientation() -> None:
                  "because it ignores the framework call")
 
 
+def check_windows_single_instance() -> None:
+    """Guard the desktop single-instance rule in the Windows runner.
+
+    Clicking the desktop icon while the app is open used to start a second
+    process with its own window and its own playback state; the second launch
+    now restores and foregrounds the window that already exists.  The window
+    class name is shared with every other Flutter Windows runner (the WeChat
+    work helper ships a hidden window in the same class), so the lookup has to
+    filter by executable path - a bare FindWindow would grab that stranger's
+    hidden window and do nothing visible.
+    """
+    runner = ROOT / "app" / "windows" / "runner"
+    main_cpp = runner / "main.cpp"
+    single = runner / "single_instance.cpp"
+    cmake = runner / "CMakeLists.txt"
+    gen = ROOT / "scripts" / "gen_windows_runner.py"
+    msvc = ROOT / "scripts" / "msvc_chain.py"
+
+    if not single.exists():
+        problems.append("app/windows/runner/single_instance.cpp is gone; a "
+                        "second desktop launch would open a second window")
+    else:
+        text = single.read_text(encoding="utf-8")
+        for needle, why in (
+            ("::CreateMutexW(", "the second launch has nothing to detect the "
+                                "first one with"),
+            ("::GetLastError() != ERROR_ALREADY_EXISTS", "CreateMutexW returns a "
+             "valid handle even when the mutex exists; only GET_LAST_ERROR "
+             "distinguishes the first launch"),
+            ("!SameExecutable(pid)", "the window lookup must confirm the window "
+             "belongs to this executable; the Flutter window class name is "
+             "shared with unrelated apps"),
+            ("::ShowWindow(window, SW_RESTORE);", "a minimized window would stay "
+                                                  "minimized"),
+            ("if (!::SetForegroundWindow(window)) {", "the window would be raised "
+             "without the focus, so it just blinks in the taskbar"),
+        ):
+            if needle not in text:
+                problems.append(f"single_instance.cpp no longer contains "
+                                f"{needle!r}: {why}")
+        if "FindWindowW(" in text:
+            problems.append("single_instance.cpp went back to a bare "
+                            "FindWindowW; that matches any process using the "
+                            "Flutter window class and silently picks the wrong "
+                            "window")
+
+    mt = main_cpp.read_text(encoding="utf-8") if main_cpp.exists() else ""
+    if "ActivateRunningInstance()" not in mt:
+        problems.append("app/windows/runner/main.cpp never calls "
+                        "ActivateRunningInstance(); the mutex would be created "
+                        "but nothing would come to the front")
+    elif mt.index("ActivateRunningInstance()") > mt.index("window.Create("):
+        problems.append("app/windows/runner/main.cpp calls "
+                        "ActivateRunningInstance() after creating the window; "
+                        "the user would see a blank window flash before the "
+                        "second process exits")
+
+    ct = cmake.read_text(encoding="utf-8") if cmake.exists() else ""
+    if '"single_instance.cpp"' not in ct:
+        problems.append("app/windows/runner/CMakeLists.txt does not list "
+                        "single_instance.cpp; the flutter build would fail to "
+                        "link ActivateRunningInstance")
+    mt_chain = msvc.read_text(encoding="utf-8") if msvc.exists() else ""
+    if "app/windows/runner/single_instance.cpp" not in mt_chain:
+        problems.append("scripts/msvc_chain.py does not compile "
+                        "single_instance.cpp; the MSVC-only build path would "
+                        "reproduce the link error CMake would have")
+
+    gt = gen.read_text(encoding="utf-8") if gen.exists() else ""
+    if "RUNNER_PATCHES" not in gt:
+        problems.append("scripts/gen_windows_runner.py lost RUNNER_PATCHES; "
+                        "regenerating app/windows/ would silently drop the "
+                        "single-instance wiring")
+    for needle, why in (
+            ('RUNNER_PATCHES = [', "the table itself is gone"),
+            ('"runner/main.cpp"', "the main.cpp patch is gone"),
+            ('"runner/CMakeLists.txt"', "the CMakeLists patch is gone"),
+            ('"CMakeLists.txt"', "the top-level CMakeLists patch is gone; "
+             "regenerating app/windows/ would drop /utf-8 and the DLL install "
+             "rules again"),
+            ('".gitignore"', "the .gitignore patch is gone"),
+            ("single_instance.cpp", "the generator no longer adds the source"),
+            ("no longer contains the text", "the generator no longer fails when "
+             "the template drifts away from what the patch expects"),
+    ):
+        if needle not in gt:
+            problems.append(f"scripts/gen_windows_runner.py no longer mentions "
+                            f"{needle}: {why}")
+
+    notes.append("single instance: a second desktop launch restores and "
+                 "foregrounds the window that is already open instead of "
+                 "starting a second process with its own playback state")
+
+
 def check_local_picker() -> None:
     """Guard the local file/folder picker and the wide-character file layer.
 
@@ -5289,6 +5385,7 @@ def main() -> int:
     check_settings_layout()
     check_settings_groups()
     check_playback_orientation()
+    check_windows_single_instance()
     check_local_picker()
     check_splash()
     check_ui_thread()
