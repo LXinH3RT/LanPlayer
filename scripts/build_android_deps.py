@@ -102,6 +102,11 @@ def build_ffmpeg(src: Path, work: Path, out: Path, abi: str, api: str,
         f"--ranlib={toolchain / 'bin' / 'llvm-ranlib'}",
         "--enable-shared", "--disable-static", "--disable-programs", "--disable-doc",
         "--disable-avdevice", "--disable-postproc", "--disable-swscale-alpha",
+        # NDK r27 自带的 Vulkan 头把调试回调声明成了 __attribute__((pcs("aapcs-vfp")))，
+        # 与 libavutil/hwcontext_vulkan.c 里的函数签名对不上，configure 一旦自动探测
+        # 到该头就编译失败（hwcontext_vulkan.c:816）。内核的输出走 GL 与 MediaCodec，
+        # 用不到 Vulkan，关掉即可。
+        "--disable-vulkan",
         "--enable-jni", "--enable-mediacodec",
         "--enable-filter=atempo,yadif,scale,format,aresample",
         "--enable-demuxer=matroska,mov,avi,mpegts,flv,mp3,aac,flac,wav,ogg,ass,srt,webvtt",
