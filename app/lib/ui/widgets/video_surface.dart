@@ -48,9 +48,17 @@ class VideoSurface extends StatelessWidget {
     // 用一个「按原位图比例」的盒子承载纹理，再由 FittedBox 决定怎么贴合。
     // Texture / Image 自己总是撑满父约束，不先固定比例就没法区分 contain 与
     // cover —— 这正是原来只写 AspectRatio 却看不出三种模式差别的原因。
-    final ratio = videoAspectRatio.isFinite && videoAspectRatio > 0
+    // 比例范围夹在 [1:16, 16:1]。异常宽高比（容器还没报字节、日志里出现过
+    // 1000:1）会让 `1000 * ratio` 生成一个十几万宽的 SizedBox，布局与
+    // 光栅化都要为这个空盒子付代价。
+    double ratio = videoAspectRatio.isFinite && videoAspectRatio > 0
         ? videoAspectRatio
         : 16 / 9;
+    if (ratio < 1 / 16) {
+      ratio = 1 / 16;
+    } else if (ratio > 16) {
+      ratio = 16;
+    }
     return ColoredBox(
       color: backgroundColor,
       child: FittedBox(

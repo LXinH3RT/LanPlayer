@@ -868,6 +868,14 @@ static int sub_rich_append(SubRich *b, const char *text, size_t len)
     }
     if (b->plain.len + (int)len > LP_MAX_TEXT_BYTES) {
         len = (size_t)(LP_MAX_TEXT_BYTES - b->plain.len);
+        /* 截断点可能落在多字节字符中间。text[len] 是被丢掉的第一字节，
+         * 它如果是续字节（10xxxxxx），说明这个字符被切成两半了 ——
+         * 一直退到 start byte 之前，把整个字符都丢掉。留着半个 UTF-8
+         * 序列的话，lp_str_append_json_str 会原样打进 JSON，Dart 侧
+         * utf8.decode 抛 FormatException，整条字幕事件丢失。 */
+        while (len > 0 && ((unsigned char)text[len] & 0xC0) == 0x80) {
+            len--;
+        }
     }
     lp_str_append(&b->plain, "%.*s", (int)len, text);
     if (b->nb > 0) {
@@ -1989,8 +1997,24 @@ static int merge_cue_into(SubRich *dst, LpSubCue *src)
              * list from dst->st.anims, so keep that in sync below. */
             dst->st.nb_anims = 0;
             dst->st.nb_path = 0;
+            /* sub_rich_append 有三条路径不新增 run：空文本、正文已达上限、
+             * 样式与上一条相同于是并进上一条。前两条什么都没追加，此时
+             * dst->runs[dst->nb - 1] 指向的是**上一条** run，下面的
+             * free + memcpy 会把那一条的动画覆盖掉 —— 表现为多 rect 字幕
+             * 里某一块跑到别处，或者前半截突然开始旋转。
+             *
+             * 并进上一条那一支则必须照常嫁接：合并的前提就是上一条
+             * nb_anims == 0（且没有待定的卡拉 OK 时长），所以
+             * free(made->anims) 是 free(NULL)，拷贝过去刚好把这组动画
+             * 挂到已经包含新文本的那条 run 上，正是想要的效果。 */
+            const int runs_before = dst->nb;
+            const int plain_before = dst->plain.len;
             if (sub_rich_append(dst, run->text, strlen(run->text)) != 0) {
                 return -1;
+            }
+            if (dst->nb <= runs_before && dst->plain.len <= plain_before) {
+                /* 什么都没追加，这条 run 的内容无处可去，跳过。 */
+                continue;
             }
             /* Now graft the source run's payload onto the run we just built. */
             LpSubRun *made = &dst->runs[dst->nb - 1];
@@ -2230,9 +2254,16 @@ static uint32_t ass_color(const char *v)
     return (alpha << 24) | (r << 16) | (g << 8) | b;
 }
 
-static void split_fields(char *line, char sep, char **fields, int max)
+/* Splits `line` on `sep` into at most `max` fields and returns how many were
+ * actually written.  Callers that pass a small `max` (the Dialogue path stops
+ * one field short so that Text keeps its commas) must use the return value:
+ * everything past it is untouched stack memory, not an empty string. */
+static int split_fields(char *line, char sep, char **fields, int max)
 {
     int n = 0;
+    if (max <= 0) {
+        return 0;
+    }
     fields[n++] = line;
     for (char *p = line; *p && n < max; p++) {
         if (*p == sep) {
@@ -2243,6 +2274,7 @@ static void split_fields(char *line, char sep, char **fields, int max)
     for (int i = n; i < max; i++) {
         fields[i] = (char *)"";
     }
+    return n;
 }
 
 /* Reads PlayResX/PlayResY out of an ASS ``[Script Info]`` header.  Embedded
@@ -2396,8 +2428,13 @@ static int parse_ass(const char *text, LpSubtitleTrack *t, char *err, size_t err
         }
         if (in_events && strncmp(line, "Format:", 7) == 0) {
             char *fields[64];
-            split_fields(line + 7, ',', fields, 64);
-            for (int i = 0; i < 64; i++) {
+            const int got = split_fields(line + 7, ',', fields, 64);
+            /* e_* 这几个下标跨 Format: 行复用，换一条 Format: 时必须整体
+             * 重算：否则上一条给的 e_style 会留在这一条上，指到一个这条
+             * Format: 里根本不存在（或含义不同）的列。 */
+            e_name = e_start = e_end = e_text = e_style = NULL;
+            e_count = 0;
+            for (int i = 0; i < got; i++) {
                 while (*fields[i] == ' ') fields[i]++;
                 char *end = fields[i] + strlen(fields[i]);
                 while (end > fields[i] && end[-1] == ' ') *--end = '\0';
@@ -2428,21 +2465,49 @@ static int parse_ass(const char *text, LpSubtitleTrack *t, char *err, size_t err
              * the field index of Text. */
             char *fields[64];
             int text_idx = e_text ? (int)(intptr_t)e_text : 9;
-            /* Stop one field short: Text is last and may contain commas (an
-             * inline {\pos(960,900)} would otherwise be chopped in half). */
-            split_fields(body, ',', fields, text_idx + 1);
-            int64_t start = 0, end = 0;
+            if (text_idx < 1) {
+                text_idx = 1;
+            }
+            if (text_idx > 63) {
+                text_idx = 63;
+            }
             if (!e_start || !e_end) {
                 continue;
             }
-            if (parse_clock(fields[e_start ? (int)(intptr_t)e_start : 1], &start, ',') != 0 ||
-                parse_clock(fields[e_end ? (int)(intptr_t)e_end : 2], &end, ',') != 0) {
+            const int start_idx = (int)(intptr_t)e_start;
+            const int end_idx = (int)(intptr_t)e_end;
+            /* 切分的上界要盖住**所有**会用到的下标，而不是只到正文那一格。
+             * 正文通常排在最后（这时上界就是 text_idx，正文里的逗号不会被
+             * 切断），但 Format: 也允许 Time/Text 的任意列序 —— 例如
+             * ``Format: Text, Start, End`` 时正文下标是 1、结束时间是 2，
+             * 只切到正文就会让时间两格落进 split_fields 没写过的区域，
+             * parse_clock 读的就是未初始化的栈。 */
+            int split_max = text_idx;
+            if (start_idx > split_max) {
+                split_max = start_idx;
+            }
+            if (end_idx > split_max) {
+                split_max = end_idx;
+            }
+            if (split_max > 62) {
+                split_max = 62; /* fields 是 64 项，给未终结的正文留一点余量 */
+            }
+            const int got = split_fields(body, ',', fields, split_max + 1);
+            int64_t start = 0, end = 0;
+            /* got 是这一行真正切出来的段数，可能少于 Format: 声明的列数
+             * （手写的半截行）。下标一旦越过 got，读到的就是 fields[got..]
+             * 那片没写过的栈，所以三处都得先确认下标落在 got 之内。 */
+            if (start_idx >= got || end_idx >= got || text_idx >= got) {
+                continue;
+            }
+            if (parse_clock(fields[start_idx], &start, ',') != 0 ||
+                parse_clock(fields[end_idx], &end, ',') != 0) {
                 continue;
             }
             /* Resolve the named style so inline tags that "inherit" get the
              * right base, and so \r falls back to it. */
             int style_idx = 0;
-            if (e_style) {
+            if (e_style && (int)(intptr_t)e_style < got) {
                 const char *want = fields[(int)(intptr_t)e_style];
                 while (*want == ' ') want++;
                 for (int i = 0; i < t->nb_styles; i++) {
@@ -2596,6 +2661,23 @@ int lp_subtitle_add_file(LpPlayer *p, const char *url, const char *options_json)
     const char *ext = strrchr(url, '.');
     ext = ext ? ext + 1 : "";
     pthread_mutex_lock(&p->subs.mutex);
+    /* 上面那次解锁去读文件，耗时可能是几十毫秒。这段时间里自动加载、
+     * 用户在面板里再点一个文件，都可能占掉 nb 这个槽位或者把 nb_tracks
+     * 推到上限 —— 拿旧 nb 直接写 tracks[nb]，轻则两条轨道互相覆盖，
+     * 重则写下标 16 的越界写（LP_MAX_SUBTITLE_TRACKS 就是 16）。
+     * 所以重新加锁之后必须把槽位号整个重算一遍。 */
+    nb = p->subs.nb_tracks;
+    if (nb >= LP_MAX_SUBTITLE_TRACKS) {
+        pthread_mutex_unlock(&p->subs.mutex);
+        return LP_ERR_NOMEM;
+    }
+    for (int i = 0; i < nb; i++) {
+        if (p->subs.tracks[i].is_external && strcmp(p->subs.tracks[i].path, url) == 0) {
+            int existing = p->subs.tracks[i].index;
+            pthread_mutex_unlock(&p->subs.mutex);
+            return existing;
+        }
+    }
     LpSubtitleTrack *t = &p->subs.tracks[nb];
     memset(t, 0, sizeof(*t));
     t->index = 1000 + nb;
@@ -2929,6 +3011,14 @@ void lp_subtitle_feed_packet(LpPlayer *p, int stream_index, AVPacket *pkt)
         for (int i = 0; i < drop; i++) cue_free(&t->cues[i]);
         memmove(t->cues, t->cues + drop, (size_t)(t->nb_cues - drop) * sizeof(LpSubCue));
         t->nb_cues -= drop;
+        /* current_cue 是 cues[] 里的下标，整段前移之后它必须跟着减，
+         * 否则它指向的是「前移 drop 条之后」的另一条 —— 轻则同一条字幕
+         * 反复重发，重则拿错文本。 */
+        if (t->current_cue >= drop) {
+            t->current_cue -= drop;
+        } else {
+            t->current_cue = -1;
+        }
     }
     if (!keep) {
         cue_free(&cue);
@@ -3227,8 +3317,12 @@ void lp_subtitle_tick(LpPlayer *p, int64_t now_us)
     lp_str_init(&text);
     LpStr runs;
     lp_str_init(&runs);
-    int hits[16];
+    /* 同屏命中的 cue 下标。原先是个 `int hits[16]` 的定长数组，第 17 条
+     * 及以后的 cue 只进了 plain 文本、没进 runs —— 渲染层优先用 runs，
+     * 表现就是「双语 + 注释同屏时少了一两行」。这里按需增长。 */
+    int *hits = NULL;
     int nb_hits = 0;
+    int hits_cap = 0;
     int found = -1;
     int64_t start_us = 0, end_us = 0;
     LpSubStyle style;
@@ -3258,9 +3352,16 @@ void lp_subtitle_tick(LpPlayer *p, int64_t now_us)
                 style.pos_x = c->pos_x;
                 style.pos_y = c->pos_y;
             }
-            if (nb_hits < (int)(sizeof(hits) / sizeof(hits[0]))) {
-                hits[nb_hits++] = i;
+            if (nb_hits == hits_cap) {
+                const int next = hits_cap == 0 ? 8 : hits_cap * 2;
+                int *grown = (int *)realloc(hits, (size_t)next * sizeof(int));
+                if (!grown) {
+                    break;
+                }
+                hits = grown;
+                hits_cap = next;
             }
+            hits[nb_hits++] = i;
         }
     }
     if (nb_hits > 0) {
@@ -3299,6 +3400,7 @@ void lp_subtitle_tick(LpPlayer *p, int64_t now_us)
     }
     lp_str_free(&text);
     lp_str_free(&runs);
+    free(hits);
 }
 
 void lp_subtitle_select(LpPlayer *p, int track_index)
@@ -3448,4 +3550,126 @@ int lp_sub_test_parse_anim(const char *dialogue_text, int run_index,
 char *lp_sub_test_decode_text(const void *raw, size_t len, int *charset_ok)
 {
     return decode_text((const uint8_t *)raw, len, NULL, charset_ok);
+}
+
+/* ---------------------------------------------------- 畸形输入的测试钩子 --- */
+
+/* 测试入口：整段 ASS 解析一遍，把整条轨道交给调用方。仅供
+ * native/tests/lp_robust_test.c 使用 —— 正常播放路径不会调它。 */
+LpSubtitleTrack *lp_sub_test_parse_ass(const char *text, size_t len)
+{
+    if (!text || len == 0) {
+        return NULL;
+    }
+    LpSubtitleTrack *t = calloc(1, sizeof(*t));
+    if (!t) {
+        return NULL;
+    }
+    t->current_cue = -1;
+    char err[256] = {0};
+    if (parse_ass(text, t, err, sizeof(err)) <= 0) {
+        track_reset(t);
+        free(t);
+        return NULL;
+    }
+    return t;
+}
+
+void lp_sub_test_free_track(LpSubtitleTrack *t)
+{
+    if (!t) {
+        return;
+    }
+    track_reset(t);
+    free(t);
+}
+
+/* 测试入口：把一段超长正文压进一个 subs 构建器，返回压完的正文。
+ * 用来验证截断点不会落在多字节字符中间。 */
+char *lp_sub_test_clamp_text(const char *text)
+{
+    if (!text) {
+        return NULL;
+    }
+    LpSubCue cue;
+    memset(&cue, 0, sizeof(cue));
+    SubRich b;
+    sub_rich_init(&b, &cue);
+    int rc = sub_rich_append(&b, text, strlen(text));
+    char *out = rc == 0 ? lp_str_take(&b.plain) : NULL;
+    sub_rich_free(&b);
+    return out;
+}
+
+/* 测试入口：按 ASS 包的真实顺序把几段正文合并进同一个 cue，回报合并结果。
+ * 供 native/tests/lp_robust_test.c 断言「只改样式不新增 run 时，上一条
+ * 的动画不会被覆盖」。 */
+int lp_sub_test_merge_runs(const char *r1, const char *r2, const char *r3,
+                           LpSubTestMerge *out)
+{
+    if (!out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    LpSubStyle base;
+    style_default(&base);
+    AssCtx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.play_w = 384.0;
+    ctx.play_h = 288.0;
+    ctx.base = &base;
+
+    LpSubCue cue;
+    memset(&cue, 0, sizeof(cue));
+    cue.pos_x = -1.0;
+    cue.pos_y = -1.0;
+    cue.margin_l = cue.margin_r = cue.margin_v = -1.0;
+
+    SubRich merged;
+    sub_rich_init(&merged, &cue);
+    const char *parts[3];
+    parts[0] = r1;
+    parts[1] = r2;
+    parts[2] = r3;
+    int rc = 0;
+    for (int i = 0; i < 3; i++) {
+        if (!parts[i]) {
+            continue;
+        }
+        LpSubCue one;
+        memset(&one, 0, sizeof(one));
+        one.pos_x = -1.0;
+        one.pos_y = -1.0;
+        one.margin_l = one.margin_r = one.margin_v = -1.0;
+        if (sub_compile_text(parts[i], &one, &ctx) != 0) {
+            rc = -1;
+            break;
+        }
+        if (merge_cue_into(&merged, &one) != 0) {
+            cue_free(&one);
+            rc = -1;
+            break;
+        }
+        cue_free(&one);
+    }
+    if (rc == 0) {
+        out->nb_runs = merged.nb;
+        for (int i = 0; i < merged.nb; i++) {
+            if (merged.runs[i].nb_anims > 0) {
+                out->nb_animated_runs++;
+            }
+        }
+        if (merged.nb > 0) {
+            LpSubRun *first = &merged.runs[0];
+            out->first_nb_anims = first->nb_anims;
+            if (first->nb_anims > 0 && first->anims) {
+                out->first_anim_t2 = first->anims[0].t2_ms;
+            }
+            snprintf(out->first_text, sizeof(out->first_text), "%s",
+                     first->text ? first->text : "");
+        }
+    }
+    sub_rich_free(&merged);
+    cue_free(&cue);
+    return rc;
 }

@@ -333,7 +333,7 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
   /// 整条 cue 里所有矢量绘图 run。
   /// 每个绘图 run 所属那一行的样式与位置。
   ///
-  /// ASS 里 `\p1` 画出来的东西仍然属于某条 Dialogue：`\pos` / `n` /
+  /// ASS 里 `\p1` 画出来的东西仍然属于某条 Dialogue：`\pos` / `\N` /
   /// 边距都照常作用于它，坐标是「以这一行的锚点为零点」的。把绘图当全域
   /// 绝对坐标会把它钉在左上角，`\pos` 全然失效。
   List<({SubtitleSpan run, SubtitleStyle style, SubtitleLine line})>
@@ -415,7 +415,9 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
       // \ko: once the syllable has been sung it fades out instead of filling.
       return base.withValues(alpha: base.a * (1.0 - 0.85 * fill));
     }
-    final target = unsung == sung ? sung : unsung;
+    // 未唱部分是 secondaryColor，唱过之后插值到主色。两支同值的三元
+    // 表达式是早期遗留，等价于直接用 unsung。
+    final target = unsung;
     return Color.lerp(target, sung, fill) ?? sung;
   }
 

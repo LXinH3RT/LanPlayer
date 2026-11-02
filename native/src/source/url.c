@@ -33,6 +33,9 @@ static void url_decode(char *dst, size_t dstlen, const char *src, size_t srclen)
 
 static void copy_lower(char *dst, size_t dstlen, const char *src, size_t srclen)
 {
+    if (dstlen == 0) {
+        return;
+    }
     size_t n = srclen < dstlen - 1 ? srclen : dstlen - 1;
     for (size_t i = 0; i < n; i++) {
         dst[i] = (char)tolower((unsigned char)src[i]);
@@ -42,6 +45,9 @@ static void copy_lower(char *dst, size_t dstlen, const char *src, size_t srclen)
 
 static void copy_raw(char *dst, size_t dstlen, const char *src, size_t srclen)
 {
+    if (dstlen == 0) {
+        return;
+    }
     size_t n = srclen < dstlen - 1 ? srclen : dstlen - 1;
     memcpy(dst, src, n);
     dst[n] = '\0';

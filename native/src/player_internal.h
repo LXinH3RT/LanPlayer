@@ -836,6 +836,22 @@ typedef struct LpSubTestAnim {
 int lp_sub_test_parse_anim(const char *dialogue_text, int run_index,
                            int64_t cue_dur_us, LpSubTestAnim *out);
 
+/* 畸形 ASS 输入的回归钩子，供 native/tests/lp_robust_test.c 使用。
+ * 正常播放路径不会调它们。 */
+typedef struct LpSubTestMerge {
+    int nb_runs;
+    int nb_animated_runs;
+    int first_nb_anims;
+    double first_anim_t2;
+    char first_text[64];
+} LpSubTestMerge;
+
+LpSubtitleTrack *lp_sub_test_parse_ass(const char *text, size_t len);
+void lp_sub_test_free_track(LpSubtitleTrack *t);
+char *lp_sub_test_clamp_text(const char *text);
+int lp_sub_test_merge_runs(const char *r1, const char *r2, const char *r3,
+                           LpSubTestMerge *out);
+
 /* Decode a raw subtitle byte blob exactly the way lp_subtitle_add_file() does
  * (BOM strip, BOM-less UTF-16 guess, legacy code-page fallback).  Returns a
  * malloc'd NUL-terminated UTF-8 buffer, or NULL when the buffer itself could

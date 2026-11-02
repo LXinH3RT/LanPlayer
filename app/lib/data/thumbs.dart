@@ -412,19 +412,32 @@ class ThumbnailCache {
     }
     final pixels = Uint8List.sublistView(bytes, 12);
     final completer = Completer<ui.Image?>();
+    // decodeImageFromPixels 没有错误回调：颜色空间/尺寸没问题的前提下它
+    // 一定会回调一次，但底层编解码失败时可能谁都不回调，completer 永远不
+    // 完成，界面上就是一张永远转圈的占位图。给一个超时兜底。
+    Timer(const Duration(seconds: 5), () {
+      if (!completer.isCompleted) completer.complete(null);
+    });
     ui.decodeImageFromPixels(
       pixels,
       w,
       h,
       ui.PixelFormat.rgba8888,
-      (image) => completer.complete(image),
+      (image) {
+        if (!completer.isCompleted) completer.complete(image);
+      },
     );
     return completer.future;
   }
 
   /// 清空磁盘与内存缓存（设置里的「清空封面缓存」用）。
+  ///
+  /// `_inflight` 里还有正在拍的封面：清完目录后它们回来照样会把文件写回
+  /// 去，「清空」看起来没生效。这里把在飞的请求一起丢掉 —— 它们的结果不再
+  /// 被任何人等待，写盘前也会因为没有引用而被回收。
   Future<void> clear() async {
     _memory.clear();
+    _inflight.clear();
     _writesSincePrune = 0;
     try {
       final dir = await _cacheDir();

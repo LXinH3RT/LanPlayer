@@ -77,7 +77,10 @@ static int is_noise_word(const char *word)
  * 裸数字不算装饰 —— 那是续集或另一集的编号。 */
 static int only_decoration(const char *rest)
 {
-    char buf[512];
+    /* 512 字节对「片名 - 简体中文 - 1080p - BluRay - 十来个噪声词」够用，
+     * 但长片名会被静默截断，后半截的噪声词就认不出来了。截断时至少别把
+     * 一个词切成两半：留一个空格收尾即可。 */
+    char buf[1024];
     size_t n = 0;
     for (const char *q = rest; *q && n + 1 < sizeof(buf); q++) {
         unsigned char c = (unsigned char)*q;
@@ -166,10 +169,10 @@ static void core_of(const char *stem, char *out, size_t outlen)
                 continue;
             }
         }
-        if (w && w + 1 < outlen - 1) {
+        if (w && outlen > 1 && w + 1 < outlen - 1) {
             out[w++] = ' ';
         }
-        for (const char *q = t; *q && w + 1 < outlen - 1; q++) {
+        for (const char *q = t; *q && outlen > 1 && w + 1 < outlen - 1; q++) {
             out[w++] = *q;
         }
     }

@@ -134,7 +134,10 @@ class MediaRepository {
   /// 那几项，比在界面层拼一个假列表更可靠。
   Future<DirectoryListing> browseFile(String path) async {
     final cut = path.lastIndexOf(RegExp(r'[\\/]'));
-    final parent = cut > 0 ? path.substring(0, cut) : path;
+    // cut == 0 表示「/name」或「C:\name」这种根下的文件：父目录是根，
+    // 不能退回整条路径（那样 parent 会是文件自己）。名字那一半只要 cut >= 0
+    // 就切，两处判断必须一致。
+    final parent = cut > 0 ? path.substring(0, cut) : path.substring(0, cut + 1);
     final name = cut >= 0 ? path.substring(cut + 1) : path;
     final dir =
         await browseUrl(LpScheme.fileUrl(parent), const {'list_all': 1});

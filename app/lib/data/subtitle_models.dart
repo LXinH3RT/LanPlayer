@@ -82,7 +82,14 @@ class SubtitleStyle {
       );
 
   /// 1 = left, 2 = center, 3 = right (vertical handled separately).
-  int get horizontalAlign => ((align - 1) % 3) + 1;
+  ///
+  /// `align` 来自字幕文件，越界值是常态（缺字段、`\an0`、非数字时都会落回 0）。
+  /// 原写法 `((align - 1) % 3) + 1` 在 `align == 0` 时得 3，把「不知道」当成
+  /// 右对齐；Dart 的 `%` 也不取绝对值，负数会落进 0 或 -1。
+  int get horizontalAlign {
+    if (align < 1 || align > 9) return 2;
+    return ((align - 1) % 3) + 1;
+  }
   bool get isTop => align >= 7;
   bool get isMiddle => align >= 4 && align <= 6;
 }

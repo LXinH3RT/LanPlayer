@@ -73,7 +73,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
   /// 返回键的抬起触发状态。
   ///
   /// 必须是实例字段：它记着「这颗键按下了还没抬起」，那是每个页面各自的
-  /// 状态，不能做成全局函数。
+  /// 状态，不能做成全局函数。用 `late final` 而不是在 `initState` 里建，
+  /// 是因为它要在第一次按键时才读设置；热重载时旧实例会被整个 State 换掉，
+  /// 不会残留引用。
   late final BackKeyHandler _backKey = BackKeyHandler(
       key: SettingsStore.instance.value.shortcuts.keyFor(ShortcutAction.back));
 

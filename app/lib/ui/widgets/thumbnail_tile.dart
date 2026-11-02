@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show SchedulerBinding;
 
 import '../../data/thumbs.dart';
 
@@ -89,7 +90,12 @@ class _ThumbnailTileState extends State<ThumbnailTile> {
       _image = image;
       _loading = false;
     });
-    previous?.dispose();
+    // 旧图在这一帧里可能还被 RawImage 持有（setState 只是排队重建，重建之前
+    // 上一次的图层仍然指向它）。等本帧结束再释放，否则偶发
+    // "Cannot draw a disposed image"。
+    if (previous != null) {
+      SchedulerBinding.instance.addPostFrameCallback((_) => previous.dispose());
+    }
   }
 
   @override

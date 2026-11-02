@@ -167,10 +167,21 @@ class PlayerController extends ChangeNotifier {
 
   void togglePlay() => isPlaying ? pause() : play();
 
+  /// 把目标位置夹进 `[0, durationUs]`。
+  ///
+  /// 时长未知时（`durationUs == 0`，解复用还没结束、或者直播）只能保证非负。
+  /// 直接写 `micros.clamp(0, durationUs)` 在这里是错的：durationUs 为 0 而
+  /// micros 为负（回到片头、键盘连按左方向）时，上界比下界小，clamp 会抛
+  /// `ArgumentError: Invalid argument(s): 0`。
+  static int clampPosition(int micros, int durationUs) {
+    if (durationUs <= 0) return micros < 0 ? 0 : micros;
+    return micros.clamp(0, durationUs);
+  }
+
   void seekTo(int micros) {
     final p = _player;
     if (p == null) return;
-    positionUs = micros.clamp(0, durationUs == 0 ? micros : durationUs);
+    positionUs = clampPosition(micros, durationUs);
     positionUsNotifier.value = positionUs;
     _core.seek(p, positionUs);
     notifyListeners();

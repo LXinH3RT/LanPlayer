@@ -388,6 +388,9 @@ int lp_io_attach_avio(LpIo *io, AVFormatContext **out, char *err, size_t errlen)
 
     AVFormatContext *fmt = avformat_alloc_context();
     if (!fmt) {
+        /* 回滚：这里已经建好了 io（含 avio_buf 与 avio），只 return 会
+         * 把这两块内存连同 io 一起漏掉 —— 打开一个坏文件就漏一次。 */
+        lp_io_close(io);
         return LP_ERR_NOMEM;
     }
     fmt->pb = io->avio;

@@ -90,8 +90,28 @@ class AppStorage {
       final v = jsonDecode(text);
       return v is Map<String, dynamic> ? v : {};
     } catch (e) {
-      // A corrupt file must never brick the app.
-      return {'_error': '$e'};
+      // 损坏文件不能拖垮启动，但也**不能就地当成空表**：调用方读到的空表
+      // 一旦在下次保存时写回去，用户攒了几个月的服务器列表、观看进度就
+      // 彻底没了。先把原文件改名存档留证，再返回空表。
+      await _quarantine(name);
+      return {};
+    }
+  }
+
+  /// 把读不动的配置文件改名存档，返回存档文件名（成功时）。
+  ///
+  /// 改名而不是复制，是为了让下一次 `writeJson` 写的是新文件，不会覆盖
+  /// 掉用户还能手工抢救的那份。
+  static Future<String?> _quarantine(String name) async {
+    try {
+      final f = File('${(await directory()).path}/$name');
+      if (!await f.exists()) return null;
+      final stamp = DateTime.now().millisecondsSinceEpoch;
+      final kept = '$name.corrupt-$stamp';
+      await f.rename('${(await directory()).path}/$kept');
+      return kept;
+    } catch (_) {
+      return null;
     }
   }
 

@@ -2090,6 +2090,72 @@ def check_transport_behaviour() -> None:
     notes.append("transport registry: lookup, alias, URL shape and the scheme list all come "
                  "from the one table")
 
+def check_subtitle_robustness() -> None:
+    """Runs the malformed-subtitle test and pins the one path it cannot reach.
+
+    Well-formed samples never touch these branches: an ASS ``Format:`` whose
+    columns disagree with the ``Dialogue:`` rows, text truncated on a byte
+    boundary in the middle of a multi-byte character, a ``\\u`` surrogate pair
+    with an unchecked low half, or an animation grafted onto the previous run
+    when a style-only block appends nothing.  The test builds those samples and
+    asserts the behaviour, so the guard is on the outcome instead of on the
+    presence of a line.
+    """
+    out_dir = ROOT / "build" / "win-x64"
+    exe = out_dir / "lp_robust_test.exe"
+    build = ROOT / "scripts" / "build_windows.py"
+    source = ROOT / "native" / "tests" / "lp_robust_test.c"
+    if not source.exists():
+        problems.append("native/tests/lp_robust_test.c is gone; malformed subtitles would only "
+                        "be checked by reading the parser")
+        return
+    if build.exists() and 'build_test("lp_robust_test.exe"' not in build.read_text(encoding="utf-8"):
+        problems.append("scripts/build_windows.py no longer builds lp_robust_test.exe")
+        return
+    # 每个用例都必须真的被调用：只删掉一行调用，exe 照样打印 "all malformed
+    # subtitle cases passed"，那条缺陷就悄悄回来了。
+    calls = source.read_text(encoding="utf-8")
+    for name in ("test_json_unicode_escapes();", "test_ass_text_before_times();",
+                 "test_ass_format_reuse();", "test_ass_short_dialogue();",
+                 "test_text_clamp_utf8();", "test_merge_keeps_prev_animation();"):
+        if name not in calls:
+            problems.append(f"native/tests/lp_robust_test.c no longer calls {name}")
+            return
+    # lp_subtitle_add_file 要完整的 LpPlayer（加载互斥量、source 表），纯 C
+    # 测试建不出来，所以第 2.2 条只能用形状断言：重新加锁之后必须先重读
+    # nb_tracks，再拿它算下标。少了这一步就是锁外的旧槽位号。
+    subs = ROOT / "native" / "src" / "core" / "subtitle.c"
+    text = subs.read_text(encoding="utf-8")
+    marker = "int lp_subtitle_add_file("
+    start = text.find(marker)
+    if start < 0:
+        problems.append("native/src/core/subtitle.c lost lp_subtitle_add_file")
+        return
+    body = text[start:text.find("\n}\n", start)]
+    relock = body.rfind("pthread_mutex_lock(&p->subs.mutex);")
+    if relock < 0:
+        problems.append("lp_subtitle_add_file never takes the subtitle lock")
+        return
+    tail = body[relock:]
+    if "nb = p->subs.nb_tracks;" not in tail:
+        problems.append("lp_subtitle_add_file uses nb_tracks without refreshing it after "
+                        "re-locking; the slot number from before the file read could be stale")
+        return
+    if "&p->subs.tracks[nb]" not in tail:
+        problems.append("lp_subtitle_add_file no longer indexes p->subs.tracks[nb]")
+        return
+    if not exe.exists():
+        notes.append("subtitle robustness: not built (scripts/build_windows.py)")
+        return
+    env = dict(os.environ)
+    env["PATH"] = str(out_dir) + os.pathsep + env.get("PATH", "")
+    code, out = run([str(exe)], env=env, cwd=str(out_dir))
+    if code != 0 or "all malformed-subtitle cases passed" not in out:
+        problems.append("malformed subtitle test failed:\n" + out.strip()[-1500:])
+        return
+    notes.append("subtitle robustness: mismatched ASS columns, truncated UTF-8, lone "
+                 "surrogates and a style-only block appending nothing all behave as specified")
+
 def dart_exe() -> Path | None:
     """Prefer the standalone SDK, fall back to the one bundled with Flutter.
 
@@ -5732,6 +5798,7 @@ def main() -> int:
     check_hw_decode()
     check_nal_behaviour()
     check_transport_behaviour()
+    check_subtitle_robustness()
     check_settings_layout()
     check_settings_groups()
     check_playback_orientation()

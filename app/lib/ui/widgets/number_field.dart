@@ -20,7 +20,6 @@ class NumberField extends StatefulWidget {
     this.max,
     this.suffix,
     this.width = 96,
-    this.decimals = 0,
   });
 
   /// 当前值（显示用）。
@@ -37,9 +36,6 @@ class NumberField extends StatefulWidget {
 
   final double width;
 
-  /// 小数位数，0 表示只收整数。
-  final int decimals;
-
   @override
   State<NumberField> createState() => _NumberFieldState();
 }
@@ -49,9 +45,10 @@ class _NumberFieldState extends State<NumberField> {
       TextEditingController(text: _format(widget.value));
   late final FocusNode _focus = FocusNode()..addListener(_onFocusChange);
 
-  String _format(num v) => widget.decimals == 0
-      ? v.round().toString()
-      : v.toStringAsFixed(widget.decimals);
+  /// 只收整数：这个输入框用到的地方（快进快退步长、字幕延迟…）都是整数量。
+  /// 曾经留过一个 `decimals` 参数，但输入框固定挂着 `digitsOnly`，小数点
+  /// 根本敲不进去，那个参数没人读 —— 已删掉，需要小数请用下拉框。
+  String _format(num v) => v.round().toString();
 
   @override
   void didUpdateWidget(NumberField oldWidget) {

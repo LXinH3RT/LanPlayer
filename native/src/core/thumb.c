@@ -124,9 +124,12 @@ static int thumb_open_input(const char *url, const char *options_json, LpThumbCt
             return lp_io_last_result();
         }
         if (lp_io_attach_avio(io, &fmt, err, errlen) != LP_OK) {
+            /* 把 io 层给出的真实错误码透传出去（打开失败 / 内存不足 / 参数
+             * 不对），不要一律折成 NOMEM：上层没法据此决定要不要重试。 */
+            int rc = lp_io_last_result();
             lp_io_close(io);
             av_dict_free(&dict);
-            return LP_ERR_NOMEM;
+            return rc != LP_OK ? rc : LP_ERR_NOMEM;
         }
         /* 保留 attach_avio 装好的那一个，链在自己的回调后面 —— 直接覆盖
          * 会让 io->abort 再也没人看（见 LpThumbCtx 的注释）。 */

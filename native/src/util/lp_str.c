@@ -88,6 +88,10 @@ void lp_str_append_json_str(LpStr *s, const char *v)
      * lp_str_append 每次又要 vsnprintf 两遍，一条带样式的字幕行能因此
      * 付出上千次格式化开销。 */
     if (lp_str_reserve(s, n * 6 + 2) != 0) {
+        /* 内存不足时不能直接 return：调用方已经写好了 `"key":`，少一个值
+         * 就是一条未闭合的 JSON，Dart 侧解析整条事件都会失败。退化成空串
+         * 至少保住结构。 */
+        lp_str_append_raw(s, "\"\"", 2);
         return;
     }
     char *out = s->p + s->len;
@@ -112,8 +116,44 @@ void lp_str_append_json_str(LpStr *s, const char *v)
                     out[w++] = '0';
                     out[w++] = hex[(c >> 4) & 0x0F];
                     out[w++] = hex[c & 0x0F];
-                } else {
+                } else if (c < 0x80) {
                     out[w++] = (char)c;
+                } else {
+                    /* 非 ASCII 必须凑成一个完整的 UTF-8 序列才能原样输出。
+                     * 字幕文件是用户从各处下载来的，编码坏了是常态；原样
+                     * 透传会让整条 JSON 非法，Dart 侧 utf8.decode 直接抛
+                     * FormatException，一条坏字幕带走整次事件。
+                     * 凑不齐就换成一个 U+FFFD（EF BF BD）。 */
+                    size_t need = c < 0xC2 ? 0 : (c < 0xE0 ? 2 : (c < 0xF0 ? 3 : (c < 0xF5 ? 4 : 0)));
+                    int ok = need > 0;
+                    for (size_t k = 1; ok && k < need; k++) {
+                        if ((p[k] & 0xC0) != 0x80) {
+                            ok = 0;
+                        }
+                    }
+                    /* 超长编码与代理区（E0 80-9F、ED A0-BF）同样非法。 */
+                    if (ok && need == 3 && p[1] == 0x80) {
+                        ok = 0;
+                    }
+                    if (ok && need == 3 && p[0] == 0xED && p[1] >= 0xA0) {
+                        ok = 0;
+                    }
+                    if (ok && need == 4 && p[0] == 0xF0 && p[1] < 0x90) {
+                        ok = 0;
+                    }
+                    if (ok && need == 4 && p[0] == 0xF4 && p[1] >= 0x90) {
+                        ok = 0;
+                    }
+                    if (ok) {
+                        for (size_t k = 0; k < need; k++) {
+                            out[w++] = (char)p[k];
+                        }
+                        p += need - 1;
+                    } else {
+                        out[w++] = (char)0xEF;
+                        out[w++] = (char)0xBF;
+                        out[w++] = (char)0xBD;
+                    }
                 }
             }
         }
@@ -131,8 +171,7 @@ char *lp_str_take(LpStr *s)
     }
     s->p = NULL;
     s->len = s->cap = 0;
-    return p;
-}
+    return p;}
 
 char *lp_str_dup(const char *v)
 {
@@ -236,9 +275,22 @@ static int hex4(const char *p, unsigned *out)
     return 0;
 }
 
-/* Encodes a code point as UTF-8. */
+/* Encodes a code point as UTF-8.
+ *
+ * 四字节这一支不能省：\uXXXX 代理对拼出来的码点（emoji、CJK 扩展 B 区、
+ * 部分音乐符号）全部落在 0x10000 以上。少这一支时它们会掉进三字节分支，
+ * 写出三个字节的截断序列，产出的 JSON 不再是合法 UTF-8 —— Dart 侧
+ * utf8.decode 抛 FormatException，整条字幕事件丢失。
+ *
+ * 落不进任何一支的（孤立代理项 0xD800-0xDFFF、超过 U+10FFFF）按 U+FFFD
+ * 替换字符写出，宁可显示成方块也不要污染整条事件。 */
 static void utf8_put(char *out, size_t cap, size_t *len, unsigned cp)
 {
+    if (cp >= 0xD800 && cp <= 0xDFFF) {
+        cp = 0xFFFD;
+    } else if (cp > 0x10FFFF) {
+        cp = 0xFFFD;
+    }
     if (cp < 0x80) {
         if (*len + 1 < cap) out[(*len)++] = (char)cp;
     } else if (cp < 0x800) {
@@ -246,9 +298,16 @@ static void utf8_put(char *out, size_t cap, size_t *len, unsigned cp)
             out[(*len)++] = (char)(0xC0 | (cp >> 6));
             out[(*len)++] = (char)(0x80 | (cp & 0x3F));
         }
-    } else {
+    } else if (cp < 0x10000) {
         if (*len + 3 < cap) {
             out[(*len)++] = (char)(0xE0 | (cp >> 12));
+            out[(*len)++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+            out[(*len)++] = (char)(0x80 | (cp & 0x3F));
+        }
+    } else {
+        if (*len + 4 < cap) {
+            out[(*len)++] = (char)(0xF0 | (cp >> 18));
+            out[(*len)++] = (char)(0x80 | ((cp >> 12) & 0x3F));
             out[(*len)++] = (char)(0x80 | ((cp >> 6) & 0x3F));
             out[(*len)++] = (char)(0x80 | (cp & 0x3F));
         }
@@ -292,7 +351,10 @@ static int decode_json_string(const char *p, char *out, size_t outlen)
             p += 4;
             if (cp >= 0xD800 && cp <= 0xDBFF && p[0] == '\\' && p[1] == 'u') {
                 unsigned lo = 0;
-                if (hex4(p + 2, &lo) == 0) {
+                /* 低半区必须落在 0xDC00-0xDFFF 才构成合法代理对。
+                 * 不校验的话 `\uD83D\u0041` 这种半个代理对会被拼成一个
+                 * 凭空多出 0x400 的码点，把后面的字符整段吃掉。 */
+                if (hex4(p + 2, &lo) == 0 && lo >= 0xDC00 && lo <= 0xDFFF) {
                     p += 6;
                     cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
                 }

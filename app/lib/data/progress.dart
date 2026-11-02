@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data' show BytesBuilder;
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import 'scheme.dart';
 import 'stores.dart';
 
@@ -57,6 +59,11 @@ class ProgressEntry {
 /// credentialised URL, so the SMB password does not end up in `progress.json`.
 class ProgressStore {
   ProgressStore._();
+
+  /// 测试用：每个用例要一份干净的实例，单例做不到。
+  @visibleForTesting
+  ProgressStore.forTest();
+
   static final ProgressStore instance = ProgressStore._();
 
   static const _file = 'progress.json';
@@ -204,6 +211,9 @@ class ProgressStore {
   /// Records the position, or forgets the key when the file is basically
   /// finished (or barely started) so the next open is not "resumed" to 2 s.
   Future<void> save(String key, int positionUs, int durationUs) async {
+    if (!_loaded) {
+      await load();
+    }
     key = sanitizeKey(key);
     if (key.isEmpty || durationUs <= 0) return;
     final finished = positionUs >= durationUs - tailGuard.inMicroseconds;
@@ -229,10 +239,20 @@ class ProgressStore {
   }
 
   Future<void> clear(String key) async {
+    if (!_loaded) {
+      await load();
+    }
     if (_entries.remove(sanitizeKey(key)) != null) await _flush();
   }
 
   Future<void> _flush() async {
+    // 冷启动窗口里可能先来一次 `save()` 再来 `load()`（`main.dart` 的
+    // `Future.wait` 里 `load()` 只是其中一项，`runApp` 早就跑起来了）。
+    // 那时 `_entries` 还是空表，直接落盘会把磁盘上已有的几百条进度整个
+    // 覆盖掉。先把磁盘内容读进来再写。
+    if (!_loaded) {
+      await load();
+    }
     final entries = _entries.values.toList()
       ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     if (entries.length > maxEntries) {

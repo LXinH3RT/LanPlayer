@@ -211,7 +211,13 @@ static int file_transport_list(const LpUrl *u, const LpSourceOptions *opts,
             continue;
         }
         wchar_t full[1600];
-        swprintf(full, sizeof(full) / sizeof(full[0]), L"%ls/%ls", wpath, ent->d_name);
+        const int need = _snwprintf(full, sizeof(full) / sizeof(full[0]), L"%ls/%ls", wpath,
+                                    ent->d_name);
+        /* 路径超长（>1599 宽字符）时原先会把名字截断后当成另一个文件去 stat，
+         * 拿到的可能根本不是同一个条目 —— 宁可跳过也不要列错。 */
+        if (need < 0 || (size_t)need >= sizeof(full) / sizeof(full[0])) {
+            continue;
+        }
         struct _stat64 st;
         if (_wstat64(full, &st) != 0) {
             continue;

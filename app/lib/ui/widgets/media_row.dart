@@ -48,18 +48,20 @@ class MediaRow extends StatelessWidget {
 
     // 没有视频认领的字幕：单独给一行，标「未关联」。直接隐藏会让用户
     // 以为播放器漏列了文件。
+    //
+    // 这一行**不能点开播**：它没有归属的视频，`listing.videos.first` 只是
+    // 目录里第一个片子，点了就是「点 A 播 B」。用户可以自己去点对应的视频，
+    // 或者把字幕改名成与视频同名。
     if (entry.isSubtitle) {
       return ListTile(
         leading: Icon(Icons.subtitles_outlined,
             color: Theme.of(context).colorScheme.onSurfaceVariant),
         title: Text(entry.name, maxLines: 1, overflow: TextOverflow.ellipsis),
         subtitle: Text(
-          '${formatBytes(entry.size)} · ${entry.ext.toUpperCase()} · 未关联到视频',
+          '${formatBytes(entry.size)} · ${entry.ext.toUpperCase()} · 未关联到视频，'
+          '改名成与视频同名后会出现在它下面',
           style: const TextStyle(fontSize: 12),
         ),
-        onTap: listing.videos.isEmpty
-            ? null
-            : () => onPlay(listing.videos.first, [entry]),
       );
     }
 

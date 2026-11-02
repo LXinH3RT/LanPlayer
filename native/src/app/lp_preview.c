@@ -484,12 +484,18 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--auto-close") == 0 && i + 1 < argc) {
             g_app.auto_close_ms = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--dump") == 0 && i + 1 < argc) {
-            MultiByteToWideChar(CP_UTF8, 0, argv[++i], -1, dump, MAX_PATH);
+            if (MultiByteToWideChar(CP_UTF8, 0, argv[++i], -1, dump, MAX_PATH) == 0) {
+                fprintf(stderr, "cannot convert --dump path: %lu\n", GetLastError());
+                return 2;
+            }
         } else if (strcmp(argv[i], "--hw") == 0 && i + 1 < argc) {
             snprintf(g_app.hw, sizeof(g_app.hw), "%s", argv[++i]);
             g_app.hw_set = 1;
         } else {
-            MultiByteToWideChar(CP_UTF8, 0, argv[i], -1, g_app.path, MAX_PATH);
+            if (MultiByteToWideChar(CP_UTF8, 0, argv[i], -1, g_app.path, MAX_PATH) == 0) {
+                fprintf(stderr, "cannot convert path: %lu\n", GetLastError());
+                return 2;
+            }
             file = g_app.path;
         }
     }

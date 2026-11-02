@@ -299,6 +299,14 @@ def main() -> int:
                       "transport registry test"):
         return 1
 
+    # 畸形字幕输入：ASS 的 Format 列序和 Dialogue 行对不上、正文按字节截断
+    # 切在多字节字符中间、`\u` 代理对只校验高半区、只改样式时动画被嫁接到
+    # 上一条 run。全是「正常样本永远碰不到、坏字幕必炸」的路径，只能在
+    # 这里用构造出来的样本钉住。
+    if not build_test("lp_robust_test.exe", native / "tests" / "lp_robust_test.c",
+                      "malformed subtitle test"):
+        return 1
+
     # Loads lanplayer.dll at runtime and drives the texture path, exactly like
     # the Flutter Windows plugin does.  It also compiles the plugin's own
     # BGRA->RGBA header, so a regression in that conversion fails here instead

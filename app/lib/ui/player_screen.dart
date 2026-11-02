@@ -796,6 +796,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ),
       ),
     );
+    // 面板是 await 出来的：用户可能在它开着的时候按返回/双击退出播放页，
+    // 那时本 State 已经 dispose，裸 setState 会抛「setState() called after
+    // dispose()」。
+    if (!mounted) return;
     setState(() {});
     _scheduleHide();
   }
@@ -1071,14 +1075,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _updateVerticalDrag(DragUpdateDetails d) {
-    // Full screen height maps to the whole 0..1 range; upward is more.
-    final delta = -d.delta.dy / 320;
+    // 以「整块画面高度 = 满量程」折算，而不是写死 320 像素：手机上滑一半
+    // 屏就是半个量程，桌面上手一滑也不会直接冲到顶。
+    //
+    // 两个通道的量程不一样（增益 0..2.0，跨度 2；亮度 0.25..1.0，跨度 0.75），
+    // 用同一个系数会让亮度调得比音量快 2.7 倍，所以各按自己的跨度折算。
+    final height = MediaQuery.sizeOf(context).height;
+    final unit = height > 0 ? d.delta.dy / height : 0.0;
     if (_dragOnVolume) {
-      final v = (_player.volume + delta).clamp(0.0, VolumeSheet.maxVolume);
+      final v = (_player.volume - unit * VolumeSheet.maxVolume)
+          .clamp(0.0, VolumeSheet.maxVolume);
       _player.setVolume(v);
       _showHud('音量 ${VolumeSheet.displayOf(v)}');
     } else {
-      final b = (_brightness + delta).clamp(0.25, 1.0);
+      final b = (_brightness - unit * 0.75).clamp(0.25, 1.0);
       setState(() => _brightness = b);
       _showHud('亮度 ${(b * 100).round()}%');
     }

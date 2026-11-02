@@ -32,18 +32,26 @@
  * "Winsock was not initialized. Please call WSAStartup()" otherwise) and never
  * calls WSAStartup itself.  Every Windows build of a libsmb2 client has to do
  * it once; WSAStartup is refcounted, so a benign race is harmless.
+ *
+ * 注意 wsa_ready 只在**成功之后**才置位：原先先 exchange 再调 WSAStartup，
+ * 一旦启动失败，后面的调用都会看到「已初始化」直接跳过，整个进程再也连不上
+ * SMB —— 而且是静默的。
  */
-static void smb_wsa_init(void)
+static int smb_wsa_ready(void)
 {
 #if defined(_WIN32)
     static atomic_int wsa_ready;
-    if (atomic_exchange(&wsa_ready, 1) == 0) {
-        WSADATA data;
-        if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
-            LP_ERROR("smb", "WSAStartup failed");
-        }
+    if (atomic_load(&wsa_ready)) {
+        return 1;
     }
+    WSADATA data;
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+        LP_ERROR("smb", "WSAStartup failed");
+        return 0;
+    }
+    atomic_store(&wsa_ready, 1);
 #endif
+    return 1;
 }
 
 typedef struct LpSmbCtx {
@@ -102,7 +110,11 @@ static int smb_error_rc(struct smb2_context *smb2, int fallback)
 static struct smb2_context *smb_connect(const LpUrl *u, const LpSourceOptions *opts,
                                         char *err, size_t errlen, int *rc_out)
 {
-    smb_wsa_init();
+    if (!smb_wsa_ready()) {
+        if (err && errlen) snprintf(err, errlen, "Winsock could not be initialised");
+        *rc_out = LP_ERR_IO;
+        return NULL;
+    }
     struct smb2_context *smb2 = smb2_init_context();
     if (!smb2) {
         if (err && errlen) snprintf(err, errlen, "smb2_init_context failed");

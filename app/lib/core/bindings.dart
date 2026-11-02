@@ -490,9 +490,18 @@ class NativeCore {
   }
 }
 
+/// Decodes a core event payload, or null when it is not a JSON object.
+///
+/// 内核已经在尽力保证 payload 是合法 JSON，但事件是从 FFI 回调里同步送进来
+/// 的：畸形内容在 `jsonDecode` 里抛 `FormatException` 会一路穿过回调栈，
+/// 把整个播放流程带停。这里统一吞掉，交给调用方按「没有 payload」处理。
 Map<String, dynamic>? decodeJson(String s) {
-  final v = jsonDecode(s);
-  return v is Map<String, dynamic> ? v : null;
+  try {
+    final v = jsonDecode(s);
+    return v is Map<String, dynamic> ? v : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 String encodeJson(Map<String, dynamic> m) => jsonEncode(m);
