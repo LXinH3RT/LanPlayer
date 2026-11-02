@@ -33,6 +33,20 @@ class MainActivity : FlutterActivity() {
     private var windowPtr: Long = 0
     private var playerPtr: Long = 0
 
+    /**
+     * 不参与「进程重建时恢复界面」。
+     *
+     * `FlutterActivity` 默认返回 true：Activity 被系统回收（从最近任务里划掉
+     * 卡片、系统在后台杀掉进程）之后重新进来，引擎会拿到上次存下的
+     * InstanceState，连 Dart 侧的导航栈一起恢复 —— 用户看到的是「一开就回到
+     * 上次那个播放页」。那个页面此刻往往已经不可用：SMB 源换了网或没开机，
+     * 屏幕上只剩一句连接失败，还得先返回一次才能用。
+     *
+     * 上次看到哪儿由 `ProgressStore` 记着，首页那一行会显示「已看 xx%」。
+     * 界面本身不需要恢复，所以这里直接关掉，每次进来都从首页开始。
+     */
+    override fun shouldRestoreAndSaveState(): Boolean = false
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         setupPermissions(flutterEngine)

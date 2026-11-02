@@ -17,6 +17,7 @@ import 'ui/player_screen.dart';
 import 'ui/server_edit_screen.dart';
 import 'ui/settings_screen.dart';
 import 'ui/splash_gate.dart';
+import 'ui/startup_reset.dart';
 import 'ui/theme.dart';
 
 final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
@@ -82,6 +83,19 @@ Future<void> _boot() async {
 ///
 /// 这些全部靠环境变量或 `--dart-define` 触发，正常运行时一个都不生效。
 void _runProbes() {
+  // 冷启动一律从首页开始：进程被系统回收后重新进来时，引擎可能把上次的导航栈
+  // 一并恢复，于是「一开就回到上次那个播放页」。那个页面此刻的 SMB 源往往已经
+  // 不可达，用户看到的是一句连接失败，还得先返回一次。上次看到哪儿由
+  // ProgressStore 记着（首页该行会显示「已看 xx%」），界面不需要恢复。
+  //
+  // 正常启动时栈里本来就只有首页，这一步是空操作。
+  final navigator = appNavigatorKey.currentState;
+  if (navigator != null) {
+    final popped = collapseToHome(navigator);
+    if (popped > 0) {
+      trace('startup collapsed $popped route(s) back to home');
+    }
+  }
   // Convenience hook for desktop testing (and for the CI screenshot check):
   //   set LANPLAYER_OPEN=D:\video.mkv
   // opens that file in the player right after startup.

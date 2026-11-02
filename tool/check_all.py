@@ -298,6 +298,7 @@ REQUIRED = [
     "app/lib/ui/media_permission.dart",
     "app/lib/ui/browser_screen.dart",
     "app/lib/ui/player_screen.dart",
+    "app/lib/ui/startup_reset.dart",
     "app/android/app/src/main/kotlin/dev/lanplayer/app/MainActivity.kt",
     # A Gradle project needs these to build at all.  They are the stock Flutter
     # 3.27 templates (settings.gradle / build.gradle / gradle.properties /
@@ -5257,6 +5258,78 @@ def check_windows_single_instance() -> None:
                  "starting a second process with its own playback state")
 
 
+def check_startup_home() -> None:
+    """Cold start must land on the home screen, never on the last player.
+
+    Both mobile hosts can bring the previous UI back when the process is
+    recreated -- Android because `FlutterActivity.shouldRestoreAndSaveState()`
+    returns true by default (the engine gets the saved InstanceState and
+    restores the whole navigation stack with it), iPadOS because window-scene
+    restoration may return the last controller hierarchy.  The player is the
+    wrong thing to restore: its SMB source is usually unreachable by then, so
+    the user lands on a connection error and has to press back once.
+
+    The fix is in two places on purpose -- the Android host refuses to
+    save/restore state at all, and the Dart side collapses whatever stack it
+    inherited right before the verification hooks run.  Either one alone would
+    leave the other platform's behaviour to chance.
+    """
+    reset = ROOT / "app" / "lib" / "ui" / "startup_reset.dart"
+    if not reset.exists():
+        problems.append("app/lib/ui/startup_reset.dart is gone; nothing pulls "
+                        "the navigation stack back to the home screen on "
+                        "launch")
+        return
+    text = reset.read_text(encoding="utf-8")
+    for needle, why in (
+        ("int collapseToHome(NavigatorState navigator)",
+         "the helper must take the navigator and report how many routes it "
+         "dropped"),
+        ("popUntil(", "collapsing has to go through popUntil so the routes "
+                      "actually run their exit callbacks"),
+        ("route.isFirst", "the collapse must stop at the first route; popping "
+                          "past it would leave the app with no page at all"),
+    ):
+        if needle not in text:
+            problems.append(f"app/lib/ui/startup_reset.dart no longer has "
+                            f"{needle!r}: {why}")
+
+    main = ROOT / "app" / "lib" / "main.dart"
+    mt = main.read_text(encoding="utf-8")
+    if "import 'ui/startup_reset.dart';" not in mt:
+        problems.append("app/lib/main.dart does not import startup_reset; the "
+                        "collapse would have no effect")
+    if "collapseToHome(navigator)" not in mt:
+        problems.append("app/lib/main.dart never calls collapseToHome; a cold "
+                        "start could still land on the restored player page")
+    else:
+        probes = mt.find("void _runProbes()")
+        collapse = mt.find("collapseToHome(navigator)")
+        if probes == -1:
+            problems.append("app/lib/main.dart lost _runProbes; the startup "
+                            "hooks moved and the collapse went with them")
+        elif collapse < probes:
+            problems.append("app/lib/main.dart collapses the stack from "
+                            "outside _runProbes; it has to run after the first "
+                            "frame, when the navigator exists")
+
+    activity = (ROOT / "app" / "android" / "app" / "src" / "main" / "kotlin"
+                / "dev" / "lanplayer" / "app" / "MainActivity.kt")
+    if not activity.exists():
+        problems.append("app/android/.../MainActivity.kt is gone")
+        return
+    at = activity.read_text(encoding="utf-8")
+    if "override fun shouldRestoreAndSaveState(): Boolean = false" not in at:
+        problems.append("MainActivity no longer overrides "
+                        "shouldRestoreAndSaveState to false; Android would "
+                        "hand the saved InstanceState to the engine again and "
+                        "reopen the player after the process is killed")
+
+    notes.append("startup: a cold start always lands on the home screen - "
+                 "Android refuses to save/restore instance state, and the Dart "
+                 "side collapses any inherited stack before the hooks run")
+
+
 def check_local_picker() -> None:
     """Guard the local file/folder picker and the wide-character file layer.
 
@@ -5412,6 +5485,7 @@ def main() -> int:
     check_settings_groups()
     check_playback_orientation()
     check_windows_single_instance()
+    check_startup_home()
     check_local_picker()
     check_splash()
     check_ui_thread()
