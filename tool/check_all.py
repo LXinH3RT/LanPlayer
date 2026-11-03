@@ -6151,6 +6151,49 @@ def check_audio_underfill() -> None:
         "instead of the previous chunk played twice")
 
 
+def check_present_contract() -> None:
+    """「present = 让用户看到这一帧」这条契约要一直成立。
+
+    内核里共有三处会处理一帧的结果：正常上屏、判定迟到要丢、以及 seek /
+    stop 时作废。只有第一处该调 `lp_hw_decoder_present`；另外两处必须走
+    `lp_hw_decoder_release`，否则被「丢掉」的帧照样画到屏幕上，落后量立刻
+    回补，下一帧又被判晚到 —— 丢一帧补一帧的双帧脉冲比不丢还难看。
+    """
+    video = (ROOT / "native/src/core/video.c").read_text(
+        encoding="utf-8", errors="replace")
+    if video.count("lp_hw_decoder_present(p->video.hw, hf);") != 1:
+        problems.append(
+            "native/src/core/video.c: the normal path no longer shows exactly "
+            "one frame through lp_hw_decoder_present")
+    if video.count("lp_hw_decoder_present(p->video.hw, &hf);") != 0:
+        problems.append(
+            "native/src/core/video.c: a discarded hardware frame is shown again; "
+            "the seek/stop path must release it instead of presenting it")
+    if video.count("lp_hw_decoder_release(p->video.hw,") != 2:
+        problems.append(
+            "native/src/core/video.c: the two discard paths (late frame, "
+            "seek/stop) no longer both release the buffer without showing it")
+
+    header = (ROOT / "native/src/player_internal.h").read_text(
+        encoding="utf-8", errors="replace")
+    for needle, why in (
+        ("把这一帧送到屏幕上", "the present contract lost its opening line"),
+        ("调用它就是让用户看到这一帧",
+         "the contract no longer says that calling present means showing"),
+        ("一律走\n *      lp_hw_decoder_release，不能走这里",
+         "the contract stopped forbidding present on discarded frames"),
+        ("不能推给后端各自决定",
+         "the contract no longer says the subtitle decision belongs to the core"),
+    ):
+        if needle not in header:
+            problems.append(f"native/src/player_internal.h: {why}")
+
+    notes.append(
+        "present contract: presenting a hardware frame always means showing it, "
+        "both discard paths release instead, and the graphics-subtitle decision "
+        "stays in the core")
+
+
 def check_browser_error_surface() -> None:
     """浏览链路里「不是网络错误」的异常也要落到界面上。
 
@@ -6775,6 +6818,7 @@ def main() -> int:
     check_review5_fixes()
     check_audio_underfill()
     check_browser_error_surface()
+    check_present_contract()
     check_runtime_guards()
     check_list_row_work()
     check_dart_hot_paths()

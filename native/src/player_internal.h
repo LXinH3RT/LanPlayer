@@ -307,8 +307,19 @@ int lp_hw_decoder_send(LpVideoDecoder *d, const AVPacket *pkt);
 int lp_hw_decoder_is_async(LpVideoDecoder *d);
 /* 0 = frame out, LP_ERR_AGAIN = more input needed, <0 fatal */
 int lp_hw_decoder_receive(LpVideoDecoder *d, LpDecodedFrame *out);
-/* Present at the sync deadline (Android releases the buffer; Apple publishes
- * the pixel buffer to the texture bridge). */
+/* 把这一帧送到屏幕上。
+ *
+ * 三个后端内部差别很大（Windows 是 GDI 缓冲或共享纹理、Apple 是发布
+ * CVPixelBuffer 给纹理、Android 是把 buffer index 交回 codec 的 Surface），
+ * 但对内核来说语义只有一条：**调用它就是让用户看到这一帧**。
+ *
+ * 由此派生两条铁律：
+ *   1. 判定为应该丢弃的帧（迟到超过阈值、seek/stop 时作废的）一律走
+ *      lp_hw_decoder_release，不能走这里 —— 否则「丢帧」会变成「多显示
+ *      一帧」，落后量立刻回补、下一帧又被判晚到，形成丢一帧补一帧的脉冲。
+ *   2. 图形字幕该不该先合进来，由内核判断（lp_render_graphics_sub_active），
+ *      不能推给后端各自决定 —— 上一轮那样做，Android 与 Apple 就一起漏掉了。
+ */
 int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f);
 
 /* 图形字幕（PGS / VobSub / DVB）是 CPU 位图，只有 lp_sub_overlay_blend 会画，

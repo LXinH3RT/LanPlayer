@@ -634,9 +634,14 @@ void *lp_video_thread_fn(void *arg)
                 if (drop < 0) {
                     /* Seek or stop: release the buffer and let the outer loop
                      * re-sync (do NOT exit the thread). 这一帧既没上屏也不算
-                     * 迟到丢帧，必须单独记一笔，否则守恒式上会凭空少一帧。 */
+                     * 迟到丢帧，必须单独记一笔，否则守恒式上会凭空少一帧。
+                     *
+                     * 用 release 而不是 present：seek 之后要跳到别的位置，
+                     * stop 之后要停在黑底上，这两种情况下把缓冲区真的交给
+                     * 屏幕（Android 的 releaseOutputBuffer(..., true)、
+                     * Apple 的 publish）都会让旧位置的一帧闪一下。 */
                     p->video.frames_discarded++;
-                    lp_hw_decoder_present(p->video.hw, &hf);
+                    lp_hw_decoder_release(p->video.hw, &hf);
                     break;
                 }
                 present_hw(p, &hf, drop);
