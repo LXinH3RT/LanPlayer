@@ -2099,6 +2099,57 @@ def check_transport_behaviour() -> None:
     notes.append("transport registry: lookup, alias, URL shape and the scheme list all come "
                  "from the one table")
 
+def check_decode_flow() -> None:
+    """Runs a clip end to end and proves the video thread never stops consuming.
+
+    Every other native test looks at a slice: subtitles parse, NAL framing
+    converts, the transport table resolves.  None of them plays a file, so a
+    video thread that stops taking packets — the failure users describe as "the
+    picture froze, the sound was fine" — leaves no trace in the suite.  This one
+    plays `build/media/pacing360.mp4` through both decoders and fails when the
+    position stops advancing, the delivered-frame counter stops growing, or the
+    clip does not reach ENDED.
+
+    The test cannot reach the historic in_flight leak (see the long comment in
+    native/tests/lp_decode_flow_test.c: the counter only exists on the async
+    branch and Windows' d3d11va is synchronous).  That leak is guarded by
+    check_review5_fixes() reading video.c.  What this adds is the other half:
+    that the surrounding loop still makes progress on this platform.
+    """
+    out_dir = ROOT / "build" / "win-x64"
+    exe = out_dir / "lp_decode_flow_test.exe"
+    source = ROOT / "native" / "tests" / "lp_decode_flow_test.c"
+    clip = ROOT / "build" / "media" / "pacing360.mp4"
+    build = ROOT / "scripts" / "build_windows.py"
+    if not source.exists():
+        problems.append("native/tests/lp_decode_flow_test.c is gone; nothing would play a "
+                        "file end to end in the native suite")
+        return
+    if build.exists() and 'build_test("lp_decode_flow_test.exe"' not in build.read_text(encoding="utf-8"):
+        problems.append("scripts/build_windows.py no longer builds lp_decode_flow_test.exe; "
+                        "the decode loop would only be checked by reading its source")
+        return
+    # 状态常量必须与 lp_types.h 一致。第一版按记忆写成 PLAYING 2 / ENDED 5，
+    # 两个用例一起假失败 —— 这张表写错时测试只会更吵，不会更安静，但也没有
+    # 理由再错一次。
+    if "const char *modes[] = { \"sw\", \"auto\" };" not in source.read_text(encoding="utf-8"):
+        problems.append("native/tests/lp_decode_flow_test.c no longer plays both decoders; "
+                        "a hang on the hardware path would go unseen")
+    if not clip.exists():
+        notes.append("decode flow: no test clip (build/media/pacing360.mp4), skipped")
+        return
+    if not exe.exists():
+        notes.append("decode flow: not built (scripts/build_windows.py)")
+        return
+    env = dict(os.environ)
+    env["PATH"] = str(out_dir) + os.pathsep + env.get("PATH", "")
+    code, out = run([str(exe), str(clip), "--seconds", "40"], env=env, cwd=str(out_dir))
+    if code != 0 or "all decode-flow cases passed" not in out:
+        problems.append("decode flow test failed:\n" + out.strip()[-1500:])
+        return
+    notes.append("decode flow: a clip plays to the end on both decoders without the position "
+                 "or the delivered-frame counter ever standing still")
+
 # 字幕子系统在第五轮评审后拆成三个编译单元（见 subtitle_internal.h）。
 # 下面这些检查守的是行为，行为跨段分布，所以要读合并文本。
 SUBTITLE_SOURCES = (
@@ -6986,6 +7037,7 @@ def main() -> int:
     check_apple_wiring()
     check_hw_decode()
     check_nal_behaviour()
+    check_decode_flow()
     check_transport_behaviour()
     check_subtitle_robustness()
     check_settings_layout()

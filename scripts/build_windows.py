@@ -307,6 +307,14 @@ def main() -> int:
                       "malformed subtitle test"):
         return 1
 
+    # 解码链路的行为回归：硬件解码器连续拒绝送包时，in_flight 不能只增不减。
+    # 那个缺陷的后果是视频线程停止消费、队列背压传到解复用、声音一起停，只能
+    # 靠 seek 救回来。外部造不出「后端连续拒绝」，但造得出后果 —— 位置不再前进、
+    # 帧计数不再增长、片子放不到结束。这个测试就盯这三件事。
+    if not build_test("lp_decode_flow_test.exe", native / "tests" / "lp_decode_flow_test.c",
+                      "decode flow test"):
+        return 1
+
     # Loads lanplayer.dll at runtime and drives the texture path, exactly like
     # the Flutter Windows plugin does.  It also compiles the plugin's own
     # BGRA->RGBA header, so a regression in that conversion fails here instead
