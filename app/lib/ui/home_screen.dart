@@ -121,6 +121,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _storeSyncTimer?.cancel();
+    _storeSyncTimer = null;
     ServerStore.instance.removeListener(_onStoreChanged);
     LocalFolderStore.instance.removeListener(_onStoreChanged);
     super.dispose();
@@ -130,12 +132,27 @@ class _HomeScreenState extends State<HomeScreen> {
   ///
   /// 只重画一次，然后按「已加载的块」与「现在的来源」是否对得上决定要不要
   /// 补拉。改名/换标签不动目录，不该再发一轮请求。
+  /// 合并 store 通知的定时器。
+  ///
+  /// `ServerStore.load()` 与 `LocalFolderStore.load()` 各自在读完盘后
+  /// `notifyListeners()`，启动期这两次几乎同时到。以前每次通知都直接跑一遍
+  /// `_loadAll()`：第一次看到的来源集合还不含本地目录，第二次把第一次的代次
+  /// 顶掉 —— 第一次那一整轮请求的结果全部作废，白拉一遍。
+  /// 现在攒到本帧结束再统一处理一次。
+  Timer? _storeSyncTimer;
+
   void _onStoreChanged() {
     if (!mounted) return;
-    final ids = _sources.map((s) => s.id).toSet();
-    final needsLoad = !setEquals(ids, _loads.keys.toSet());
     setState(() {});
-    if (needsLoad) unawaited(_loadAll());
+    _storeSyncTimer?.cancel();
+    _storeSyncTimer = Timer(Duration.zero, () {
+      _storeSyncTimer = null;
+      if (!mounted) return;
+      final ids = _sources.map((s) => s.id).toSet();
+      if (!setEquals(ids, _loads.keys.toSet())) {
+        unawaited(_loadAll());
+      }
+    });
   }
 
   /// 统一的错误文案：网络/IO 异常也要给用户一个可读的提示，
@@ -198,7 +215,23 @@ class _HomeScreenState extends State<HomeScreen> {
   /// 进入某一块来源里的子目录：先取一次列表，再把浏览页推到栈上。
   ///
   /// 浏览页需要初始列表，这样它首帧就有内容，不会先闪一下空白再填。
+  /// 正在打开中的目标（来源 id + 路径）。
+  ///
+  /// 双击目录会并行发两次 `browseUrl`，各自 `push` 一层浏览页 —— 用户看到
+  /// 的是两层一模一样的页面，退一次还在原地。这里按「目标」去重。
+  String? _opening;
+
   Future<void> _enterSubdir(HomeSource s, MediaEntry dir) async {
+    if (_opening != null) return;
+    _opening = '${s.id}/${dir.path}';
+    try {
+      await _enterSubdirInner(s, dir);
+    } finally {
+      _opening = null;
+    }
+  }
+
+  Future<void> _enterSubdirInner(HomeSource s, MediaEntry dir) async {
     final offline = SourceHealth.instance.offlineReason(s.id);
     if (offline != null) {
       await showError(context, offlineHint(dir.path, offline));
@@ -222,6 +255,16 @@ class _HomeScreenState extends State<HomeScreen> {
   /// 单文件来源没有「完整浏览页」可言：那块的根就是文件所在的目录，
   /// 直接播这个文件更贴近用户点「全部」时想干的事。
   Future<void> _openRoot(HomeSource s) async {
+    if (_opening != null) return;
+    _opening = 'root/${s.id}';
+    try {
+      await _openRootInner(s);
+    } finally {
+      _opening = null;
+    }
+  }
+
+  Future<void> _openRootInner(HomeSource s) async {
     // 已知离线就直接给结论，不去连。这颗按钮以前每次都真的连一遍，服务器
     // 不在线时要等满 socket 超时才弹窗 —— 而同一块来源上早就写着连不上了。
     final offline = SourceHealth.instance.offlineReason(s.id);
@@ -281,7 +324,12 @@ class _HomeScreenState extends State<HomeScreen> {
         subtitles: subtitles,
       ),
     ));
-    if (mounted) unawaited(_load(s));
+    // 播放不会改变目录内容，回来不重拉。
+    //
+    // 以前这里无条件 `_load(s)`：看完一个片子回到首页，SMB 上要重列一遍整个
+    // 根目录（1–3 秒），列表先闪成占位再填回去。真正会变的是「看过多少」，
+    // 那由 ProgressStore 记着，行组件自己读。
+    if (mounted) setState(() {});
   }
 
   // 让用户选择手动添加服务器，或把本机文件/文件夹加进首页。
@@ -445,20 +493,26 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _editSource(HomeSource s) async {
+    // 改名只换标签，目录没动，不该重发一轮请求。
+    //
+    // 服务器信息会被改（地址、共享名、账号），改完那块的目录得重拉；但只拉
+    // 它自己，别的来源不受影响。以前两种情况都 `_loadAll()`，改一个显示名
+    // 会把所有来源的目录全部重拉一遍。
+    var serverEdited = false;
     if (s.profile != null) {
       await Navigator.of(context).push(MaterialPageRoute<void>(
         builder: (_) => ServerEditScreen(profile: s.profile),
       ));
+      serverEdited = true;
     } else if (s.folder != null) {
       final name = await _askLabel(s.label);
       if (name != null && name.isNotEmpty) {
         await LocalFolderStore.instance.rename(s.folder!.id, name);
       }
     }
-    if (mounted) {
-      setState(() {});
-      unawaited(_loadAll());
-    }
+    if (!mounted) return;
+    setState(() {});
+    if (serverEdited) unawaited(_load(s));
   }
 
   Future<String?> _askLabel(String initial) {

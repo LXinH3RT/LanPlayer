@@ -4610,8 +4610,9 @@ def check_offline_shortcut() -> None:
     home = ROOT / "app/lib/ui/home_screen.dart"
     hc = home.read_text(encoding="utf-8", errors="replace")
 
-    # `_openRoot` 与 `_enterSubdir` 都必须先查已知状态，命中就直接返回。
-    for name in ("_openRoot", "_enterSubdir"):
+    # `_openRootInner` 与 `_enterSubdirInner` 都必须先查已知状态，命中就直接返回。
+    # 外层那一对只负责「同一个目标正在打开时去重」，真正的动作在内层里。
+    for name in ("_openRootInner", "_enterSubdirInner"):
         start = hc.find(f"Future<void> {name}(")
         if start < 0:
             problems.append(f"app/lib/ui/home_screen.dart: {name} is gone")
@@ -4628,6 +4629,20 @@ def check_offline_shortcut() -> None:
             problems.append(
                 f"app/lib/ui/home_screen.dart: {name} no longer shows the "
                 "offline hint")
+
+    # 去重壳子必须同时包住这两条：少了任何一条，双击目录就会 push 两层。
+    for name in ("_openRoot", "_enterSubdir"):
+        start = hc.find(f"Future<void> {name}(")
+        if start < 0:
+            problems.append(f"app/lib/ui/home_screen.dart: {name} is gone")
+            continue
+        body = hc[start:]
+        end = body.find("\n  }")
+        body = body[:end if end > 0 else 600]
+        if "_opening != null" not in body:
+            problems.append(
+                f"app/lib/ui/home_screen.dart: {name} lost its in-flight "
+                "guard; a double tap would push the same page twice")
 
     if "SourceHealth.instance.markOffline(" not in hc:
         problems.append(
@@ -6236,6 +6251,15 @@ def check_dart_hot_paths() -> None:
         ("app/lib/player/playlist.dart",
          "List<MediaEntry> get items => _items;",
          "the playlist getter copies the whole list on every read again"),
+        ("app/lib/ui/home_screen.dart",
+         "if (!setEquals(ids, _loads.keys.toSet())) {",
+         "store notifications are no longer merged; ServerStore and "
+         "LocalFolderStore each notify on load, so startup would fire _loadAll "
+         "twice and the second one would discard the first one's results"),
+        ("app/lib/ui/home_screen.dart",
+         "if (serverEdited) unawaited(_load(s));",
+         "renaming a source reloads every source again; a rename does not "
+         "change any directory"),
     )
     cache: dict[str, str] = {}
     for rel, needle, why in probes:
@@ -6263,6 +6287,23 @@ def check_dart_hot_paths() -> None:
             cache[rel] = text
         if needle in text:
             problems.append(f"{rel}: {why}")
+
+    # 播完一个片子回来，不该重拉根目录：目录内容没变，SMB 上重列一次要
+    # 1–3 秒，列表会先闪成占位再填回去。这段逻辑在内层没有唯一串可用，
+    # 所以按函数体判：`_play` 里允许 setState，不允许再 `_load`。
+    hc = text_of("app/lib/ui/home_screen.dart")
+    start = hc.find("Future<void> _play(")
+    if start < 0:
+        problems.append("app/lib/ui/home_screen.dart: _play is gone")
+    else:
+        body = hc[start:]
+        end = body.find("\n  }")
+        body = body[:end if end > 0 else 4000]
+        if "unawaited(_load(s))" in body or "await _load(s)" in body:
+            problems.append(
+                "app/lib/ui/home_screen.dart: returning from the player reloads "
+                "the whole root directory again; on SMB that is seconds of "
+                "placeholder for a listing that did not change")
 
     notes.append(
         "dart hot paths: the directory header and the LAN scan use their "
