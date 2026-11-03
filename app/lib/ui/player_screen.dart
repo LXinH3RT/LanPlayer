@@ -1764,18 +1764,35 @@ class _PlayerScreenState extends State<PlayerScreen>
     return VideoSurface(
       scaleMode: _settings.scaleMode,
       videoAspectRatio: _videoAspectRatio,
-      child: Texture(textureId: texture.textureId),
+      // 竖着拍的手机视频把画面存成横的，真正的朝向记在容器的
+      // DISPLAYMATRIX 里（内核读出来换算成 rotation）。这里在显示层转正，
+      // 而不是让每个渲染后端去转像素：像素旋转每帧都要多一次全画面拷贝，
+      // 硬解的 Surface / CVPixelBuffer 还改不了尺寸，四个后端各写一遍更容易
+      // 写错。RotatedBox 只影响布局与绘制变换，没有额外拷贝。
+      //
+      // 转 90 / 270 度时宽高互换，这一份由 _videoAspectRatio 用
+      // displayWidth / displayHeight 保证，两者必须一致。
+      child: RotatedBox(
+        quarterTurns: _videoQuarterTurns,
+        child: Texture(textureId: texture.textureId),
+      ),
     );
   }
 
   /// 视频原始画面的宽高比；还没拿到媒体信息时按 16:9 兜底。
+  ///
+  /// 用 [VideoInfo.displayWidth] / [VideoInfo.displayHeight] 而不是编码尺寸：
+  /// 竖拍的手机视频编码成横向，直接按编码宽高算会把画面压扁。
   double get _videoAspectRatio {
     final video = _player.media.video;
-    if (video != null && video.width > 0 && video.height > 0) {
-      return video.width / video.height;
+    if (video != null && video.displayWidth > 0 && video.displayHeight > 0) {
+      return video.displayWidth / video.displayHeight;
     }
     return 16 / 9;
   }
+
+  /// 画面需要顺时针转几个 90 度才能摆正（竖拍手机视频是 1 或 3）。
+  int get _videoQuarterTurns => (_player.media.video?.rotation ?? 0) ~/ 90;
 
   Widget _statsOverlay() {
     return Positioned(

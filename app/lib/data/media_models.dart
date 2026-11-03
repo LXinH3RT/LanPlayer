@@ -218,12 +218,20 @@ class SubtitleTrack {
 }
 
 class VideoInfo {
+  /// 编码尺寸，也就是解码器实际解出来的宽高。
+  ///
+  /// 竖着拍的手机视频把画面存成横的，真正的朝向记在容器里的 DISPLAYMATRIX
+  /// 中（见 [rotation]）。界面上要画的长宽比请用 [displayWidth] /
+  /// [displayHeight]，直接用这两个值会让画面躺倒、宽高比也是反的。
   final int width;
   final int height;
   final String codec;
   final double fps;
   final String pixFmt;
   final int bitrate;
+
+  /// 按显示方向看，画面还需要顺时针转多少度：0 / 90 / 180 / 270。
+  final int rotation;
 
   const VideoInfo({
     required this.width,
@@ -232,7 +240,14 @@ class VideoInfo {
     required this.fps,
     required this.pixFmt,
     required this.bitrate,
+    this.rotation = 0,
   });
+
+  /// 转正之后的宽。转 90 或 270 度时宽高互换。
+  int get displayWidth => rotation == 90 || rotation == 270 ? height : width;
+
+  /// 转正之后的高。
+  int get displayHeight => rotation == 90 || rotation == 270 ? width : height;
 
   String get label => '$codec ${width}x$height ${fps.toStringAsFixed(2)}fps';
 
@@ -243,7 +258,16 @@ class VideoInfo {
         fps: (j['fps'] as num?)?.toDouble() ?? 0,
         pixFmt: j['pix_fmt'] as String? ?? '',
         bitrate: (j['bitrate'] as num?)?.toInt() ?? 0,
+        rotation: _normalizeRotation((j['rotation'] as num?)?.toInt() ?? 0),
       );
+
+  /// 只接受 90 的整数倍；其它值当 0，宁可不动也不要歪着。
+  static int _normalizeRotation(int deg) {
+    final normalized = ((deg % 360) + 360) % 360;
+    return normalized == 90 || normalized == 180 || normalized == 270
+        ? normalized
+        : 0;
+  }
 }
 
 class MediaInfo {

@@ -30,6 +30,7 @@ import CoreVideo
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     configureAudioSession()
+    observeAudioSession()
     // 先把引擎跑起来，插件注册才有 registrar 可用（否则 registrarForPlugin:
     // 返回 nil，Swift 插件里对不可选参数做类型检查会直接段错误）。
     engine.run()
@@ -78,6 +79,51 @@ import CoreVideo
       NSLog("LanPlayer audio session failed: \(error.localizedDescription)")
       return false
     }
+  }
+
+  /// 监听音频会话被抢走与归还。
+  ///
+  /// 只在前台重新激活一次是不够的：来电、闹钟、别的 app 起 Siri 都会把会话
+  /// 置为「被中断」，系统在中断期间把它停掉；中断结束后**不会**自己恢复成
+  /// 激活状态，必须重设一次 `.playback`。少了这一段，用户接完电话回到 app
+  /// 看到的是画面在走、声音没有了 —— 而且只有杀进程重进才能恢复。
+  ///
+  /// `mediaServicesWereReset` 是另一种情况：音频服务崩溃重启之后，所有会话
+  /// 对象作废，同样要重新配置一遍。
+  func observeAudioSession() {
+    let center = NotificationCenter.default
+    center.addObserver(
+      self, selector: #selector(handleInterruption(_:)),
+      name: AVAudioSession.interruptionNotification, object: nil)
+    center.addObserver(
+      self, selector: #selector(handleMediaServicesReset(_:)),
+      name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+  }
+
+  @objc private func handleInterruption(_ note: Notification) {
+    guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+          let type = AVAudioSession.InterruptionType(rawValue: raw) else {
+      return
+    }
+    guard type == .ended else {
+      // 中断开始：系统自己会停音频，这里不主动暂停播放。播放状态归 Dart 侧
+      // 管（切后台暂停在 player_screen 的 lifecycle 回调查里做），在这边再
+      // 暂停一次会把「来电挂断后接着播」变成「得手动按播放」。
+      return
+    }
+    var options = AVAudioSession.InterruptionOptions()
+    if let rawOptions = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt {
+      options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
+    }
+    // 只有系统说「可以继续」时才抢回来；否则用户可能正在接电话。
+    if options.contains(.shouldResume) {
+      configureAudioSession()
+    }
+  }
+
+  @objc private func handleMediaServicesReset(_ note: Notification) {
+    _ = note
+    configureAudioSession()
   }
 
   /// 由 SceneDelegate 在 UIWindow 就绪之后调用：注册插件并建立纹理通道。

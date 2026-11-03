@@ -6,7 +6,11 @@
  * the UI thread and executed here, then signalled to the decoders by bumping
  * `p->serial`.
  */
+#include <libavutil/display.h>
+
+#include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "player_internal.h"
 #include "source/source_internal.h"
@@ -25,6 +29,44 @@ static void hint_dict(AVDictionary **dict, const char *key, const char *value)
 }
 
 /* ------------------------------------------------------------- metadata --- */
+
+/* 按显示方向看，画面还需要顺时针转多少度。
+ *
+ * 竖着拍的手机视频把画面存成横的，真正的朝向记在容器里的 DISPLAYMATRIX
+ * 中。FFmpeg 6 把 stream 的侧数据搬到了 `codecpar->coded_side_data`（旧的
+ * `av_stream_get_side_data` 已经删掉），取出来交给 `av_display_rotation_get`
+ * 就能直接得到角度 —— 它返回的是逆时针角度，取负归一就是顺时针。
+ *
+ * 只接受 90 的整数倍：斜拍或者翻转矩阵在播放器里没有可用的表达方式，宁可
+ * 不动也不要歪着。返回 0 / 90 / 180 / 270。
+ */
+static int stream_rotation_degrees(AVStream *st)
+{
+    const AVPacketSideData *sd = av_packet_side_data_get(
+        st->codecpar->coded_side_data, st->codecpar->nb_coded_side_data,
+        AV_PKT_DATA_DISPLAYMATRIX);
+    if (!sd || sd->size < 9 * sizeof(int32_t)) {
+        return 0;
+    }
+    int32_t matrix[9];
+    memcpy(matrix, sd->data, sizeof(matrix));
+    /* av_display_rotation_get 返回逆时针角度，我们这里要的是顺时针。 */
+    double angle = -av_display_rotation_get(matrix);
+    while (angle < 0.0) {
+        angle += 360.0;
+    }
+    while (angle >= 360.0) {
+        angle -= 360.0;
+    }
+    double snapped = (angle / 90.0);
+    int quarter = (int)(snapped + 0.5);
+    /* 距最近的 90 度超过 5 度就认为不是「单纯转了一下」，不转。 */
+    if (fabs(angle - quarter * 90.0) > 5.0) {
+        return 0;
+    }
+    quarter %= 4;
+    return quarter * 90;
+}
 
 char *lp_media_info_json(LpPlayer *p)
 {
@@ -53,6 +95,11 @@ char *lp_media_info_json(LpPlayer *p)
                       (long long)st->codecpar->bit_rate);
         lp_str_append(&s, ",\"pix_fmt\":");
         lp_str_append_json_str(&s, av_get_pix_fmt_name((enum AVPixelFormat)st->codecpar->format));
+        /* 竖着拍的手机视频把画面存成横的，真正的朝向记在 DISPLAYMATRIX 里。
+         * 不读它，画面就是躺倒的；只按 codecpar 的宽高算长宽比，宽高也会反。
+         * 这里给出的是「按显示方向看，画面还需要顺时针转多少度」，只会是
+         * 0/90/180/270 之一。 */
+        lp_str_append(&s, ",\"rotation\":%d", stream_rotation_degrees(st));
         lp_str_append(&s, ",\"color\":{\"primaries\":%d,\"transfer\":%d,\"space\":%d}}",
                       st->codecpar->color_primaries, st->codecpar->color_trc,
                       st->codecpar->color_space);

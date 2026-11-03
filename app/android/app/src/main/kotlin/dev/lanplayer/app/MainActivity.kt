@@ -30,6 +30,15 @@ class MainActivity : FlutterActivity() {
     private var permChannel: MethodChannel? = null
     private var pendingPermission: MethodChannel.Result? = null
     private var producer: TextureRegistry.SurfaceProducer? = null
+    /**
+     * Surface 被系统收回时的收尾动作挂在这里。
+     *
+     * `SurfaceProducer` 的 Surface 不是我们自己造的：进程被压到后台、系统
+     * 回收 GPU 资源时它会被销毁，回到前台再给一个新的。旧代码只在
+     * `onDestroy` 里释放窗口，中间这段时间内核攥着一个已经 release 的
+     * `ANativeWindow*` —— 一恢复播放就是 use-after-free。
+     */
+    private var surfaceCallback: TextureRegistry.SurfaceProducer.Callback? = null
     private var windowPtr: Long = 0
     private var playerPtr: Long = 0
 
@@ -196,13 +205,62 @@ class MainActivity : FlutterActivity() {
         val w = VideoTextureBridge.nativeCreateWindow(s)
         producer = p
         windowPtr = w
+        installSurfaceCallback(p)
         return mapOf("textureId" to p.id(), "window" to w)
     }
 
+    /**
+     * 让内核在 Surface 换掉之后拿到新的 `ANativeWindow*`。
+     *
+     * `onSurfaceAvailable` 在创建时和每次重建时都会来一次；`onSurfaceDestroyed`
+     * 在系统收回之前来一次。两边的动作都必须短：回调本身在 raster 线程上跑。
+     */
+    private fun installSurfaceCallback(p: TextureRegistry.SurfaceProducer) {
+        val cb = object : TextureRegistry.SurfaceProducer.Callback {
+            override fun onSurfaceAvailable() {
+                val surface = p.surface
+                if (surface == null || producer !== p) {
+                    return
+                }
+                if (windowPtr != 0L) {
+                    VideoTextureBridge.nativeReleaseWindow(windowPtr)
+                    windowPtr = 0L
+                }
+                val w = VideoTextureBridge.nativeCreateWindow(surface)
+                windowPtr = w
+                val handle = playerPtr
+                if (handle != 0L) {
+                    VideoTextureBridge.nativeSetSurface(handle, w)
+                }
+            }
+
+            override fun onSurfaceDestroyed() {
+                if (producer !== p) {
+                    return
+                }
+                val handle = playerPtr
+                if (handle != 0L) {
+                    // 先把内核那边的指针摘掉，再释放 ANativeWindow：
+                    // 反过来的话内核可能正拿着它画下一帧。
+                    VideoTextureBridge.nativeSetSurface(handle, 0L)
+                }
+                if (windowPtr != 0L) {
+                    VideoTextureBridge.nativeReleaseWindow(windowPtr)
+                    windowPtr = 0L
+                }
+            }
+        }
+        surfaceCallback = cb
+        p.setCallback(cb)
+    }
+
     private fun releaseTexture() {
+        // 不给 setCallback 传 null：它的参数是不是 @Nullable 取决于引擎版本，
+        // 而回调里那句 `producer !== p` 已经能让旧回调自己走空分支。
+        surfaceCallback = null
         if (windowPtr != 0L) {
             VideoTextureBridge.nativeReleaseWindow(windowPtr)
-            windowPtr = 0
+            windowPtr = 0L
         }
         producer?.release()
         producer = null
@@ -233,4 +291,8 @@ object VideoTextureBridge {
 
     @JvmStatic
     external fun nativeReleaseWindow(window: Long)
+
+    /** 只换窗口指针，不重建播放器；`window == 0` 表示当前没有可用 Surface。 */
+    @JvmStatic
+    external fun nativeSetSurface(player: Long, window: Long)
 }
