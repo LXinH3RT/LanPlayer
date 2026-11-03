@@ -44,6 +44,8 @@ static int64_t pts_to_us(AVRational tb, int64_t pts)
  * 停在 -0.4 ~ -0.5 s、30 秒丢 46 帧。120 ms 大约是三帧，比解码器的
  * 固有管线延迟小、比渲染抖动大：正常情况下永远进不到这一支。 */
 #define LP_PACE_CATCHUP_US 120000
+/* 见 wait_for_presentation 里的说明。半个 60 Hz 刷新周期。 */
+#define LP_PRESENT_LEAD_US 16667
 
 /* Waits until the master clock reaches pts_us.
  * Returns 0 = present, 1 = too late (drop), <0 = interrupted. */
@@ -58,6 +60,19 @@ static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial, double
             continue;
         }
         int64_t diff = pts_us - lp_master_clock_us(p);
+        /* 提前量：把「帧准备好」的时刻往前挪半个屏幕刷新周期。
+         *
+         * 引擎只在 vsync 上合成，而一帧从「交给纹理」到「真的画到屏幕上」
+         * 之间还有一次跨线程跳转（`textureFrameAvailable` → raster 线程
+         * `copyPixelBuffer`）。如果帧恰好在 vsync 之后几十微秒才准备好，
+         * 这一帧就只能等下一个 vsync，屏幕上表现为「本该停 2 个 vsync 的
+         * 帧停了 3 个」—— 24 fps 内容上就是那多出来的 8.33 ms 顿挫。
+         *
+         * 半个刷新周期（60 Hz 上 8.33 ms）足以覆盖这点跳转延迟，又远小于
+         * 一个帧周期（41.67 ms），不会把帧提前画到该出现之前。 */
+        if (diff > 0 && diff < LP_PRESENT_LEAD_US) {
+            diff = 0;
+        }
         if (diff <= 0) {
             /* 开播阶段不要丢帧：主时钟在 lp_demux_open 的时候就开始走了，
              * 而第一帧要等解复用 + 解码器初始化（macOS 上 VideoToolbox

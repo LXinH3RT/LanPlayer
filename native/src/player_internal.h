@@ -362,6 +362,52 @@ typedef struct LpVideoOut {
     int64_t pull_gap_max_us;
     int64_t pull_stall_count;
     int64_t last_pull_at_us;
+    /* 引擎到底多久来取一次帧。
+     *
+     * pull_gap 只量「真的交出一帧」的那些调用，所以它天生被内核的出帧节奏
+     * 限住：内核每秒给 24 帧，pull_gap 就不可能小于 41.7 ms，这时它反映的
+     * 是内核不是引擎。要判断「引擎自己有没有掉队」，得数调用次数：
+     *   pull_calls——本秒 copyPixelBuffer 被调了多少次（含返回 NULL 的）；
+     *   pull_hits——其中真的拿到新帧的次数。
+     * 60 Hz 屏正常应是 60 / 24，120 Hz ProMotion 是 120 / 24。如果
+     * pull_calls 只有二三十，说明 raster 线程本身就在丢 vsync，
+     * 那是引擎侧的事，改内核出帧节奏没有用。
+     *   pull_null_run_max——连续空手而归的最长次数，等价于「画面上停住了
+     * 多少个 vsync」，这才是用户眼里的卡顿。 */
+    int64_t pull_calls;
+    int64_t pull_hits;
+    int64_t pull_null_run;
+    int64_t pull_null_run_max;
+    /* 帧「准备好了」到「被取走」之间的等待，本秒的最大与均值。
+     *
+     * 前面几个量都只看同向相邻的间隔：push_gap 是两次 publish 之间，
+     * pull_gap 是两次 pull 之间。两者都可以完全正常，而整条流水线一直
+     * 恒定晚几百毫秒——间隔不变，只是整体平移，所有指标照旧全绿。
+     * 观感上「流畅一段、然后卡住一段」正是这种平移在来回摆：
+     * 引擎这一秒追上了（等待 20 ms），下一秒又落后了（等待 400 ms），
+     * 而 publish 与 pull 各自的间隔始终均匀。
+     * 所以这里记的是**跨方向**的一对量：publish 那一刻打时间戳，
+     * 下一次 pull 真正拿走时算差。等待如果长时间超过一两帧，
+     * 屏幕上就是「帧在那儿摆着没人取」。 */
+    int64_t pull_wait_max_us;
+    int64_t pull_wait_sum_us;
+    int64_t pull_wait_count;
+    int64_t published_at_us;
+    /* 取帧间隔按帧周期分档的计数。
+     *
+     * 24 fps 内容放在 60 Hz 屏上，每帧必然显示 2 或 3 个 vsync（33.3 / 50 ms），
+     * 这叫 3:2 pulldown，是 24 fps 上 60 Hz 的固有特征。它到底可不可见，
+     * 取决于这 2 和 3 是不是**均匀交替**：均匀交替看到的是轻微的点动，
+     * 连续几个 2 再连续几个 3 就会变成肉眼可见的一顿一顿。
+     * 所以光有「最大间隔」不够，必须知道分布：
+     *   pull_fast——间隔短于一个帧周期（≈2 个 vsync）；
+     *   pull_mid ——在 1.0–1.5 个帧周期之间（≈3 个 vsync，正常档）；
+     *   pull_slow——超过 1.5 个帧周期（掉了一帧以上，才是真的卡）。
+     * 24 fps 每秒 24 次取帧，若 pull_fast ≈ pull_mid ≈ 12 就是标准 3:2；
+     * 若 pull_slow 有几次，那几次屏幕上是停住的。 */
+    int64_t pull_fast;
+    int64_t pull_mid;
+    int64_t pull_slow;
     int64_t push_gap_max_us;
     int64_t push_gap_sum_us;
     int64_t push_gap_count;

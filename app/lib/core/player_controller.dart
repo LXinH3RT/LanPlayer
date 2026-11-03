@@ -72,6 +72,44 @@ class PlayerController extends ChangeNotifier {
   /// → 问题在引擎侧，改内核没用。
   int pushGapMs = 0;
   int pushAvgMs = 0;
+
+  /// 本周期内引擎调用 `copyPixelBuffer` 的次数与其中真的拿到新帧的次数。
+  ///
+  /// [pullGapMs] 只统计「交出去了」的那些调用，所以它天生被内核的出帧节奏
+  /// 限住：内核每秒给 24 帧，这个值就不低于 41.7 ms，此时它反映的是内核而
+  /// 不是引擎。计数才能看出引擎自己有没有掉队：60 Hz 屏正常应接近 60 / 24，
+  /// 120 Hz ProMotion 应接近 120 / 24。次数明显偏低说明 raster 线程在丢
+  /// vsync，那是引擎侧的问题，调内核出帧节奏解决不了。
+  int pullCalls = 0;
+  int pullHits = 0;
+
+  /// 连续「来取了但没有新帧」的最长次数，等价于画面停住了几个 vsync。
+  ///
+  /// 内核每秒给 24 帧时，60 Hz 屏上连续空 1–2 次是正常的（3-2-3-2 交替）；
+  /// 出现二十几次就是肉眼可见的停顿。这是唯一直接对应观感的量。
+  int pullNullRun = 0;
+
+  /// 帧「准备好了」到「被取走」之间的等待（毫秒），本周期最大值与均值。
+  ///
+  /// 前面几个量都只看同向相邻的间隔：[pushGapMs] 是两次 publish 之间，
+  /// [pullGapMs] 是两次 pull 之间。两者可以完全正常，而整条流水线一直恒定
+  /// 落后几百毫秒——间隔不变，只是整体平移，所有指标照旧全绿。
+  /// 观感上的「流畅一段、卡住一段」正是这种落后在来回摆。
+  /// 这是唯一跨方向的一对量，超过一两帧就是「帧在那儿摆着没人取」。
+  int pullWaitMs = 0;
+  int pullWaitAvgMs = 0;
+
+  /// 取帧间隔按帧周期分档的次数：少于一个帧周期、一到一点五个、超过
+  /// 一点五个。
+  ///
+  /// 24 fps 放在 60 Hz 屏上，每帧要么占 2 个 vsync 要么占 3 个，这是
+  /// 3:2 pulldown，本身正常。能不能看出来全看这两个比例是不是均匀交替：
+  /// 均匀交替只是轻微的顿挫感，连续几个 2 再连续几个 3 就成了肉眼可见的
+  /// 一顿一顿。24 fps 每秒 24 次取帧，正常应当 fast 与 mid 各占一半左右，
+  /// 而 slow 必须接近 0 —— slow 出现的次数就是画面上真正「停住」的次数。
+  int pullFast = 0;
+  int pullMid = 0;
+  int pullSlow = 0;
   int avDiffUs = 0;
   int queuedPackets = 0;
   bool buffering = false;
@@ -344,6 +382,14 @@ class PlayerController extends ChangeNotifier {
         pullStalls = (map['pull_stalls'] as num?)?.toInt() ?? 0;
         pushGapMs = (map['push_gap_ms'] as num?)?.toInt() ?? 0;
         pushAvgMs = (map['push_avg_ms'] as num?)?.toInt() ?? 0;
+        pullCalls = (map['pull_calls'] as num?)?.toInt() ?? 0;
+        pullHits = (map['pull_hits'] as num?)?.toInt() ?? 0;
+        pullNullRun = (map['pull_null_run'] as num?)?.toInt() ?? 0;
+        pullWaitMs = (map['pull_wait_ms'] as num?)?.toInt() ?? 0;
+        pullWaitAvgMs = (map['pull_wait_avg_ms'] as num?)?.toInt() ?? 0;
+        pullFast = (map['pull_fast'] as num?)?.toInt() ?? 0;
+        pullMid = (map['pull_mid'] as num?)?.toInt() ?? 0;
+        pullSlow = (map['pull_slow'] as num?)?.toInt() ?? 0;
         avDiffUs = (map['av_diff'] as num?)?.toInt() ?? 0;
         queuedPackets = (map['queued'] as num?)?.toInt() ?? 0;
         final hw = map['hw'] as String?;
@@ -359,7 +405,10 @@ class PlayerController extends ChangeNotifier {
             'stalls=$pullStalls push=$pushGapMs/$pushAvgMs ms '
             'decoded=${map['decoded']} '
             'av_diff=${map['av_diff']} queued=$queuedPackets '
-            'buffered=${map['buffered_ms']} hw=$hwActive');
+            'buffered=${map['buffered_ms']} hw=$hwActive '
+            'pull=$pullCalls/$pullHits null=$pullNullRun '
+            'wait=$pullWaitMs/${pullWaitAvgMs}ms '
+            'seq=$pullFast/$pullMid/${pullSlow}');
         // Lighter cadence: stats change constantly, do not rebuild the tree
         // unless the user asked for the debugging overlay.
         if (!wantsStats) return;

@@ -300,13 +300,38 @@ static void *player_tick_fn(void *arg)
                 p->vout.push_gap_max_us = 0;
                 p->vout.push_gap_sum_us = 0;
                 p->vout.push_gap_count = 0;
+                const long long pull_calls = (long long)p->vout.pull_calls;
+                const long long pull_hits = (long long)p->vout.pull_hits;
+                const long long pull_null_run_max = (long long)p->vout.pull_null_run_max;
+                p->vout.pull_calls = 0;
+                p->vout.pull_hits = 0;
+                p->vout.pull_null_run_max = 0;
+                const long long pull_wait_max = (long long)(p->vout.pull_wait_max_us / 1000);
+                const long long pull_wait_avg =
+                    p->vout.pull_wait_count > 0
+                        ? (long long)(p->vout.pull_wait_sum_us / p->vout.pull_wait_count / 1000)
+                        : 0;
+                p->vout.pull_wait_max_us = 0;
+                p->vout.pull_wait_sum_us = 0;
+                p->vout.pull_wait_count = 0;
+                const long long pull_fast = (long long)p->vout.pull_fast;
+                const long long pull_mid = (long long)p->vout.pull_mid;
+                const long long pull_slow = (long long)p->vout.pull_slow;
+                p->vout.pull_fast = 0;
+                p->vout.pull_mid = 0;
+                p->vout.pull_slow = 0;
                 emit_owned_json(p, LP_EVENT_STATS, 0,
                                 lp_str_printf("{\"fps\":%.2f,\"dropped\":%lld,\"decoded\":%lld,"
                                               "\"av_diff\":%lld,\"hw\":\"%s\",\"queued\":%d,"
                                               "\"buffered_ms\":%d,\"dropped_delivery\":%lld,"
                                               "\"pull_gap_ms\":%lld,\"pull_stalls\":%lld,"
                                               "\"push_gap_ms\":%lld,\"push_avg_ms\":%lld,"
-                                              "\"published\":%lld}",
+                                              "\"published\":%lld,"
+                                              "\"pull_calls\":%lld,\"pull_hits\":%lld,"
+                                              "\"pull_null_run\":%lld,"
+                                              "\"pull_wait_ms\":%lld,\"pull_wait_avg_ms\":%lld,"
+                                              "\"pull_fast\":%lld,\"pull_mid\":%lld,"
+                                              "\"pull_slow\":%lld}",
                                               fps, (long long)p->stats_dropped,
                                               (long long)p->stats_frames, (long long)av,
                                               p->video.hw_name ? p->video.hw_name : "none",
@@ -314,7 +339,10 @@ static void *player_tick_fn(void *arg)
                                               (long long)lost, (long long)(gap / 1000),
                                               (long long)stalls, (long long)(push_max / 1000),
                                               (long long)(push_avg / 1000),
-                                              (long long)p->vout.frames_published));
+                                              (long long)p->vout.frames_published,
+                                              pull_calls, pull_hits, pull_null_run_max,
+                                              pull_wait_max, pull_wait_avg,
+                                              pull_fast, pull_mid, pull_slow));
             }
         }
 

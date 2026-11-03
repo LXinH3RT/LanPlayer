@@ -97,6 +97,7 @@ int lp_render_publish_pixel_buffer(LpPlayer *p, void *cv_pixel_buffer)
     }
     p->vout.pixel_buffer = CVBufferRetain(image);
     p->vout.has_new_frame = 1;
+    p->vout.published_at_us = published_at;
     p->vout.frames_published++;
     /* 内核这一侧的送帧间隔。取帧那侧（pull_gap）被 vsync 量化过，单看它
      * 分不清「解码吐得不均」与「引擎取帧对不齐」；这里量的是 publish 之间
@@ -210,7 +211,21 @@ void *lp_player_copy_pixel_buffer(LpPlayer *p)
     }
     pthread_mutex_lock(&p->vout.mutex);
     CVPixelBufferRef image = (CVPixelBufferRef)p->vout.pixel_buffer;
+    p->vout.pull_calls++;
     if (image && p->vout.has_new_frame) {
+        p->vout.pull_hits++;
+        p->vout.pull_null_run = 0;
+        /* 跨方向等待：这一帧是 published_at_us 那会儿准备好的，现在才被取走。 */
+        if (p->vout.published_at_us > 0) {
+            const int64_t wait = now - p->vout.published_at_us;
+            if (wait > p->vout.pull_wait_max_us) {
+                p->vout.pull_wait_max_us = wait;
+            }
+            if (wait >= 0) {
+                p->vout.pull_wait_sum_us += wait;
+                p->vout.pull_wait_count++;
+            }
+        }
         CVBufferRetain(image);
         /* 只在真的交出一帧时量间隔：引擎每 vsync 都会来调用，没新帧的那些
          * 调用不算「画面上跳了一下」。 */
@@ -221,12 +236,25 @@ void *lp_player_copy_pixel_buffer(LpPlayer *p)
             }
             if (gap > frame_us * 3 / 2) {
                 p->vout.pull_stall_count++;
+                p->vout.pull_slow++;
+            } else if (gap < frame_us) {
+                p->vout.pull_fast++;
+            } else {
+                p->vout.pull_mid++;
             }
         }
         p->vout.last_pull_at_us = now;
     } else {
         /* 没有新帧就别把旧帧再交一次：引擎会把同一帧画两遍，看起来是
-         * 「卡住了一下」。返回 NULL 让引擎保持上一帧。 */
+         * 「卡住了一下」。返回 NULL 让引擎保持上一帧。
+         *
+         * 连续空手而归的次数就是「画面停住了几个 vsync」，这是唯一直接
+         * 对应观感的量：内核每秒给 24 帧时，60 Hz 屏上正常会连续空 1-2
+         * 次，120 Hz 上连续空 3-4 次；要是出现二十几次，画面上就是停顿。 */
+        p->vout.pull_null_run++;
+        if (p->vout.pull_null_run > p->vout.pull_null_run_max) {
+            p->vout.pull_null_run_max = p->vout.pull_null_run;
+        }
         image = NULL;
     }
     p->vout.has_new_frame = 0;

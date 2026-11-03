@@ -5472,6 +5472,18 @@ def check_texture_delivery() -> None:
             # 落后超过 LP_PACE_CATCHUP_US 时必须临时加快，否则落后量会被
             # 整周期摊平锁死，一路漂到 -500 ms 丢帧线才纠正（iPad 实测
             # av_diff 稳定停在 -0.4 ~ -0.5 s、30 秒丢 46 帧）。
+            # 提前一个刷新周期上屏。引擎只在 vsync 上合成，一帧从
+            # 「交给纹理」到「真的画出来」还要跨一次线程；恰好在 vsync 之后
+            # 几十微秒准备好的帧只能等下一个 vsync，24 fps 内容上就变成
+            # 「本该停 2 个 vsync 的帧停了 3 个」。iPad 实测把提前量从
+            # 0 加到 8.33 ms 再到 16.67 ms，pull_slow 从 9 降到 6 再到 1、
+            # stalls 从 0.30 降到 0.20 再到 0.03；30 fps 无变化（它本来就
+            # 每帧占两个 vsync，不需要这个余量）；60 fps 仍受限（见下）。
+            ("#define LP_PRESENT_LEAD_US 16667",
+             "the present lead is gone; frames that finish just after a vsync "
+             "would wait a whole extra refresh and stutter on 24 fps content"),
+            ("if (diff > 0 && diff < LP_PRESENT_LEAD_US) {",
+             "the present lead is declared but never applied to the pacing decision"),
             ("#define LP_PACE_CATCHUP_US 120000",
              "the pacer lost its catch-up threshold; a steady lag would never be "
              "paid back until frames start being dropped"),
