@@ -6084,6 +6084,105 @@ def check_review5_fixes() -> None:
         "and the host textures detach the player before it is freed")
 
 
+def check_platform_lifecycle() -> None:
+    """宿主生命周期：Surface 回收、音频中断、竖拍视频的朝向。
+
+    这三处都只在真机上才走得到 —— Windows 上没有 ANativeWindow、没有
+    AVAudioSession，测试片也不是竖拍的。改回去不会有任何编译错误，也过不了
+    任何一条自动化测试，所以只能靠静态断言钉住。
+    """
+    def text_of(rel: str) -> str:
+        return (ROOT / rel).read_text(encoding="utf-8")
+
+    kotlin = text_of("app/android/app/src/main/kotlin/dev/lanplayer/app/MainActivity.kt")
+    for needle, why in (
+        ("installSurfaceCallback(p)",
+         "the surface producer is created without a callback; when the system "
+         "reclaims the Surface the core keeps a released ANativeWindow"),
+        ("override fun onSurfaceDestroyed()",
+         "nothing reacts to the Surface being destroyed"),
+        ("VideoTextureBridge.nativeSetSurface(handle, 0L)",
+         "the core is not told to drop the window before it is released"),
+        ("VideoTextureBridge.nativeSetSurface(handle, w)",
+         "a rebuilt Surface never reaches the core; playback would resume into "
+         "nothing"),
+        ("if (producer !== p) {",
+         "a stale callback from a released producer can still swap the window"),
+    ):
+        if needle not in kotlin:
+            problems.append(f"MainActivity.kt: {why}")
+
+    jni = text_of("native/src/platform/android/jni_bridge.c")
+    if "nativeSetSurface" not in jni:
+        problems.append(
+            "native/src/platform/android/jni_bridge.c: no nativeSetSurface entry "
+            "point; Kotlin has no way to hand a rebuilt window to the core")
+    if "lp_player_set_surface(" not in jni:
+        problems.append(
+            "native/src/platform/android/jni_bridge.c: nativeSetSurface does not "
+            "go through lp_player_set_surface; the core would not restart the "
+            "video pipeline when a window appears")
+
+    ios = text_of("app/ios/Runner/AppDelegate.swift")
+    for needle, why in (
+        ("configureAudioSession()\n    observeAudioSession()",
+         "the audio session is configured once at launch and never repaired; "
+         "after a phone call the app plays picture without sound"),
+        ("AVAudioSession.interruptionNotification",
+         "no interruption observer; an ended interruption leaves the session "
+         "inactive"),
+        ("AVAudioSession.mediaServicesWereResetNotification",
+         "a reset audio service leaves every session object invalid"),
+        ("options.contains(.shouldResume)",
+         "the session is reactivated even when the system says not to; that "
+         "would steal audio back while the user is still on a call"),
+    ):
+        if needle not in ios:
+            problems.append(f"AppDelegate.swift: {why}")
+
+    demux = text_of("native/src/core/demux.c")
+    for needle, why in (
+        ("av_packet_side_data_get(",
+         "the display matrix is read from the stream-level side data that FFmpeg 6 "
+         "removed; portrait phone video would lie on its side again"),
+        ("av_display_rotation_get(matrix)",
+         "the rotation angle is computed by hand instead of through libavutil"),
+        ("stream_rotation_degrees(st)",
+         "the media info no longer reports a rotation"),
+    ):
+        if needle not in demux:
+            problems.append(f"native/src/core/demux.c: {why}")
+
+    models = text_of("app/lib/data/media_models.dart")
+    for needle, why in (
+        ("int get displayWidth",
+         "VideoInfo lost its display-oriented width; a 90-degree rotated video "
+         "would be laid out with the encoded aspect ratio"),
+        ("int get displayHeight", "VideoInfo lost its display-oriented height"),
+        ("rotation: _normalizeRotation(",
+         "any angle is accepted; a slanted matrix would be applied as if it were "
+         "a quarter turn"),
+    ):
+        if needle not in models:
+            problems.append(f"app/lib/data/media_models.dart: {why}")
+
+    screen = text_of("app/lib/ui/player_screen.dart")
+    if "quarterTurns: _videoQuarterTurns" not in screen:
+        problems.append(
+            "app/lib/ui/player_screen.dart: the texture is never rotated; portrait "
+            "video would still be sideways")
+    if "video.displayWidth > 0 && video.displayHeight > 0" not in screen:
+        problems.append(
+            "app/lib/ui/player_screen.dart: the aspect ratio is back on the encoded "
+            "dimensions")
+
+    notes.append(
+        "platform lifecycle: a reclaimed Android Surface is detached before release "
+        "and re-attached when it returns, iOS audio is reactivated after an "
+        "interruption, and portrait video is rotated using the container's display "
+        "matrix")
+
+
 def check_local_picker() -> None:
     """Guard the local file/folder picker and the wide-character file layer.
 
@@ -6242,6 +6341,7 @@ def main() -> int:
     check_windows_single_instance()
     check_texture_delivery()
     check_review5_fixes()
+    check_platform_lifecycle()
     check_startup_home()
     check_surface_tap()
     check_volume_gain()
