@@ -5529,7 +5529,7 @@ def check_texture_delivery() -> None:
             ("#define LP_PRESENT_LEAD_US 16667",
              "the present lead is gone; frames that finish just after a vsync "
              "would wait a whole extra refresh and stutter on 24 fps content"),
-            ("if (diff > 0 && diff < LP_PRESENT_LEAD_US) {",
+            ("if (lead > 0 && diff > 0 && diff < lead) {",
              "the present lead is declared but never applied to the pacing decision"),
             ("#define LP_PACE_CATCHUP_US 120000",
              "the pacer lost its catch-up threshold; a steady lag would never be "
@@ -5982,7 +5982,7 @@ def check_review5_fixes() -> None:
         ("const double sp = p->speed > 0.01 ? p->speed : 1.0;",
          "the pacer ignores playback speed; at 2x it would wait a full frame "
          "period and drop every other frame"),
-        ("if (diff > 0 && diff < LP_PRESENT_LEAD_US) {",
+        ("if (lead > 0 && diff > 0 && diff < lead) {",
          "the present lead is declared but never applied"),
         ("p->video.last_present_at_us = 0;",
          "a seek leaves the pacer anchored before the seek; the first frames "
@@ -6246,6 +6246,81 @@ def check_browser_error_surface() -> None:
         "error surface: a browser failure that is not a network error and a "
         "failed profile save both reach the user instead of vanishing into a "
         "finally block")
+
+
+def check_probe_wiring() -> None:
+    """启动探针不能再依赖「下一帧」。
+
+    `LANPLAYER_OPEN` / `LANPLAYER_BROWSE` / `LANPLAYER_UI` 是移动端唯一能
+    自动走一遍界面的手段（devicectl 只能截图和启停进程）。它们原来都写成
+    `addPostFrameCallback`，前提是「之后还有帧」。启动页改成始终返回 Stack、
+    只让图标淡出之后，淡出结束恰好画完最后一帧 —— 界面静止的话不会再有帧
+    请求，排进去的回调永远轮不到。真机上的表现是「应用起来了、首页也画了，
+    但探针一个都没触发」，日志里连痕迹都没有（回调根本没跑）。
+    """
+    def text_of(rel: str) -> str:
+        return (ROOT / rel).read_text(encoding="utf-8", errors="replace")
+
+    main = text_of("app/lib/main.dart")
+    for needle, why in (
+        ("unawaited(_openProbeFile(autoOpen));",
+         "the open-file probe is not fired directly any more; it would hang "
+         "on a post-frame callback that never runs on a static screen"),
+        ("unawaited(_openLocation(autoBrowse));",
+         "the browse probe lost its direct call"),
+        ("unawaited(_openAddServer());",
+         "the add-server probe lost its direct call"),
+        ("unawaited(_openSettings());",
+         "the settings probe lost its direct call"),
+        ("Future<void> _openProbeFile(String target) async {",
+         "the probe no longer resolves the container-relative path before "
+         "opening; mobile builds would look for a stale absolute path"),
+    ):
+        if needle not in main:
+            problems.append(f"app/lib/main.dart: {why} ({needle})")
+    # 只有 probe 那一段不能有 addPostFrameCallback。完整的那句出现在注释里
+    # 说明「以前这么写过」，是可以的；真正的调用点不允许出现。
+    probe_body = main.split("void _runProbes()", 1)[-1].split("Future<void> _openProbeFile", 1)[0]
+    probe_code = "\n".join(
+        line for line in probe_body.splitlines() if not line.strip().startswith("//"))
+    if "WidgetsBinding.instance.addPostFrameCallback" in probe_code:
+        problems.append(
+            "app/lib/main.dart: a probe is queued on the next frame again; on "
+            "a screen that has stopped painting the callback never fires")
+
+    notes.append(
+        "probe wiring: the startup probes run immediately instead of waiting "
+        "for a frame that a static splash screen never produces")
+
+
+def check_present_lead_rule() -> None:
+    """上屏提前量的适用条件。
+
+    提前量解决的是「帧在 vsync 之后一点点才准备好」。它只在帧周期**不是**
+    整 vsync 倍数时有用 —— 24 fps 的 2.5 格需要在 2 格与 3 格之间交替，
+    提前量让交替变均匀（iPad 实测 pull_slow 9 → 2）。
+    帧周期是整倍数时（30 fps 正好 2 格、60 fps 正好 1 格）加提前量反而
+    有害：一部分帧赶上前一个 vsync，屏幕一半停 1 格一半停 2 格。
+    iPad 实测 30 fps 的 pull_slow：不加 25、加 16.67 ms 43、加 8.3 ms 47。
+    """
+    video = (ROOT / "native/src/core/video.c").read_text(encoding="utf-8", errors="replace")
+    for needle, why in (
+        ("const double cycles = (frame_dur * 1000000.0) / vsync;",
+         "the present lead is applied unconditionally again; integer-vsync "
+         "content (30/60 fps on 60 Hz) would get worse, not better"),
+        ("if (lead > 0 && diff > 0 && diff < lead) {",
+         "the lead is computed but never applied to the pacing decision"),
+    ):
+        if needle not in video:
+            problems.append(f"native/src/core/video.c: {why} ({needle})")
+    if "lead = 0;" not in video:
+        problems.append(
+            "native/src/core/video.c: integer-vsync content never disables the "
+            "present lead; 30 fps would stutter more than without it")
+
+    notes.append(
+        "present lead: the advance is skipped for content whose frame period "
+        "is a whole number of 60 Hz refreshes, where it makes pacing worse")
 
 
 def check_subtitle_split() -> None:
@@ -6927,6 +7002,8 @@ def main() -> int:
     check_list_row_work()
     check_dart_hot_paths()
     check_boot_failure()
+    check_probe_wiring()
+    check_present_lead_rule()
     check_platform_lifecycle()
     check_startup_home()
     check_surface_tap()

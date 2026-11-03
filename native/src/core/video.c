@@ -83,8 +83,31 @@ static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial, double
          * 帧停了 3 个」—— 24 fps 内容上就是那多出来的 8.33 ms 顿挫。
          *
          * 一个刷新周期（60 Hz 上 16.67 ms）足以覆盖这点跳转延迟，又小于
-         * 一个帧周期（24 fps 上 41.67 ms），不会把帧提前画到该出现之前。 */
-        if (diff > 0 && diff < LP_PRESENT_LEAD_US) {
+         * 一个帧周期（24 fps 上 41.67 ms），不会把帧提前画到该出现之前。
+         *
+         * 但它不能一律都加。帧周期是整 vsync 倍数时，帧在哪个
+         * 相位准备好都会被下一个 vsync 取走，提前量反而有害：30 fps 每帧
+         * 正好占 2 个 vsync（33.3 ms），加 16.67 ms 后屏幕上一半停 1 格、
+         * 一半停 2 格，iPad 实测 seq 从 16/12/0 掉到 14/13/3、slow 从 25
+         * 涨到 43（缩到 8.3 ms 也没有改善，47）。整数倍时直接不加。
+         *
+         * 只有 24/25 fps 这类「帧周期不是整 vsync」的内容需要它：那种内容
+         * 本身就要在 2 格与 3 格之间交替，提前量把「差一点点来不及」的帧
+         * 拉回同一格，交替才均匀（slow 9 → 2）。
+         *
+         * 判断按 60 Hz 的 16.667 ms 做：内核不知道屏幕刷新率，而 60 Hz 是
+         * 四端最常见的；120 Hz 上「整倍数」判断偏保守，最多是不加提前量，
+         * 不会引入比这更坏的结果。 */
+        int64_t lead = LP_PRESENT_LEAD_US;
+        if (frame_dur > 0) {
+            const double vsync = 16667.0;
+            const double cycles = (frame_dur * 1000000.0) / vsync;
+            const double nearest = (double)(int)(cycles + 0.5);
+            if (nearest >= 1.0 && (cycles > nearest ? cycles - nearest : nearest - cycles) < 0.05) {
+                lead = 0;
+            }
+        }
+        if (lead > 0 && diff > 0 && diff < lead) {
             diff = 0;
         }
         if (diff <= 0) {

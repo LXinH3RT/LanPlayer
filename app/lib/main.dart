@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -113,15 +114,22 @@ void _runProbes() {
       trace('startup collapsed $popped route(s) back to home');
     }
   }
+  // 探针动作直接执行，**不排到下一帧**。
+  //
+  // 这里原先一律写成 WidgetsBinding.instance.addPostFrameCallback(...)，前提
+  // 是「立刻还有下一帧」。启动页改成始终返回 Stack、只让图标淡出之后就不再
+  // 成立了：淡出结束恰好把最后一帧画完，之后如果界面本身静止，就不会再有帧
+  // 请求，排进去的回调永远轮不到 —— 真机上表现为「应用起来了、首页也画了，
+  // 但探针一个都没触发」，而且日志里不留任何痕迹（回调根本没跑）。
+  // 三个开页面的函数内部只用 navigatorKey.currentState，onReady 又已经在首帧
+  // 之后，直接调用是安全的。
+
   // Convenience hook for desktop testing (and for the CI screenshot check):
   //   set LANPLAYER_OPEN=D:\video.mkv
   // opens that file in the player right after startup.
   final autoOpen = probeFlag('LANPLAYER_OPEN');
   if (autoOpen != null && autoOpen.isNotEmpty) {
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final resolved = await _resolveProbePath(autoOpen);
-      _openLocalFile(resolved);
-    });
+    unawaited(_openProbeFile(autoOpen));
   }
 
   // Same idea for the browser: jumps straight into a share so the desktop
@@ -129,23 +137,31 @@ void _runProbes() {
   //   LANPLAYER_BROWSE=smb://host/share  LANPLAYER_USER=u  LANPLAYER_PASS=p
   final autoBrowse = probeFlag('LANPLAYER_BROWSE');
   if (autoBrowse != null && autoBrowse.isNotEmpty) {
-    WidgetsBinding.instance
-        .addPostFrameCallback((_) => _openLocation(autoBrowse));
+    unawaited(_openLocation(autoBrowse));
   }
 
   // 打开「添加服务器」页，并在需要时自动跑一次局域网扫描 —— 这样桌面端
   // 的扫描界面可以在没有人点鼠标的情况下被验证（截图 / 日志）。
   //   LANPLAYER_UI=add-server  LANPLAYER_AUTOSCAN=1
   if (probeFlag('LANPLAYER_UI') == 'add-server') {
-    WidgetsBinding.instance.addPostFrameCallback((_) => _openAddServer());
+    unawaited(_openAddServer());
   }
 
   // 打开设置页 —— 移动端没有输入注入手段（devicectl 只能截图和启停进程），
   // 「关于」里的版本号只能靠这个开关自己走进去。
   //   LANPLAYER_UI=settings
   if (probeFlag('LANPLAYER_UI') == 'settings') {
-    WidgetsBinding.instance.addPostFrameCallback((_) => _openSettings());
+    unawaited(_openSettings());
   }
+}
+
+/// 探针打开本地文件：先解析路径，再交给播放页。
+///
+/// 单拆一个 async 函数是为了让 `_runProbes` 保持同步 —— 见上面那段注释，
+/// 探针不能再依赖「下一帧」。
+Future<void> _openProbeFile(String target) async {
+  final resolved = await _resolveProbePath(target);
+  _openLocalFile(resolved);
 }
 
 /// 打开设置页。
