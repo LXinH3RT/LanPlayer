@@ -29,15 +29,26 @@ void traceTo(String path) {
 /// 默认位置不再覆盖它。
 bool get traceHasFile => _file != null;
 
+/// 超过这个大小就从头重写，避免长时间开着 trace 把设备塞满。
+const int traceMaxBytes = 8 << 20;
+
+int _written = 0;
+
 void trace(String message) {
+  if (!traceEnabled) return;
   final file = _file;
   if (file == null) return;
+  final line = '${DateTime.now().toIso8601String()} $message\n';
+  _written += line.length;
   try {
-    file.writeAsStringSync(
-      '${DateTime.now().toIso8601String()} $message\n',
-      mode: FileMode.append,
-      flush: true,
-    );
+    if (_written > traceMaxBytes) {
+      /* 轮转：不是追加而是覆盖，写的还是同一份路径 —— 抓日志的脚本不必
+       * 关心文件名会变。丢掉的只是旧的现场，最近这一段才是要看的。 */
+      _written = line.length;
+      file.writeAsStringSync('--- trace rotated ---\n$line', flush: true);
+      return;
+    }
+    file.writeAsStringSync(line, mode: FileMode.append, flush: true);
   } catch (_) {
     // 日志失败绝不影响主流程。
   }

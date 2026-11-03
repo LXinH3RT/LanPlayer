@@ -183,8 +183,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text('硬件解码'),
             subtitle: const Text('关闭后强制使用 FFmpeg 软件解码，用于排查花屏/绿屏问题。'
                 '切换后需要重新打开视频。'),
+            // 先 setState 再落盘：写盘是异步的，等它回来才翻转的话，慢盘上
+            // 会先看到开关弹回去、过一会儿才跳过来。
             onChanged: (v) {
-              _settings.hardwareDecoding = v;
+              setState(() => _settings.hardwareDecoding = v);
               _persist();
             },
           ),
@@ -193,7 +195,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text('去隔行（yadif）'),
             subtitle: const Text('仅对隔行扫描的片源生效，逐行片源不会额外消耗。'),
             onChanged: (v) {
-              _settings.deinterlace = v;
+              setState(() => _settings.deinterlace = v);
               _persist();
             },
           ),
@@ -216,7 +218,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               title: Text(label),
               subtitle: Text(hint),
               onChanged: (v) {
-                _settings.scaleMode = v ?? 0;
+                setState(() => _settings.scaleMode = v ?? 0);
                 _persist();
               },
             ),
@@ -429,7 +431,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: const Text('手机 / 平板打开片子时锁横屏，退出播放页再还回去。'
                 '桌面端不受影响。'),
             onChanged: (v) {
-              _settings.lockLandscape = v;
+              setState(() => _settings.lockLandscape = v);
               _persist();
             },
           ),
@@ -438,7 +440,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text('当前目录自动连播'),
             subtitle: const Text('一集结束后自动播放同目录的下一集，按 SxxExx / 第 N 集 识别顺序。'),
             onChanged: (v) {
-              _settings.autoNext = v;
+              setState(() => _settings.autoNext = v);
               _persist();
             },
           ),
@@ -448,7 +450,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: const Text('再次打开同一个视频时，从上次看到的位置继续播放。'
                 '关闭后不再记录进度，已保存的历史仍会保留。'),
             onChanged: (v) {
-              _settings.rememberProgress = v;
+              setState(() => _settings.rememberProgress = v);
               _persist();
             },
           ),

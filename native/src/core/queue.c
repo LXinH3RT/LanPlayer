@@ -111,7 +111,10 @@ int lp_pq_put(LpPacketQueue *q, AVPacket *pkt, int serial)
     }
     /* Back-pressure: the demux thread blocks here while the queue is full, so
      * memory stays bounded no matter how fast the share can be read. */
-    while (!q->abort_request && q->nb_packets > 8 && q->bytes >= q->max_bytes) {
+    /* 两个条件是「或」不是「与」：以前要同时超过包数下限和字节上限才限流，
+     * 于是几百个极小包（音频帧、字幕包）能一路堆到内存爆掉。任意一项到头
+     * 都该让生产者等一下消费者。 */
+    while (!q->abort_request && (q->nb_packets > 8 || q->bytes >= q->max_bytes)) {
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
         ts.tv_nsec += 20 * 1000 * 1000;

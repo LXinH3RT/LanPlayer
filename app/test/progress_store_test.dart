@@ -65,6 +65,8 @@ void main() {
 
     final store = ProgressStore.forTest();
     await store.save('file:///c.mkv', 30000000, 3600000000);
+    // save 之后落盘是合并延迟的（250 ms 内多次只写一次），测试要立刻看到结果。
+    await store.flushNow();
 
     // 三条都在：新的一条加上磁盘上原有的两条。
     expect(progressFile().existsSync(), isTrue);
@@ -79,6 +81,7 @@ void main() {
     final writer = ProgressStore.forTest();
     await writer.load();
     await writer.save('file:///d.mkv', 90000000, 3600000000);
+    await writer.flushNow();
 
     final reader = ProgressStore.forTest();
     await reader.load();

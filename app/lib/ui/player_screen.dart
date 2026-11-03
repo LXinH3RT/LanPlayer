@@ -42,17 +42,34 @@ class PlayerScreen extends StatefulWidget {
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
+class _PlayerScreenState extends State<PlayerScreen>
+    with WidgetsBindingObserver {
   late final PlayerController _player;
   late final PlaybackSettings _settings = widget.settings.copy();
 
   VideoTexture? _texture;
+
+  /// 建纹理时用的尺寸，用来判断窗口或方向变化后要不要再通知内核一次。
+  int _surfaceWidth = 0;
+  int _surfaceHeight = 0;
+
+  /// 一次尺寸修正已经在下一帧排队，避免同一帧里重复调度。
+  bool _surfaceResizePending = false;
+
+  /// 宽或高变化到这个比例才值得走一次 FFI：拖动窗口时尺寸每帧都在小步
+  /// 变化，逐帧下发只是把内核的视口反复重建。
+  static const double _surfaceResizeThreshold = 0.25;
+
   Timer? _hideTimer;
   Timer? _progressTimer;
   bool _controls = true;
   bool _starting = true;
   double? _dragValue;
-  int _subtitleDelay = 0;
+
+  /// 字幕偏移，以毫秒计。初值取设置里的默认值：内核开片时按 open options
+  /// 里同一个值设好偏移，这两处不对齐的话，用户改了默认偏移后界面显示的是
+  /// 0，实际却已经偏移过。
+  late int _subtitleDelay = widget.settings.subtitleDelayMs;
   bool _showStats = false;
   int? _audioIndex;
 
@@ -106,6 +123,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    // 切后台 / 锁屏 / 来电时先暂停并落一次进度：系统可能直接杀掉进程，
+    // 只靠 5 秒定时器最多丢 5 秒，后台继续解码也白耗电。
+    WidgetsBinding.instance.addObserver(this);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     // 手机 / 平板进播放页先锁横屏，见 playback_orientation.dart。
     // 放在 initState 而不是 _bootstrap：_bootstrap 要等第一帧之后才跑，
@@ -143,6 +163,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
     final width = surface.width;
     final height = surface.height;
+    // 记下建纹理时的尺寸：之后窗口或方向变了，[_syncSurfaceSize] 拿它判断
+    // 差值够不够大到值得再通知内核一次。
+    _surfaceWidth = width;
+    _surfaceHeight = height;
 
     // LANPLAYER_NO_TEXTURE=1 skips the texture entirely.  The Windows embedder
     // composites external textures through a path that screen capture cannot
@@ -173,6 +197,86 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (mounted) setState(() => _starting = false);
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 分辨率 / 缩放变化也走这里；真正的处理排到帧后，那一帧的 MediaQuery
+    // 已经是最新值。
+    _scheduleSurfaceSync();
+  }
+
+  @override
+  void didChangeMetrics() {
+    // 拖窗口、旋转屏幕都会来这一条。不在这里重建纹理：换一块纹理意味着
+    // 宿主那边的取帧回调与播放器指针都要重接一遍，正在播的片子会黑一下。
+    _scheduleSurfaceSync();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.paused &&
+        state != AppLifecycleState.hidden) {
+      // 回到前台不自动续播：离开时是用户自己按的暂停还是被系统打断，
+      // 这里分不出来，替他恢复播放比停在暂停更突兀。
+      return;
+    }
+    // 切后台、锁屏、来电：系统随时可能直接杀掉进程，先把当前位置落一次盘，
+    // 同时停掉解码 —— 没有画面还继续解码只是白耗电。
+    if (_player.isPlaying) _player.pause();
+    _saveProgress();
+  }
+
+  /// 把尺寸检查排到下一帧末尾。
+  ///
+  /// 同一批窗口回调可能连发好几次，合并成一次；帧后执行是为了拿到这一帧
+  /// 更新过的 MediaQuery。
+  void _scheduleSurfaceSync() {
+    if (_surfaceResizePending) return;
+    _surfaceResizePending = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _surfaceResizePending = false;
+      _syncSurfaceSize();
+    });
+  }
+
+  /// 窗口尺寸或方向变了之后，把新的绘图尺寸告诉内核。
+  ///
+  /// 纹理按 [_bootstrap] 那一刻的尺寸建好就不再重建，但内核自己有一个
+  /// 渲染目标尺寸：Android 的 EGL 视口、桌面端的上屏缩放都读它。不跟着
+  /// 更新，旋转之后画面会被拉伸或留黑边。宽或高变化不到
+  /// [_surfaceResizeThreshold] 时不下发：拖窗口时尺寸每帧都在小步变化，
+  /// 逐帧调 FFI 只是把内核的视口反复重建。
+  void _syncSurfaceSize() {
+    if (!mounted) return;
+    // 没有纹理（LANPLAYER_NO_TEXTURE=1）时内核根本没有渲染目标，下发了也没处用。
+    if (_texture == null) return;
+    // [_bootstrap] 还没跑完时没有可比的基准尺寸，等它把初值填上再说。
+    if (_surfaceWidth <= 0 || _surfaceHeight <= 0) return;
+    if (_player.nativeHandle == null) return;
+    final media = MediaQuery.maybeOf(context);
+    if (media == null) return;
+    final surface = surfaceSizeFor(
+      logicalWidth: media.size.width,
+      logicalHeight: media.size.height,
+      devicePixelRatio: media.devicePixelRatio,
+      landscape: shouldLockLandscape(
+        mobile: isMobileHost,
+        preference: _settings.lockLandscape,
+      ),
+    );
+    final deltaW = (surface.width - _surfaceWidth).abs() / _surfaceWidth;
+    final deltaH = (surface.height - _surfaceHeight).abs() / _surfaceHeight;
+    if (deltaW < _surfaceResizeThreshold && deltaH < _surfaceResizeThreshold) {
+      return;
+    }
+    // ignore: avoid_print
+    print('LanPlayer surface: ${_surfaceWidth}x$_surfaceHeight -> '
+        '${surface.width}x${surface.height}');
+    _surfaceWidth = surface.width;
+    _surfaceHeight = surface.height;
+    _player.setSurfaceSize(surface.width, surface.height);
+  }
+
   void _openCurrent() {
     final entry = widget.playlist.current;
     if (entry == null) return;
@@ -188,10 +292,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _prefsApplied = false;
     _audioIndex = null;
     _player.open(url, _settings, extra: widget.location.options);
-    if (_subtitleDelay != 0) {
+    // 偏移已经在 open options 的 `subtitle_delay` 里下发过一次，这里只在
+    // 用户本次调过（与设置项不一致）时才补一发。以前这里无条件把
+    // `_subtitleDelay` 再写一遍，等于每次开片都把内核刚设好的值覆盖掉。
+    if (_subtitleDelay != widget.settings.subtitleDelayMs) {
       _player.setSubtitleDelay(_subtitleDelay);
     }
-    _player.setOption('subtitle_delay', '$_subtitleDelay');
     _scheduleHide();
     _scheduleProgressSave();
   }
@@ -480,9 +586,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _hudTimer?.cancel();
     _progressTimer?.cancel();
     _saveProgress();
+    WidgetsBinding.instance.removeObserver(this);
     _player.removeListener(_onPlayerChanged);
-    _player.dispose();
-    VideoTextureBridge.destroy();
+    // 纹理里存着内核播放器的裸指针，宿主还有一个取帧回调在 raster 线程上
+    // 可能正在用它。先把纹理注销掉并等这一趟通道调用返回，再 free 播放器，
+    // 中途不留既可能被读到、又已经释放的窗口。
+    unawaited(_releaseTextureThenPlayer());
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     // 方向也要还回去，否则看完片回列表页也还是横的。
     unawaited(leavePlaybackOrientation(
@@ -490,6 +599,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
       preference: _settings.lockLandscape,
     ));
     super.dispose();
+  }
+
+  /// 先注销纹理、等通道调用返回，再释放内核播放器。
+  ///
+  /// 纹理对象在宿主侧持有播放器指针，raster 线程的取帧回调随时可能进来；
+  /// 先 `destroyPlayer` 再注销纹理，中间那一小段时间里回调拿到的是已释放的
+  /// 指针。反过来做，注销返回时宿主已经不再引用它，释放播放器才是安全的。
+  Future<void> _releaseTextureThenPlayer() async {
+    await VideoTextureBridge.destroy();
+    _player.dispose();
   }
 
   // ---------------------------------------------------------------- actions ---
@@ -676,7 +795,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   void _nudgeSubtitle(int deltaMs) {
-    _subtitleDelay += deltaMs;
+    // 面板里那行秒数在 AnimatedBuilder 之外，不会因为播放器通知而重建，
+    // 所以这里自己 setState，否则点一次 ±0.1s 数字一动不动。
+    setState(() => _subtitleDelay += deltaMs);
     _player.setSubtitleDelay(_subtitleDelay);
   }
 
@@ -1214,6 +1335,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
       case ShortcutAction.speedReset:
         _player.setSpeed(PlaybackSettings.speedDefault);
         _settings.speed = PlaybackSettings.speedDefault;
+        // 与 [_openSpeedSheet] 一样落盘：不写回去的话，切下一集或重开应用
+        // 倍速又回到设置页里的旧档，看起来像这次复位没生效。
+        SettingsStore.instance.value.speed = PlaybackSettings.speedDefault;
+        unawaited(SettingsStore.instance.save());
         _showHud('1.0x');
         return true;
       case ShortcutAction.fullscreen:
@@ -1260,6 +1385,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final value = steps[next];
     _player.setSpeed(value);
     _settings.speed = value;
+    // 键盘调档同样要记住，理由见 [_openSpeedSheet]。
+    SettingsStore.instance.value.speed = value;
+    unawaited(SettingsStore.instance.save());
     _showHud('${value.toStringAsFixed(2)}x');
   }
 

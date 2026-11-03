@@ -105,20 +105,24 @@ class SplashGateState extends State<SplashGate> {
       key: SplashGate.contentKey,
       child: widget.builder(context),
     );
-    if (_phase == _Phase.content) return content;
+    /* 这里**不能**在收尾时换成直接返回 content：树从 Stack 变成单节点，
+     * 内容整体上移一层，Element 对不上，HomeScreen 的 State 会被重建 ——
+     * 首屏每个来源的目录请求于是发两次，而且第一次的结果直接丢掉。
+     * 保持 Stack 这层结构不变，只让盖在上面的图标消失。 */
     return Stack(
       fit: StackFit.expand,
       children: <Widget>[
         // 首页一直在下游加载，动画只是盖在上面。
         content,
-        AbsorbPointer(
-          child: AnimatedOpacity(
-            opacity: _phase == _Phase.fading ? 0 : 1,
-            duration: SplashDefaults.fade,
-            curve: Curves.easeOut,
-            child: const SplashView(key: SplashGate.splashKey),
+        if (_phase != _Phase.content)
+          AbsorbPointer(
+            child: AnimatedOpacity(
+              opacity: _phase == _Phase.fading ? 0 : 1,
+              duration: SplashDefaults.fade,
+              curve: Curves.easeOut,
+              child: const SplashView(key: SplashGate.splashKey),
+            ),
           ),
-        ),
       ],
     );
   }

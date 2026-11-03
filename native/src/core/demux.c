@@ -78,6 +78,10 @@ char *lp_media_info_json(LpPlayer *p)
         lp_str_append_json_str(&s, lang ? lang->value : "");
         lp_str_append(&s, ",\"title\":");
         lp_str_append_json_str(&s, title ? title->value : "");
+        /* 容器里的「默认音轨」标记。没有它，界面只能按「第一条就是默认」
+         * 猜 —— 而 MKV 里默认音轨常常排在第二条。 */
+        lp_str_append(&s, ",\"default\":%s",
+                      (st->disposition & AV_DISPOSITION_DEFAULT) ? "true" : "false");
         lp_str_append(&s, "}");
     }
     lp_str_append(&s, "],\"subtitle\":[");
@@ -442,12 +446,25 @@ void *lp_demux_thread_fn(void *arg)
             continue;
         }
         if (r < 0) {
+            /* 读失败必须走和 EOF 一样的收尾：解码线程等的是队列上的 EOF 信号，
+             * 不是「读线程退出了」。以前这里只发一个错误事件就 break ——
+             * 两个解码线程永远停在 lp_pq_wait_more，video/audio 的 eof 都不置位，
+             * ENDED 判定 `audio_done && video_done` 永远为假，进度条定在最后一
+             * 个位置、主时钟冻结，界面上既不报结束也不再往前走。
+             * SMB 掉线、共享被踢、U 盘拔出都走这条分支，不是罕见情况。 */
             if (!lp_is_abort(p)) {
                 char msg[128];
                 snprintf(msg, sizeof(msg), "read error: %s", av_err2str(r));
                 lp_emit_error(p, LP_ERR_IO, msg);
             }
-            break;
+            atomic_store(&p->eos_demux, 1);
+            int eof_serial = atomic_load(&p->serial);
+            lp_pq_signal_eof(&p->video.pq, eof_serial);
+            lp_pq_signal_eof(&p->audio.pq, eof_serial);
+            waiting_eof = 1;
+            LP_INFO("demux", "read failed after %lld packet(s), signalling end of stream",
+                    read_ok);
+            continue;
         }
 
         /* 调试开关只在第一次进循环时读一次环境变量。以前这里每读一个包都
@@ -522,12 +539,17 @@ int lp_demux_open(LpPlayer *p)
     }
     auto_load_subtitles(p);
 
-    if (p->start_us > 0 && p->video.stream_index >= 0) {
-        /* Normalise the timeline so 0 means "first frame". */
+    /* 媒体时间轴的零点不是 0，而是 start_time（TS 流常见 1.4 s 的
+     * 前置填充）。以前这里只打一行日志、两个时钟仍从 0 起，而包的 pts
+     * 带着 start_time —— 主时钟要「走到 pts」才上屏，第一个 GOP 的 pts
+     * 是 1.4 s，于是开片先黑屏 1.4 秒；无音轨或 sync=external 时（主时钟
+     * 就是这一个）必现。seek 那边早就算上了 start_us，两边本该同一个口径。 */
+    if (p->start_us > 0) {
         LP_DEBUG("demux", "start_time offset %lld us", (long long)p->start_us);
     }
-    lp_clock_set(&p->ac, 0, atomic_load(&p->serial));
-    lp_clock_set(&p->extc, 0, atomic_load(&p->serial));
+    double start_seconds = (double)p->start_us / LP_TIME_BASE;
+    lp_clock_set(&p->ac, start_seconds, atomic_load(&p->serial));
+    lp_clock_set(&p->extc, start_seconds, atomic_load(&p->serial));
 
     /* LP_NO_VIDEO / LP_NO_AUDIO: debugging switches to bisect pipeline faults. */
     if (getenv("LP_NO_VIDEO")) {

@@ -212,7 +212,14 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     if (s.isFile) {
       final entry = _loads[s.id]?.listing?.entries.firstOrNull;
-      if (entry != null) await _play(s, entry, const []);
+      if (entry == null) {
+        /* 根目录还没加载完（冷启动刚回来、或那一行还在转圈）时这就是个死
+         * 按钮：点了没有任何反应，也没有任何提示。至少把它变成一句能看懂
+         * 的话 —— 用户知道该等一下或者重新加载。 */
+        await showError(context, '这一项还在加载，稍等一下再点播放。');
+        return;
+      }
+      await _play(s, entry, const []);
       return;
     }
     final loaded = _loads[s.id]?.listing;

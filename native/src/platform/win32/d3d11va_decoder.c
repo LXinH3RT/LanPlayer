@@ -262,6 +262,32 @@ int lp_hw_decoder_is_async(LpVideoDecoder *d)
     return 0;
 }
 
+int lp_hw_decoder_present_with_subtitles(LpVideoDecoder *d, LpDecodedFrame *f)
+{
+    (void)d;
+    (void)f;
+    /* 这个后端自己就会处理：lp_render_draw_hw_ex() 在有图形字幕时返回
+     * LP_ERR_UNSUPPORTED，present 随即退回 av_hwframe_transfer_data +
+     * lp_render_draw，字幕在那边混合。内核不必再插手。 */
+    return LP_ERR_UNSUPPORTED;
+}
+
+int lp_hw_decoder_release(LpVideoDecoder *d, LpDecodedFrame *f)
+{
+    (void)d;
+    if (!f) {
+        return LP_ERR_ARGUMENT;
+    }
+    /* 同步解码器：present 里做的「下载到系统内存再画」这一次整个不要做，
+     * 直接把收到的 AVFrame 还回去。 */
+    AVFrame *hf = (AVFrame *)f->handle;
+    f->handle = NULL;
+    if (hf) {
+        av_frame_unref(hf);
+    }
+    return LP_OK;
+}
+
 int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f)
 {
     if (!d || !f) {

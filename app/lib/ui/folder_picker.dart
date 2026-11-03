@@ -140,6 +140,15 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
         _error = e.message;
         _loading = false;
       });
+    } catch (e) {
+      /* 只捕 MediaSourceException 是不够的：解析、路径拼装、编码转换都可能抛
+       * 别的异常，而 build() 里 _loading 为真就直接画转圈 —— 一旦漏出去，
+       * 这个页面会永远停在转圈上，连返回都点不动。 */
+      if (!mounted || _navGen != gen) return;
+      setState(() {
+        _error = '$e';
+        _loading = false;
+      });
     }
   }
 
@@ -163,6 +172,12 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
       if (!mounted || _navGen != gen) return;
       setState(() {
         _error = e.message;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted || _navGen != gen) return;
+      setState(() {
+        _error = '$e';
         _loading = false;
       });
     }

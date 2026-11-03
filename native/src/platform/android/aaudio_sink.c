@@ -9,6 +9,7 @@
 
 #include <aaudio/AAudio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "player_internal.h"
 
@@ -32,6 +33,18 @@ static aaudio_data_callback_result_t sink_data_cb(AAudioStream *stream, void *us
     int got = lp_audio_pull_pcm(s->player, (float *)audio_data, num_frames);
     if (got < 0) {
         return AAUDIO_CALLBACK_RESULT_STOP;
+    }
+    /* 环里不够一整个缓冲时 got < num_frames，剩下的那段必须是静音。
+     * 缓冲区是复用来的，不补零就会把上一轮的老样本再播一遍 ——
+     * 听感上是短促的「嗡」一声，而且主时钟会因此多走了一截。 */
+    if (got < num_frames) {
+        float *samples = (float *)audio_data;
+        int channels = s->channels > 0 ? s->channels : 2;
+        size_t from = (size_t)got * (size_t)channels;
+        size_t total = (size_t)num_frames * (size_t)channels;
+        if (from < total) {
+            memset(samples + from, 0, (total - from) * sizeof(float));
+        }
     }
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }

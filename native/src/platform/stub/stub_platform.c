@@ -160,6 +160,21 @@ int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f)
     return LP_ERR_UNSUPPORTED;
 }
 
+int lp_hw_decoder_present_with_subtitles(LpVideoDecoder *d, LpDecodedFrame *f)
+{
+    (void)d;
+    (void)f;
+    /* 这个后端没有解码器。 */
+    return LP_ERR_UNSUPPORTED;
+}
+
+int lp_hw_decoder_release(LpVideoDecoder *d, LpDecodedFrame *f)
+{
+    (void)d;
+    (void)f;
+    return LP_ERR_UNSUPPORTED;
+}
+
 int64_t lp_hw_decoder_frames_dropped(LpVideoDecoder *d)
 {
     (void)d;

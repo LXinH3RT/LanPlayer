@@ -164,9 +164,36 @@ int64_t lp_master_clock_us(LpPlayer *p)
              * -1」：真的冻住超过 LP_AUDIO_CLOCK_STALL_US 就退回墙钟。 */
             int64_t seen = atomic_load(&p->audio_clock_seen_us);
             int64_t now = av_gettime_relative();
+            /* 声卡延迟补偿。lp_ring_clock_seconds 报的是「已经被音频回调
+             * 取走」的那个采样点，不是「已经从喇叭里出来的」那一个：环里
+             * 取走之后还要经过整条硬件缓冲才被听到。不减掉这一段，主时钟
+             * 恒定超前一个缓冲（AudioQueue 48 kHz 下约 40 ms，WASAPI 类似），
+             * 视频就恒定晚一个缓冲上屏 —— av_diff 长期偏负 200–300 ms 的
+             * 一部分来自这里。以前 lp_audio_sink_latency_us 有四个平台实现
+             * 却没有任何调用者。 */
+            int64_t latency = p->sink ? (int64_t)lp_audio_sink_latency_us(p->sink) : 0;
+            if (latency > 0) {
+                us -= latency;
+                if (us < 0) {
+                    us = 0;
+                }
+            }
             if (us > seen) {
                 atomic_store(&p->audio_clock_seen_us, us);
                 atomic_store(&p->audio_clock_seen_at, now);
+                /* 音频主钟健康时顺手把「墙钟回退」那只时钟拉回媒体时间轴。
+                 *
+                 * lp_clock_sync 的注释写着 "gentle drift correction"，实现
+                 * 也齐全（误差 > 0.5 s 硬重置、否则每次走 5%），但它全仓
+                 * 一个调用者都没有 —— 于是 extc 只在 open 与 seek 时被设置，
+                 * 之后纯按墙钟走。一旦音频欠载超过 LP_AUDIO_CLOCK_STALL_US
+                 * 退到 extc，画面就接到一只从未和实测音频时钟对过表的钟上，
+                 * 从此 av_diff 单向偏负、直到撞上 -500 ms 丢帧线才被动纠正。
+                 *
+                 * 这里每次拿到健康的音频时刻就同步一次：正常情况下两者本来
+                 * 就贴着（5% 的步长、误差远小于 0.5 s），只有真的漂开了才会
+                 * 起作用。调用频率就是出帧频率，锁竞争可以忽略。 */
+                lp_clock_sync(&p->extc, (double)us / LP_TIME_BASE);
                 return us;
             }
             int64_t since = atomic_load(&p->audio_clock_seen_at);
@@ -208,6 +235,11 @@ static void apply_audio_switch(LpPlayer *p)
 {
     int req = atomic_exchange(&p->audio.switch_req, 0);
     if (req <= 0 || !p->opened || !p->fmt) {
+        return;
+    }
+    /* 关闭已经在进行（abort 置位）：这里再 join 一次音频线程就是双重 join，
+     * 而且会把正在被销毁的 sink 重新拉起来。丢弃这次请求。 */
+    if (lp_is_abort(p)) {
         return;
     }
     int index = req - 1;
@@ -253,7 +285,16 @@ static void *player_tick_fn(void *arg)
                 int queued = lp_pq_size(&p->video.pq);
                 lp_emit_buffering(p, queued == 0 && buffered == 0 && pos > 0, 0);
             }
-        } else if (p->buffering) {
+        } else {
+            /* 暂停（或收尾）时字幕也要跟：`\t` / `\k` 动画在暂停里停住、
+             * 拖进度条时字幕不跟着变、调字幕延迟看不到反馈，都是因为这条
+             * 唯一调用点在 PLAYING 分支里。位置用当前的 position_us（暂停
+             * 时它停在拖动到的地方），不要用主时钟 —— 主时钟在暂停时冻结，
+             * 但拖动之后要立刻反映新位置。 */
+            lp_subtitle_tick(p, atomic_load(&p->position_us));
+        }
+
+        if (p->buffering) {
             /* 暂停状态下拖进度条：perform_seek() 已经 emit 了 buffering=1，
              * 但唯一的清除点在上面那个 PLAYING 分支里。暂停时它永远不执行，
              * 于是转圈一直转到用户再点播放（用户报告：暂停拖一下进度，
@@ -285,6 +326,11 @@ static void *player_tick_fn(void *arg)
                 if (lost < 0) {
                     lost = 0;
                 }
+                /* 和其他几个计数器一样按周期清零。以前只有它不清 ——
+                 * 同一条 STATS 事件里，gap / stalls / push 都说「最近一秒」，
+                 * 唯独 dropped_delivery 说「开播至今」，两个口径混在一起，
+                 * 读日志时根本分不清「这一秒丢了 3 帧」还是「一分钟前丢过 3 帧」。 */
+                p->vout.frames_delivery_lost = 0;
                 /* pull_gap / pull_stall：交付节奏的抖动。帧数与丢帧数都对不上
                  * 观感时（fps 正常、dropped 为 0，画面仍一跳一跳），问题就在
                  * 间隔不均。超时立刻清零，统计按「最近一个周期」说话而不是
@@ -382,6 +428,10 @@ static void *player_tick_fn(void *arg)
 
 /* ------------------------------------------------------------ open worker --- */
 
+/* 换片时要清掉的逐媒体状态。漏清一项的后果都很具体：
+ * sync_mode 一旦被上一部片子的「外部时钟」留下，下一部片子改用音频主钟时
+ * 仍然走墙钟，音画从此对不上；seek_start_us 残留会让新片子的首帧跳到上
+ * 一部的跳转位置。 */
 static void player_reset_media(LpPlayer *p)
 {
     p->opened = 0;
@@ -396,6 +446,8 @@ static void player_reset_media(LpPlayer *p)
     atomic_store(&p->audio_clock_seen_us, (int64_t)0);
     atomic_store(&p->audio_clock_seen_at, (int64_t)0);
     atomic_store(&p->audio.switch_req, 0);
+    p->sync_mode = 0;
+    p->seek_start_us = 0;
 }
 
 static int apply_open_options(LpPlayer *p)
@@ -644,6 +696,11 @@ int32_t lp_player_close(LpPlayer *p)
         return LP_ERR_ARGUMENT;
     }
     atomic_store(&p->abort_request, 1);
+    /* 立刻把 opened 拉低，而不是等到函数末尾。tick 线程每 10 ms 醒一次调
+     * apply_audio_switch，它只看 opened 就往下走 —— 上一次关闭还没 join 完
+     * 音频线程，这一次它又 join 一遍：同一句柄两次 join 是未定义行为，
+     * 更糟的是两边会并发销毁同一个 sink / ring。 */
+    p->opened = 0;
     lp_pq_abort(&p->video.pq);
     lp_pq_abort(&p->audio.pq);
     if (p->audio.ring.buf) {
@@ -771,7 +828,13 @@ int32_t lp_player_stop(LpPlayer *p)
     }
     lp_set_state(p, LP_STATE_STOPPED);
     lp_audio_sink_pause(p->sink, 1);
-    lp_request_seek(p, 0);
+    /* 停止**不要**请求 seek 回 0。
+     *
+     * 以前这里调 lp_request_seek(p, 0)：demux 线程收到后真的会去 avformat_seek_file，
+     * 两个队列清空、时钟归零、然后继续读包填队列 —— 也就是「停止」之后
+     * 内核仍然在全速解码填充，CPU 占用和播放时一样，白白耗电发热。
+     * 真正的归零发生在 lp_player_play 从 STOPPED 重启时（那里会走一次
+     * lp_*_stop + lp_*_start，位置本来就是从头）。 */
     return LP_OK;
 }
 

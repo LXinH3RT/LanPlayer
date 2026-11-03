@@ -434,6 +434,28 @@ int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f)
     return LP_ERR_CODEC;
 }
 
+int lp_hw_decoder_present_with_subtitles(LpVideoDecoder *d, LpDecodedFrame *f)
+{
+    (void)d;
+    (void)f;
+    /* Surface 模式的输出缓冲在编解码器与 EGL 之间流转，CPU 拿不到像素，
+     * 也就没法在上面混合 PGS 位图。内核会退回直接上屏并记一条日志。
+     * 要让这条路显示图形字幕，只能让解码器改走 ByteBuffer 输出，那是另一
+     * 件事（每帧多一次 GPU 到 CPU 的拷贝），不在这里硬做。 */
+    return LP_ERR_UNSUPPORTED;
+}
+
+int lp_hw_decoder_release(LpVideoDecoder *d, LpDecodedFrame *f)
+{
+    if (!d || !d->codec || !f) {
+        return LP_ERR_ARGUMENT;
+    }
+    /* render=false：把输出缓冲区还回去但不渲染。 */
+    media_status_t st = AMediaCodec_releaseOutputBuffer(d->codec, (size_t)f->index, false);
+    f->index = -1;
+    return st == AMEDIA_OK ? LP_OK : LP_ERR_CODEC;
+}
+
 int64_t lp_hw_decoder_frames_dropped(LpVideoDecoder *d)
 {
     if (!d) {

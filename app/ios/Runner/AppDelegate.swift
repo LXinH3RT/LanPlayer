@@ -121,6 +121,10 @@ import CoreVideo
       case "destroyTexture":
         self.removeFrameCallback()
         if let tex = self.texture {
+          // 先摘指针再注销：注销之后引擎不会再调 copyPixelBuffer，而 detach
+          // 会等已经进去的那一次返回。Dart 侧是 await 这个方法之后才释放
+          // 播放器，所以到这里返回时，内核对象已经没人引用了。
+          tex.detach()
           self.textures?.unregisterTexture(tex.textureId)
         }
         self.texture = nil
@@ -311,15 +315,44 @@ import CoreVideo
 /// 把内核给出的 CVPixelBuffer 零拷贝交给 Flutter 纹理：像素缓冲是
 /// IOSurface 支持的，直接让引擎读取即可。
 final class PlayerTexture: NSObject, FlutterTexture {
-  var player: OpaquePointer?
+  /// 播放器裸指针只在主线程赋值、在 raster 线程读，所以走同一把锁。
+  /// 以前它是普通存储属性：主线程释放播放器与 raster 线程取帧之间没有任何
+  /// 同步，取帧那一侧可能正好锁在已销毁的 mutex 上。
+  private let lock = NSLock()
+  private var storedPlayer: OpaquePointer?
+
+  var player: OpaquePointer? {
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return storedPlayer
+    }
+    set {
+      lock.lock()
+      storedPlayer = newValue
+      lock.unlock()
+    }
+  }
+
   var textureId: Int64 = -1
 
   init(player: OpaquePointer?) {
-    self.player = player
+    self.storedPlayer = player
+  }
+
+  /// 释放播放器之前调用。锁在这里不只是防数据竞争：它保证已经进到
+  /// copyPixelBuffer 里的那一次调用走完，之后内核对象才可以被 free。
+  func detach() {
+    lock.lock()
+    storedPlayer = nil
+    lock.unlock()
   }
 
   func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
-    guard let player, let buffer = lp_player_copy_pixel_buffer(player) else {
+    // 整段持有锁：先取指针、再调内核，两步之间不能被 detach 挤进来。
+    lock.lock()
+    defer { lock.unlock() }
+    guard let player = storedPlayer, let buffer = lp_player_copy_pixel_buffer(player) else {
       return nil
     }
     // 内核返回的是 +1 引用，所有权转交 Flutter。

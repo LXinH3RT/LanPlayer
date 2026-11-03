@@ -5460,9 +5460,17 @@ def check_texture_delivery() -> None:
             ("p->video.last_present_at_us = av_gettime_relative();",
              "nothing records when a frame actually reached the screen, so the "
              "pacer has no reference point and every late frame presents at once"),
-            ("const int64_t period = (int64_t)(frame_dur * 1000000.0);",
-             "the minimum spacing between late frames is gone; VideoToolbox "
-             "batches would hit the screen back to back again"),
+            # 帧周期必须取 demux 量出来的真实值，而不是写死的 0.04：异步
+            # 硬解分支从不更新局部 frame_dur，30 fps 内容每帧多等 6.7 ms，
+            # 60 fps 直接被压到 25 fps。同理必须除以播放速度，2 倍速下不除
+            # 就是每显示一帧丢一帧。
+            ("const int64_t period = (int64_t)(fd * 1000000.0 / sp);",
+             "the spacing no longer uses the measured frame period, or it "
+             "ignores playback speed and drops every other frame at 2x"),
+            ("const double fd = p->video.frame_duration > 0.0 ? p->video.frame_duration",
+             "the pacer went back to the hard-coded 0.04 s frame period"),
+            ("const double sp = p->speed > 0.01 ? p->speed : 1.0;",
+             "the pacer no longer divides by playback speed"),
             # 节拍必须对着「绝对时刻」推进，不能以上一帧上屏时刻为起点。
             # 以它为起点时，av_usleep 睡过头的误差会原样带进下一帧，一秒
             # 二十几次累积下来就是稳定落后；iPad 实测 0.9 倍周期版每秒最大
@@ -5487,9 +5495,12 @@ def check_texture_delivery() -> None:
             ("#define LP_PACE_CATCHUP_US 120000",
              "the pacer lost its catch-up threshold; a steady lag would never be "
              "paid back until frames start being dropped"),
-            ("if (diff < -LP_PACE_CATCHUP_US) {",
+            ("if (catchup > 0 && diff < -catchup) {",
              "the pacer never shortens its spacing; it stays a fixed period even "
              "when the stream is running behind"),
+            ("const int64_t catchup = (int64_t)(LP_PACE_CATCHUP_US / sp);",
+             "the catch-up threshold no longer scales with playback speed; at 2x "
+             "it would only kick in after a full second of lag"),
             # 异步解码器才需要节拍。这条被删掉会变成「所有硬解都补等待」，
             # Windows 的 d3d11va 是同步取帧，插等待直接掉帧（实测 12 秒丢 32）。
             ("lp_hw_decoder_is_async(p->video.hw)",
@@ -5882,6 +5893,197 @@ def check_volume_gain() -> None:
                  "one playback instead of writing back")
 
 
+def check_review5_fixes() -> None:
+    """第五轮评审里那批「会崩 / 会永久卡死 / 功能缺失」的修复，逐条钉住。
+
+    这些位置各自只差一行两行，改回去不会有任何编译错误，跑起来也看不出来 ——
+    要么要播到自然结尾才炸（音频图收尾的双重释放），要么要硬解连续失败四帧
+    才冻结，要么要用户去找一部带 PGS 字幕的片子才知道不显示。静态断言在这里
+    比测试更合适：测试跑不到这些分支，而它们又恰好都是「一改就没」的那种。
+    """
+    def text_of(rel: str) -> str:
+        return (ROOT / rel).read_text(encoding="utf-8")
+
+    audio = text_of("native/src/core/audio.c")
+    for needle, why in (
+        ("p->audio.graph_out",
+         "the flush path no longer works on the resident frame; a local AVFrame *"
+         " copy would leave p->audio.graph_out dangling after av_frame_free"),
+        ("p->audio.content_cursor",
+         "the flush path starts its timestamps from zero again; the tail of a "
+         "speed-changed stream would jump back to the beginning"),
+    ):
+        if needle not in audio:
+            problems.append(f"native/src/core/audio.c: {why}")
+    # 局部别名本身没问题（push_through_graph 也用），危险的是对别名 av_frame_free。
+    if "av_frame_free(&out);" in audio:
+        problems.append(
+            "native/src/core/audio.c: the flush path frees its local frame again; "
+            "the resident graph_out would be freed twice")
+
+    video = text_of("native/src/core/video.c")
+    for needle, why in (
+        ("if (r == LP_OK) {",
+         "a failed hardware send counts as in-flight again; four failures in a row "
+         "leave in_flight at the cap and the video thread stops taking packets"),
+        ("p->video.in_flight++",
+         "the in-flight counter is gone; the prefetch loop would spin"),
+        ("lp_hw_decoder_release(p->video.hw, hf);",
+         "dropped frames are presented anyway; the picture would show a frame the "
+         "clock already gave up on"),
+        ("lp_hw_decoder_present_with_subtitles(",
+         "graphics subtitles never reach the hardware path; PGS / VobSub stay "
+         "invisible on Apple"),
+        ("p->video.sub_blend_warned",
+         "nothing remembers that this platform cannot blend graphics subtitles; "
+         "the log line would repeat every frame"),
+        ("const double fd = p->video.frame_duration > 0.0 ? p->video.frame_duration",
+         "the pacer is back on the hard-coded 0.04 s frame period; 30 and 60 fps "
+         "content would drift behind the clock"),
+        ("const double sp = p->speed > 0.01 ? p->speed : 1.0;",
+         "the pacer ignores playback speed; at 2x it would wait a full frame "
+         "period and drop every other frame"),
+        ("if (diff > 0 && diff < LP_PRESENT_LEAD_US) {",
+         "the present lead is declared but never applied"),
+        ("p->video.last_present_at_us = 0;",
+         "a seek leaves the pacer anchored before the seek; the first frames "
+         "after it would be spaced by a stale timestamp"),
+        ("av_usleep(100000);",
+         "the idle wait is back to a few milliseconds; a stopped player would "
+         "spin at 200 wakeups per second"),
+    ):
+        if needle not in video:
+            problems.append(f"native/src/core/video.c: {why}")
+
+    # 帧数守恒：两个分支各一次，不能只留一处。
+    if video.count("p->video.frames_discarded++;") != 2:
+        problems.append(
+            "native/src/core/video.c: frames_discarded is not counted on both the "
+            "hardware and software paths; the conservation check would go nonzero "
+            "on whichever one is missing")
+    if video.count("p->video.frames_received++;") != 2:
+        problems.append(
+            "native/src/core/video.c: frames_received is not counted on both paths")
+
+    player = text_of("native/src/core/player.c")
+    for needle, why in (
+        ("p->opened = 0;",
+         "close no longer clears opened up front; the tick thread can call "
+         "apply_audio_switch and join the same audio thread twice"),
+        ("if (lp_is_abort(p)) {",
+         "apply_audio_switch does not check the abort flag; closing while a track "
+         "switch is pending tears down the sink twice"),
+        ("p->vout.frames_delivery_lost = 0;",
+         "the delivery-lost counter is never reset; it would report the total "
+         "since playback started while every other counter reports one second"),
+        ("lp_audio_sink_latency_us(",
+         "the master clock ignores the output latency; it runs ahead of what the "
+         "user actually hears by one audio buffer"),
+        ("lp_clock_sync(&p->extc,",
+         "the external clock is never pulled back toward the audio clock; after a "
+         "stall it drifts away until the picture is visibly behind"),
+    ):
+        if needle not in player:
+            problems.append(f"native/src/core/player.c: {why}")
+
+    demux = text_of("native/src/core/demux.c")
+    for needle, why in (
+        ('\\"default\\":%s',
+         "audio tracks no longer report their default disposition; the track "
+         "picker has to guess that the first one is the default"),
+        ("lp_pq_signal_eof(&p->video.pq, eof_serial);",
+         "a read error no longer signals end of stream; the decoders would wait "
+         "forever and ENDED would never fire"),
+        ("lp_clock_set(&p->extc, start_seconds,",
+         "the clocks start at zero again; a file with a start_time offset shows "
+         "black until the offset elapses"),
+    ):
+        if needle not in demux:
+            problems.append(f"native/src/core/demux.c: {why}")
+
+    queue = text_of("native/src/core/queue.c")
+    if "q->nb_packets > 8 || q->bytes >= q->max_bytes" not in queue:
+        problems.append(
+            "native/src/core/queue.c: back pressure needs both limits again; a "
+            "stream of tiny packets can grow the queue without bound")
+
+    subs = text_of("native/src/core/subtitle.c")
+    for needle, why in (
+        ("if (!p || !p->subs_inited) {",
+         "lp_subtitle_set_delay reaches for the subtitle mutex before it is "
+         "initialised; setting a delay from open options is undefined behaviour"),
+        ("p->subs.delay_us = 0;",
+         None),
+    ):
+        if why and needle not in subs:
+            problems.append(f"native/src/core/subtitle.c: {why}")
+    if "void lp_subtitle_open" in subs:
+        start = subs.index("void lp_subtitle_open")
+        head = subs[start:start + 2000]
+        if "p->subs.delay_us = 0;" in head:
+            problems.append(
+                "native/src/core/subtitle.c: opening a subtitle track clears the "
+                "delay again; the value set from open options would be lost")
+
+    # 图形字幕后端：四平台都要回答，Apple 必须真的混合。
+    hosts = {
+        "native/src/platform/apple/videotoolbox_decoder.c": "lp_sub_overlay_blend(d->player, base",
+        "native/src/platform/android/media_codec_decoder.c": "return LP_ERR_UNSUPPORTED;",
+        "native/src/platform/win32/d3d11va_decoder.c": "return LP_ERR_UNSUPPORTED;",
+        "native/src/platform/stub/stub_platform.c": "return LP_ERR_UNSUPPORTED;",
+    }
+    for rel, needle in hosts.items():
+        text = text_of(rel)
+        if "lp_hw_decoder_present_with_subtitles" not in text:
+            problems.append(
+                f"{rel}: does not answer lp_hw_decoder_present_with_subtitles; the "
+                "core would have to guess whether graphics subtitles can be drawn")
+        if needle not in text:
+            problems.append(f"{rel}: lost its subtitle blending behaviour")
+
+    # 宿主纹理：销毁时必须先摘播放器指针。
+    for rel in ("app/ios/Runner/AppDelegate.swift",
+                "app/macos/Runner/MainFlutterWindow.swift"):
+        text = text_of(rel)
+        if "func detach()" not in text:
+            problems.append(
+                f"{rel}: PlayerTexture has no detach(); the raster thread can still "
+                "be inside copyPixelBuffer when the player is freed")
+        if "tex.detach()" not in text:
+            problems.append(f"{rel}: destroyTexture never detaches the player pointer")
+        if "lock.lock()" not in text:
+            problems.append(
+                f"{rel}: the player pointer is read without a lock; detach could "
+                "free it mid-copy")
+
+    dart_checks = {
+        "app/lib/data/progress.dart": ("_scheduleFlush()",
+            "progress writes are flushed synchronously again; the player calls "
+            "save() every five seconds and each one rewrites the whole table"),
+        "app/lib/data/trace.dart": ("traceMaxBytes",
+            "the trace file grows without a bound; a long session fills the device"),
+        "app/lib/ui/splash_gate.dart": ("if (_phase != _Phase.content)",
+            "the splash swaps the tree shape when it finishes; the home screen "
+            "state is rebuilt and every source is listed twice"),
+        "app/lib/ui/server_edit_screen.dart": ("_statusOk",
+            "the connection banner goes back to matching on the word inside the "
+            "message instead of a boolean"),
+        "app/lib/data/thumbs.dart": ("unawaited(file.delete()",
+            "a corrupt thumbnail stays on disk; every scroll past it re-reads and "
+            "re-fails the same file"),
+    }
+    for rel, (needle, why) in dart_checks.items():
+        if needle not in text_of(rel):
+            problems.append(f"{rel}: {why}")
+
+    notes.append(
+        "review 5: the flush path keeps ownership of its resident frame, a failed "
+        "hardware send no longer pins in_flight, dropped frames are released instead "
+        "of shown, graphics subtitles blend on the Apple hardware path, the pacer "
+        "uses the real frame period divided by speed, a read error ends the stream, "
+        "and the host textures detach the player before it is freed")
+
+
 def check_local_picker() -> None:
     """Guard the local file/folder picker and the wide-character file layer.
 
@@ -6039,6 +6241,7 @@ def main() -> int:
     check_playback_orientation()
     check_windows_single_instance()
     check_texture_delivery()
+    check_review5_fixes()
     check_startup_home()
     check_surface_tap()
     check_volume_gain()

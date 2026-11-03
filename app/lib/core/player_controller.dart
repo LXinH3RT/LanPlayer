@@ -425,7 +425,7 @@ class PlayerController extends ChangeNotifier {
             'buffered=${map['buffered_ms']} hw=$hwActive '
             'pull=$pullCalls/$pullHits null=$pullNullRun '
             'wait=$pullWaitMs/${pullWaitAvgMs}ms '
-            'seq=$pullFast/$pullMid/${pullSlow} '
+            'seq=$pullFast/$pullMid/$pullSlow '
             'decdrop=$decoderDropped unacc=$framesUnaccounted');
         // Lighter cadence: stats change constantly, do not rebuild the tree
         // unless the user asked for the debugging overlay.

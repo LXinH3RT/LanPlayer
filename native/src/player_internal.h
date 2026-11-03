@@ -310,6 +310,23 @@ int lp_hw_decoder_receive(LpVideoDecoder *d, LpDecodedFrame *out);
 /* Present at the sync deadline (Android releases the buffer; Apple publishes
  * the pixel buffer to the texture bridge). */
 int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f);
+
+/* 图形字幕（PGS / VobSub / DVB）是 CPU 位图，只有 lp_sub_overlay_blend 会画，
+ * 而它一直挂在 lp_render_draw 这条软解路径上。以前硬解这边直接上屏，屏幕上
+ * 是解码器给的干净画面 —— 图形字幕永远不出现。Windows 之所以正常，是因为
+ * d3d11va 后端在 lp_render_graphics_sub_active() 为真时自己退回下载路径，
+ * 等于把这条约束写在了后端里。
+ *
+ * 这里把「谁来合字幕」收进内核：先问后端能不能把字幕合进这一帧并上屏。
+ * 返回 LP_OK 表示已经显示过了，内核不要再调 present；返回 LP_ERR_UNSUPPORTED
+ * 表示该后端拿不到像素（Android 的 Surface 输出就是），内核按原样上屏，
+ * 并在第一次发生时记一条日志说明这条限制。 */
+int lp_hw_decoder_present_with_subtitles(LpVideoDecoder *d, LpDecodedFrame *f);
+/* 丢弃一帧：把解码器持有的资源还回去，但**不**上屏。
+ * 同步解码器（d3d11va）的 present 本来就是「下载 + 交给上层」二合一，
+ * 所以它的 release 只是 unref；异步解码器（VideoToolbox / MediaCodec）
+ * 的 release 是把输出缓冲区直接交还，不渲染。 */
+int lp_hw_decoder_release(LpVideoDecoder *d, LpDecodedFrame *f);
 /* 解码器自己丢掉的帧数（只增不减，调用方按需取差）。
  *
  * 这些帧从来没交到内核手上：VideoToolbox 的 push_frame 在队列满时
@@ -699,6 +716,8 @@ typedef struct LpVideoStream {
     /* 解码器实际交出来的帧数（收到就算，不管后面是上屏、丢还是作废）。
      * 与上面三项之和比对即可自证守恒；快照里直接给差额。 */
     int64_t frames_received;
+    /* 已经为「这个平台合不了图形字幕」提示过日志，避免每帧刷屏。 */
+    int sub_blend_warned;
     /* 上一次真正上屏的时刻（av_gettime_relative，微秒）。用来给「已经落后于
      * 主时钟」的帧补一个最小间隔：硬解是一次一批地吐帧的，只按主时钟判断
      * 会让一批帧在几毫秒内连续上屏、随后空等下一批，观感是一顿一冲。 */
@@ -747,6 +766,10 @@ typedef struct LpAudioStream {
     /* atempo 图的进出口帧，随图一起建/毁，避免每个音频帧两次 alloc。 */
     AVFrame *graph_in;
     AVFrame *graph_out;
+    /* 最后一段写进环的内容时间（秒）。正常路径按帧 pts 写绝对时间；
+     * 只有图排空（audio_flush_graph）没有帧可用，它得从「上一条写到的
+     * 位置」接着算，否则尾段的时间戳会跳回 0，主时钟跟着倒回去。 */
+    double content_cursor;
     atomic_int eof;
     int draining;
     int64_t frames_decoded;

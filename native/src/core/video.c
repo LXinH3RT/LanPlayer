@@ -44,8 +44,13 @@ static int64_t pts_to_us(AVRational tb, int64_t pts)
  * 停在 -0.4 ~ -0.5 s、30 秒丢 46 帧。120 ms 大约是三帧，比解码器的
  * 固有管线延迟小、比渲染抖动大：正常情况下永远进不到这一支。 */
 #define LP_PACE_CATCHUP_US 120000
-/* 见 wait_for_presentation 里的说明。半个 60 Hz 刷新周期。 */
+/* 见 wait_for_presentation 里的说明。整整一个 60 Hz 刷新周期
+ * （16.67 ms）。当初先试的是半个周期（8.33 ms），iPad 实测 24 fps 内容
+ * 上 pull_slow 从 9 降到 6，方向对但不够；改到整周期后同口径两次独立
+ * 复现都是 1（`stalls` 0.30 → 0.03）。再大就会把帧画到该出现之前了。 */
 #define LP_PRESENT_LEAD_US 16667
+/* 节拍单次等待的上限。正常帧周期只有 16–42 ms，这个值只在参数异常时兜底。 */
+#define LP_PACE_MAX_SLEEP_US 100000
 
 /* Waits until the master clock reaches pts_us.
  * Returns 0 = present, 1 = too late (drop), <0 = interrupted. */
@@ -56,11 +61,20 @@ static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial, double
             return LP_ERR_INTERRUPTED;
         }
         if (atomic_load(&p->state) != LP_STATE_PLAYING) {
-            av_usleep(5000);
+            /* 暂停：50 ms 醒一次足够（恢复的判定延迟肉眼看不出）。
+             * 停止/结束/出错：demux 那边已经收尾、队列不会再出包，这里
+             * 每 5 ms 醒一次就是纯粹的空转 —— 实测「停止」之后 CPU 占用
+             * 与播放时相当。改成 100 ms，并在出手前再判一次中止。 */
+            LpState idle = atomic_load(&p->state);
+            if (idle == LP_STATE_STOPPED || idle == LP_STATE_ENDED || idle == LP_STATE_ERROR) {
+                av_usleep(100000);
+                continue;
+            }
+            av_usleep(50000);
             continue;
         }
         int64_t diff = pts_us - lp_master_clock_us(p);
-        /* 提前量：把「帧准备好」的时刻往前挪半个屏幕刷新周期。
+        /* 提前量：把「帧准备好」的时刻往前挪一个屏幕刷新周期。
          *
          * 引擎只在 vsync 上合成，而一帧从「交给纹理」到「真的画到屏幕上」
          * 之间还有一次跨线程跳转（`textureFrameAvailable` → raster 线程
@@ -68,8 +82,8 @@ static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial, double
          * 这一帧就只能等下一个 vsync，屏幕上表现为「本该停 2 个 vsync 的
          * 帧停了 3 个」—— 24 fps 内容上就是那多出来的 8.33 ms 顿挫。
          *
-         * 半个刷新周期（60 Hz 上 8.33 ms）足以覆盖这点跳转延迟，又远小于
-         * 一个帧周期（41.67 ms），不会把帧提前画到该出现之前。 */
+         * 一个刷新周期（60 Hz 上 16.67 ms）足以覆盖这点跳转延迟，又小于
+         * 一个帧周期（24 fps 上 41.67 ms），不会把帧提前画到该出现之前。 */
         if (diff > 0 && diff < LP_PRESENT_LEAD_US) {
             diff = 0;
         }
@@ -142,14 +156,35 @@ static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial, double
                  * 出帧是匀速了（av_diff 从 -0.4 s 收到 -0.1 s、dropped 归零），
                  * 但引擎那边反而拉不到帧：每秒有一次 165 ms 的空档，
                  * dropped_delivery 30 秒涨到 303，实际渲染只剩 14 fps。 */
-                const int64_t period = (int64_t)(frame_dur * 1000000.0);
+                /* 帧周期必须是「内容和播放速度」的真实值，不能是写死的
+                 * 0.04。硬解走异步回调，那条路径从不更新上一段算出来的
+                 * frame_dur，于是 24/25 fps 恰好对得上（41.7/40 ms），
+                 * 30 fps 每帧多等 6.7 ms 一路漂到丢帧线，60 fps 直接被压成
+                 * 25 fps。frame_duration 由 demux 按 avg_frame_rate 填好
+                 * （demux.c 的 note_frame_duration），优先用它。
+                 *
+                 * 除速度是另一半：2 倍速时内容只要 20.8 ms 一帧，节拍却仍在
+                 * 等 40 ms，等于每显示一帧就丢一帧。追帧阈值同样要跟着缩，
+                 * 否则 120 ms 在 2 倍速下已经是六帧，早就该追了却还不追。 */
+                const double fd = p->video.frame_duration > 0.0 ? p->video.frame_duration
+                                                                : frame_dur;
+                const double sp = p->speed > 0.01 ? p->speed : 1.0;
+                const int64_t period = (int64_t)(fd * 1000000.0 / sp);
+                const int64_t catchup = (int64_t)(LP_PACE_CATCHUP_US / sp);
                 const int64_t since = av_gettime_relative() - p->video.last_present_at_us;
                 int64_t spacing = period;
-                if (diff < -LP_PACE_CATCHUP_US) {
+                if (catchup > 0 && diff < -catchup) {
                     spacing = (int64_t)(period * 0.7);
                 }
                 if (spacing > 0 && since >= 0 && since < spacing) {
-                    av_usleep((unsigned)(spacing - since));
+                    /* 上界保护：帧周期或速度一旦被填成离谱的值（损坏的
+                     * avg_frame_rate、外部设定的 0.05 倍速），这里会睡到
+                     * 几百毫秒甚至几秒，看起来就是彻底卡死。 */
+                    int64_t nap = spacing - since;
+                    if (nap > LP_PACE_MAX_SLEEP_US) {
+                        nap = LP_PACE_MAX_SLEEP_US;
+                    }
+                    av_usleep((unsigned)nap);
                     continue;
                 }
             }
@@ -174,10 +209,27 @@ static int filter_init(LpPlayer *p, const AVFrame *ref)
     char args[256];
     int r;
 
+    /* time_base 的位置以前传的是 sample_aspect_ratio 的那对数 —— 分子分母
+     * 是同一个值，等于恒报 1/1。yadif 用它换算帧间隔，1/1 让它以为每帧隔
+     * 一秒；反交错在 25/30 fps 的隔行片子上是常态，于是输出帧的时间戳整段
+     * 走样。真正的视频时基有两个来源：
+     *   - 软解：avctx->pkt_timebase（open_software_decoder 里从流上抄过来）；
+     *   - 硬解：avctx 根本不存在，回退到流的 time_base。
+     * 两个都拿不到时给 1/1000（毫秒），至少是单调合理的。 */
+    AVRational tb = { 1, 1000 };
+    if (p->video.avctx && p->video.avctx->pkt_timebase.num > 0 &&
+        p->video.avctx->pkt_timebase.den > 0) {
+        tb = p->video.avctx->pkt_timebase;
+    } else if (p->fmt && p->video.stream_index >= 0 &&
+               (unsigned)p->video.stream_index < p->fmt->nb_streams) {
+        AVRational stb = p->fmt->streams[p->video.stream_index]->time_base;
+        if (stb.num > 0 && stb.den > 0) {
+            tb = stb;
+        }
+    }
     snprintf(args, sizeof(args),
              "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
-             ref->width, ref->height, ref->format, ref->sample_aspect_ratio.den,
-             ref->sample_aspect_ratio.num > 0 ? ref->sample_aspect_ratio.den : 1,
+             ref->width, ref->height, ref->format, tb.num, tb.den,
              ref->sample_aspect_ratio.num, ref->sample_aspect_ratio.den);
 
     AVFilterGraph *g = avfilter_graph_alloc();
@@ -357,10 +409,35 @@ static void present_hw(LpPlayer *p, LpDecodedFrame *hf, int drop)
     if (drop) {
         p->video.frames_dropped++;
         p->stats_dropped++;
-        lp_hw_decoder_present(p->video.hw, hf);
+        /* 判定为丢的帧不要再上屏。以前这里照样调 lp_hw_decoder_present：
+         * Apple 是 publish 到纹理槽、Android 是 releaseOutputBuffer(..., true)，
+         * 屏幕上真的会显示这一帧 —— 于是「丢帧」变成「多显示一帧」，落后量
+         * 立刻回补、下一帧又被判晚到，形成丢一帧补一帧的双帧脉冲，
+         * 比老老实实不显示更难看。丢就是丢，交给解码器回收。
+         *
+         * 注意也**不要**刷新 last_present_at_us：那一项只记录真正上屏的帧。 */
+        lp_hw_decoder_release(p->video.hw, hf);
         return;
     }
-    lp_hw_decoder_present(p->video.hw, hf);
+    /* 有图形字幕时优先让后端把字幕合进这一帧再上屏（Apple 直接在
+     * CVPixelBuffer 上混合，省掉一次下载）。拿到 LP_OK 就说明已经显示过，
+     * 再调 present 会把同一帧画两遍。后端做不到（Android 的 Surface 输出）
+     * 就按原样上屏，并在第一次发生时说明这条限制，避免每帧刷日志。 */
+    int shown = 0;
+    if (lp_render_graphics_sub_active(p)) {
+        int br = lp_hw_decoder_present_with_subtitles(p->video.hw, hf);
+        if (br == LP_OK) {
+            shown = 1;
+        } else if (br == LP_ERR_UNSUPPORTED && !p->video.sub_blend_warned) {
+            p->video.sub_blend_warned = 1;
+            LP_INFO("video",
+                    "hardware output cannot carry graphics subtitles here; they stay "
+                    "invisible until decoding falls back to software");
+        }
+    }
+    if (!shown) {
+        lp_hw_decoder_present(p->video.hw, hf);
+    }
     p->video.frames_decoded++;
     p->stats_frames++;
     p->video.last_pts_us = hf->pts_us;
@@ -401,6 +478,10 @@ void *lp_video_thread_fn(void *arg)
             /* flush 之后解码器里什么都不剩，在途计数要跟着归零，否则
              * 补料循环会以为还有货，一直不去要新的包。 */
             p->video.in_flight = 0;
+            /* 节拍基准也归零：seek 之后的第一帧不该因为「距离上一帧还没到
+             * 一个帧周期」而白等半帧，画面会晚出来一格。 */
+            p->video.last_present_at_us = 0;
+            last_pts_us = 0;
             serial = atomic_load(&p->serial);
             continue;
         }
@@ -447,7 +528,15 @@ void *lp_video_thread_fn(void *arg)
                     LP_WARN("video", "send_packet: %d", r);
                 }
                 av_packet_free(&pending);
-                p->video.in_flight++;
+                /* 只有真的交给了解码器才占一个在途名额。以前不管成败都自增，
+                 * 而名额只在收到帧时归还 —— 送包连续失败四次（LP_HW_PREFETCH）
+                 * 之后补料循环永不进入，lp_pq_get 停摆，视频队列被填满触发背压，
+                 * demux 是单线程，音频包也跟着停：画面冻结、声音中断，且只有
+                 * 一次 seek 能救回来。丢包可以接受（解码器本来就丢了），
+                 * 丢名额不行。 */
+                if (r == LP_OK) {
+                    p->video.in_flight++;
+                }
             }
             if (stop) {
                 break;
@@ -527,7 +616,12 @@ void *lp_video_thread_fn(void *arg)
                     draining = 1;
                     break;
                 }
-                int64_t pts_us = hf.pts_us > 0 ? hf.pts_us : last_pts_us + (int64_t)(frame_dur * 1e6);
+                /* 只把「没有时间戳」当成缺失。以前写的是 hf.pts_us > 0，
+                 * 于是 pts 恰好为 0 的首帧、以及负 pts（剪辑片源很常见）
+                 * 都被替换成推算值，开播位置整体偏一帧。 */
+                int64_t pts_us = hf.pts_us != INT64_MIN
+                                     ? hf.pts_us
+                                     : last_pts_us + (int64_t)(frame_dur * 1e6);
                 if (p->video.in_flight > 0) {
                     p->video.in_flight--;
                 }
@@ -586,7 +680,15 @@ void *lp_video_thread_fn(void *arg)
                 p->video.frames_dropped++;
                 p->stats_dropped++;
             } else {
-                lp_render_draw(p, shown);
+                /* 上屏失败（窗口没了、surface 被回收）就把这一帧算成丢帧，
+                 * 否则 frames_decoded 会一直涨而屏幕上什么都没有。以前这里
+                 * 直接丢弃返回值。 */
+                if (lp_render_draw(p, shown) < 0) {
+                    p->video.frames_dropped++;
+                    p->stats_dropped++;
+                    av_frame_unref(frame);
+                    continue;
+                }
                 p->video.frames_decoded++;
                 p->stats_frames++;
                 p->video.last_pts_us = pts_us;

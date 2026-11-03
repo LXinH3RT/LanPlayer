@@ -2793,7 +2793,9 @@ int lp_subtitle_open(LpPlayer *p)
     p->subs_inited = 1;
     p->subs.nb_tracks = 0;
     p->subs.selected = -1;
-    p->subs.delay_us = 0;
+    /* delay_us 不清零。apply_open_options 是在起 open 线程之前跑的，
+     * 设置里的字幕平移那会儿就已经写进来了；这里一清零，用户设的延迟
+     * 在每一部片子上都被静默丢掉（界面上还显示着那个值）。 */
     p->subs.dirty = 0;
     if (!p->fmt) {
         return LP_OK;
@@ -3097,18 +3099,50 @@ void lp_subtitle_seek(LpPlayer *p, int64_t pos_us)
     for (int i = 0; i < p->subs.nb_tracks; i++) {
         LpSubtitleTrack *t = &p->subs.tracks[i];
         if (t->embedded) {
-            /* Drop decoded history; it will be re-fed by the demuxer. */
+            /* 图形字幕（PGS / VobSub）的显示集只在上屏时刻出现一次，
+             * 之后再也不发包。以前这里把解码历史整段丢掉 —— seek 到已经
+             * 显示过的位置，画面上的字幕要等下一个显示集（几秒到几十秒）
+             * 才回来，中间是被清空的黑屏。文字字幕没这问题，demuxer 会立刻
+             * 重喂。
+             *
+             * 处理办法：留下「仍然覆盖目标位置」的那几条；图形轨道再额外
+             * 留下「起始时间在目标之前、离得最近」的那一条，并把它的结束
+             * 时间拉到至少 pos_us —— 那就是 seek 时刻本该还在屏幕上显示的
+             * 那一张图。 */
+            int keep = 0;
+            int last_bitmap = -1;
             for (int k = 0; k < t->nb_cues; k++) {
-                cue_free(&t->cues[k]);
+                LpSubCue *c = &t->cues[k];
+                int covers = c->start_us <= pos_us && c->end_us > pos_us;
+                if (covers) {
+                    t->cues[keep++] = *c;
+                    continue;
+                }
+                if (t->bitmap && c->nb_bitmaps > 0 && c->start_us <= pos_us) {
+                    if (last_bitmap >= 0) {
+                        /* 后面还有更近的候选，这条旧图不要了。 */
+                        cue_free(c);
+                    } else {
+                        last_bitmap = keep;
+                        t->cues[keep++] = *c;
+                    }
+                    continue;
+                }
+                cue_free(c);
             }
-            t->nb_cues = 0;
+            if (last_bitmap >= 0) {
+                LpSubCue *c = &t->cues[last_bitmap];
+                if (c->end_us <= pos_us) {
+                    c->end_us = p->duration_us > pos_us ? p->duration_us : pos_us + 1000000;
+                }
+            }
+            t->nb_cues = keep;
         }
         t->current_cue = -1;
         if (t->avctx) {
             avcodec_flush_buffers(t->avctx);
         }
     }
-    (void)pos_us;
     p->subs.dirty = 1;
     pthread_mutex_unlock(&p->subs.mutex);
 }
@@ -3397,24 +3431,37 @@ void lp_subtitle_tick(LpPlayer *p, int64_t now_us)
             break;
         }
         if (t_now < c->end_us) {
-            found = i;
+            /* found / start_us / end_us / style 必须来自同一条 cue。
+             * 以前 found 取最后一条、start_us 取第一条、end_us 与 style
+             * 取最后一条：双语或「上方注释 + 下方对白」同屏时，事件里的
+             * 起始时间会跳回第一条的位置，卡拉 OK 的填色进度
+             * （cue_now_us 用的是 found 那条的 start_us）也就跟着错位。
+             * 这里 fixed 成「第一条命中」，和 start_us 的口径一致。 */
+            if (found < 0) {
+                found = i;
+            }
             if (text.len) lp_str_append_raw(&text, "\n", 1);
             lp_str_append_raw(&text, c->text, strlen(c->text));
             if (start_us == 0) {
                 start_us = c->start_us;
             }
-            end_us = c->end_us;
-            LpSubStyle *cs = track_style(t, c->style);
-            if (cs) {
-                style = *cs;
-            }
-            /* Per-cue {\anN} / {\pos(x,y)} win over the style. */
-            if (c->align_override) {
-                style.align = c->align_override;
-            }
-            if (c->pos_x >= 0 && c->pos_y >= 0) {
-                style.pos_x = c->pos_x;
-                style.pos_y = c->pos_y;
+            /* 样式、结束时间、逐条的 {\anN} / {\pos(x,y)} 也只认第一条
+             * 命中的 cue：这一条才是 start_us / cue_now_us 的来源，
+             * 三样东西同一口径。 */
+            if (found == i) {
+                end_us = c->end_us;
+                LpSubStyle *cs = track_style(t, c->style);
+                if (cs) {
+                    style = *cs;
+                }
+                /* Per-cue {\anN} / {\pos(x,y)} win over the style. */
+                if (c->align_override) {
+                    style.align = c->align_override;
+                }
+                if (c->pos_x >= 0 && c->pos_y >= 0) {
+                    style.pos_x = c->pos_x;
+                    style.pos_y = c->pos_y;
+                }
             }
             if (nb_hits == hits_cap) {
                 const int next = hits_cap == 0 ? 8 : hits_cap * 2;
@@ -3499,6 +3546,13 @@ void lp_subtitle_select(LpPlayer *p, int track_index)
 
 void lp_subtitle_set_delay(LpPlayer *p, int64_t delay_ms)
 {
+    if (!p || !p->subs_inited) {
+        /* 播放器刚创建、字幕子系统还没起来时内核会先按 open options 调一次。
+         * 那时 p->subs.mutex 还没初始化，锁上去是未定义行为。这个值本身也
+         * 不需要在这里落下：真正生效的是 p->subs.delay_us，而打开字幕时会
+         * 按同一份 options 再设一遍。 */
+        return;
+    }
     pthread_mutex_lock(&p->subs.mutex);
     p->subs.delay_us = delay_ms * 1000;
     p->subs.dirty = 1;

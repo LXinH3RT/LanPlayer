@@ -424,6 +424,12 @@ int lp_hw_decoder_send(LpVideoDecoder *d, const AVPacket *pkt)
           (void)flags2;
           (void)dur;
           if (status != noErr || !image) {
+              /* 解码失败的那一帧既不会进 push_frame，也不会回到内核 ——
+               * 不计数的话，「一帧没丢」的统计会与肉眼可见的缺帧同时成立。
+               * 走正常丢帧口径：它确实离开了解码器、又没有上屏。 */
+              pthread_mutex_lock(&dec->mutex);
+              dec->frames_dropped++;
+              pthread_mutex_unlock(&dec->mutex);
               return;
           }
           int64_t pts_us = cmtime_to_us(pts);
@@ -489,6 +495,46 @@ int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f)
     if (image && d->player) {
         lp_render_publish_pixel_buffer(d->player, image);
     }
+    if (image) {
+        CVPixelBufferRelease(image);
+    }
+    f->handle = NULL;
+    return LP_OK;
+}
+
+int lp_hw_decoder_present_with_subtitles(LpVideoDecoder *d, LpDecodedFrame *f)
+{
+    if (!d || !f || !d->player) {
+        return LP_ERR_ARGUMENT;
+    }
+    CVPixelBufferRef image = (CVPixelBufferRef)f->handle;
+    if (!image) {
+        return LP_ERR_ARGUMENT;
+    }
+    /* VideoToolbox 这一路输出本来就要的 BGRA（见 lp_hw_decoder_init 里的
+     * kCVPixelBufferPixelFormatTypeKey），所以字幕可以直接画在它上面，
+     * 不必先 sws_scale 转一遍再混合。锁窗口内只做混合，publish 放到解锁之后
+     * —— 后者会取 p->vout.mutex，两把锁不该嵌套。 */
+    if (CVPixelBufferLockBaseAddress(image, 0) != kCVReturnSuccess) {
+        return LP_ERR_IO;
+    }
+    uint8_t *base = (uint8_t *)CVPixelBufferGetBaseAddress(image);
+    int stride = (int)CVPixelBufferGetBytesPerRow(image);
+    lp_sub_overlay_blend(d->player, base, d->width, d->height, stride);
+    CVPixelBufferUnlockBaseAddress(image, 0);
+    lp_render_publish_pixel_buffer(d->player, image);
+    CVPixelBufferRelease(image);
+    f->handle = NULL;
+    return LP_OK;
+}
+
+int lp_hw_decoder_release(LpVideoDecoder *d, LpDecodedFrame *f)
+{
+    (void)d;
+    if (!f) {
+        return LP_ERR_ARGUMENT;
+    }
+    CVPixelBufferRef image = (CVPixelBufferRef)f->handle;
     if (image) {
         CVPixelBufferRelease(image);
     }

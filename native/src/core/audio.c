@@ -132,6 +132,7 @@ static int audio_push_through_graph(LpPlayer *p, const float *pcm, int samples,
             return LP_ERR_INTERRUPTED;
         }
         cursor += (double)out->nb_samples * p->audio.applied_speed / (double)p->audio.out_rate;
+        p->audio.content_cursor = cursor;
         av_frame_unref(out);
     }
     return LP_OK;
@@ -142,8 +143,12 @@ static int audio_flush_graph(LpPlayer *p)
     if (!p->audio.graph) {
         return LP_OK;
     }
-    AVFrame *out = p->audio.graph_out;
-    if (!out) {
+    /* 这张帧是 LpAudioStream 里的常驻复用帧（audio_graph_build 分配、
+     * audio_graph_free 释放），本函数只是借用。以前这里取了一个指针副本，
+     * 末尾 av_frame_free(&out) 只把局部变量置空，成员变成悬垂指针 ——
+     * audio_push_through_graph 的「非空就继续用」判据会照旧放行（UAF），
+     * audio_graph_free 又 free 一次（二次释放）。全程直接用成员即可。 */
+    if (!p->audio.graph_out) {
         return LP_ERR_NOMEM;
     }
     /* 传 NULL 给 buffersrc 表示 EOF。av_buffersrc_add_frame 带
@@ -152,15 +157,19 @@ static int audio_flush_graph(LpPlayer *p)
      * flush 路径上失败也没有可补救的动作，所以是故意忽略返回值。 */
     int flush_rc = av_buffersrc_add_frame(p->audio.filt_src, NULL);
     (void)flush_rc;
-    double cursor = -1;
+    /* 排空出来的 PCM 不该重新从 0 开始计时：主路径按 content_start 写入
+     * 绝对内容时间，这里接着「最后一段写到的位置」继续，尾段的时间戳才与
+     * 前面接得上。cursor 初值取 -1 表示「还不知道」，第一条出来时才对齐。 */
+    AVFrame *out = p->audio.graph_out;
+    double cursor = p->audio.content_cursor;
     while (av_buffersink_get_frame(p->audio.filt_sink, out) >= 0) {
-        double start = cursor >= 0 ? cursor : 0;
-        lp_ring_write(&p->audio.ring, (const float *)out->data[0], out->nb_samples, start,
+        lp_ring_write(&p->audio.ring, (const float *)out->data[0], out->nb_samples, cursor,
                       p->audio.applied_speed);
-        cursor = start + (double)out->nb_samples * p->audio.applied_speed / (double)p->audio.out_rate;
+        cursor += (double)out->nb_samples * p->audio.applied_speed / (double)p->audio.out_rate;
+        p->audio.content_cursor = cursor;
+        /* 只归还缓冲区，不 free：这张帧下一条音轨还要接着用。 */
         av_frame_unref(out);
     }
-    av_frame_free(&out);
     return LP_OK;
 }
 
@@ -260,6 +269,7 @@ static int convert_and_write(LpPlayer *p, AVFrame *frame)
     } else {
         int written = lp_ring_write(&p->audio.ring, pcm, got, content_start, 1.0);
         rc = written < 0 ? LP_ERR_INTERRUPTED : LP_OK;
+        p->audio.content_cursor = content_start + (double)got / (double)p->audio.out_rate;
     }
     p->audio.frames_decoded++;
     return rc;
@@ -285,6 +295,7 @@ void *lp_audio_thread_fn(void *arg)
             atomic_store(&p->audio.graph_dirty, 1);
             av_packet_free(&pending);
             p->audio.draining = 0;
+            p->audio.content_cursor = 0.0;
             atomic_store(&p->audio.eof, 0);
             serial = atomic_load(&p->serial);
             continue;

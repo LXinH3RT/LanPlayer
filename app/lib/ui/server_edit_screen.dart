@@ -49,6 +49,10 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
   bool _obscure = true;
   String? _status;
 
+  /// [_status] 是不是「连接成功」那一条。以前界面靠 _status!.contains('成功')
+  /// 判断，一旦错误文案里恰好带这两个字（或者哪天改字），图标就会反着画。
+  bool _statusOk = false;
+
   /// 扫描状态：null 表示没扫过；扫完是候选列表（可能为空）。
   bool _scanning = false;
   List<LanHost>? _scanned;
@@ -145,6 +149,18 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
   void _pickHost(LanHost host) {
     setState(() {
       _host.text = host.address;
+      _status = null;
+      _statusOk = false;
+    });
+  }
+
+  /// 表单里任何一处改动都让上一条连接状态失效：它描述的是改动之前那次
+  /// 测试，留着会让人以为新地址也验过了。
+  void _clearStatus(String _) {
+    if (_status == null) return;
+    setState(() {
+      _status = null;
+      _statusOk = false;
     });
   }
 
@@ -175,10 +191,18 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
     try {
       await _repo.probeServer(_build());
       if (!mounted) return false;
-      setState(() => _status = '连接成功');
+      setState(() {
+        _status = '连接成功';
+        _statusOk = true;
+      });
       return true;
     } on MediaSourceException catch (e) {
-      if (mounted) setState(() => _status = e.message);
+      if (mounted) {
+        setState(() {
+          _status = e.message;
+          _statusOk = false;
+        });
+      }
       return false;
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -225,6 +249,7 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
                       border: OutlineInputBorder(),
                     ),
                     autocorrect: false,
+                    onChanged: _clearStatus,
                     validator: (v) =>
                         (v == null || v.trim().isEmpty) ? '请填写服务器地址' : null,
                   ),
@@ -287,6 +312,7 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
                 border: OutlineInputBorder(),
               ),
               autocorrect: false,
+              onChanged: _clearStatus,
               validator: (v) =>
                   (v == null || v.trim().isEmpty) ? '请填写共享名' : null,
             ),
@@ -298,6 +324,7 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
                 border: OutlineInputBorder(),
               ),
               autocorrect: false,
+              onChanged: _clearStatus,
               autofillHints: const [AutofillHints.username],
             ),
             const SizedBox(height: 14),
@@ -320,11 +347,9 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
               Row(
                 children: [
                   Icon(
-                    _status!.contains('成功')
-                        ? Icons.check_circle
-                        : Icons.error_outline,
+                    _statusOk ? Icons.check_circle : Icons.error_outline,
                     size: 18,
-                    color: _status!.contains('成功')
+                    color: _statusOk
                         ? Theme.of(context).colorScheme.primary
                         : Theme.of(context).colorScheme.error,
                   ),

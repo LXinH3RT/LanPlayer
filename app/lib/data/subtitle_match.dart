@@ -56,6 +56,55 @@ const Set<String> _languageTokens = {
   '蓝光版', '蓝光版本', '特效', '字幕', '版',
 };
 
+// 配对规则里用到的正则全部在文件级编译一次。
+//
+// 这些模式此前分散在 `_episodeKey`/`_core`/`_isHashLike`/`_onlyDecoration`
+// 里，每调用一次就新建 14 个 `RegExp`。列目录时对每个「视频×字幕」组合都要
+// 走一遍判定，`RegExp` 的编译开销会按组合数放大；建表改成分桶后判定次数降
+// 下来了，但「每个名字只解析一次」的前提下，编译仍然应该只发生一次。
+
+/// `s01e02` / `S01.E02`。
+final RegExp _reSeasonEpisode = RegExp(r's(\d{1,2})[\s._-]*e(\d{1,4})');
+
+/// `1x02`。
+final RegExp _reSeasonXEpisode =
+    RegExp(r'(?<![0-9a-z])(\d{1,2})x(\d{1,3})(?![0-9])');
+
+/// `第02集` / `第 2 话`。
+final RegExp _reCjkEpisode = RegExp(r'第\s*(\d{1,4})\s*[集话話]');
+
+/// 只有集号的 `e02`。
+final RegExp _reEpisodeOnly = RegExp(r'(?<![a-z0-9])e(\d{1,4})(?![0-9])');
+
+/// 被分隔符包起来的独立 2–3 位数字。
+final RegExp _reLooseEpisode = RegExp(r'(?<![0-9a-z])(\d{2,3})(?![0-9a-z])');
+
+/// 结尾的 2–4 位数字。
+final RegExp _reTrailingNumber = RegExp(r'(\d{2,4})$');
+
+/// 方括号整段：发布组、站点标签。
+final RegExp _reBracketGroup = RegExp(r'\[[^\]]*\]');
+
+/// 圆括号整段。
+final RegExp _reParenGroup = RegExp(r'\([^)]*\)');
+
+/// 花括号整段。
+final RegExp _reBraceGroup = RegExp(r'\{[^}]*\}');
+
+/// 非「字母/数字/汉字」的字符，统一折成空格。
+///
+/// `_core` 与 `_onlyDecoration` 用的是同一个模式，共用一个实例。
+final RegExp _reNonWord = RegExp(r'[^0-9a-z\u4e00-\u9fff]+');
+
+/// 8 位十六进制。
+final RegExp _reCrcHex = RegExp(r'^[0-9a-f]{8}$');
+
+/// 是否含数字。
+final RegExp _reDigit = RegExp(r'[0-9]');
+
+/// `v2` / `v3` 这类版本号。
+final RegExp _reVersionSuffix = RegExp(r'^v\d+$');
+
 /// 判断 [subName] 这份字幕是否属于 [videoName] 这个视频。
 bool subtitleBelongsTo(String videoName, String subName) {
   final a = _stem(videoName);
@@ -116,17 +165,17 @@ bool _isSeparator(String ch) {
 /// **两位以上**的纯数字尾巴（`悠哉日常大王001`、`白箱101`、`101.mp4`）。
 /// 一位数字不当集数，否则 `电影2` 这种续集会被当成第 2 集。
 String? _episodeKey(String stem) {
-  var m = RegExp(r's(\d{1,2})[\s._-]*e(\d{1,4})').firstMatch(stem);
+  var m = _reSeasonEpisode.firstMatch(stem);
   if (m != null) {
     return 's${int.parse(m.group(1)!)}e${int.parse(m.group(2)!)}';
   }
-  m = RegExp(r'(?<![0-9a-z])(\d{1,2})x(\d{1,3})(?![0-9])').firstMatch(stem);
+  m = _reSeasonXEpisode.firstMatch(stem);
   if (m != null) {
     return 's${int.parse(m.group(1)!)}e${int.parse(m.group(2)!)}';
   }
-  m = RegExp(r'第\s*(\d{1,4})\s*[集话話]').firstMatch(stem);
+  m = _reCjkEpisode.firstMatch(stem);
   if (m != null) return 'e${int.parse(m.group(1)!)}';
-  m = RegExp(r'(?<![a-z0-9])e(\d{1,4})(?![0-9])').firstMatch(stem);
+  m = _reEpisodeOnly.firstMatch(stem);
   if (m != null) return 'e${int.parse(m.group(1)!)}';
   // 被分隔符包起来的独立 2–3 位数字，取最后一个。
   //
@@ -138,12 +187,11 @@ String? _episodeKey(String stem) {
   //
   // 只收 2–3 位：`2049` 这种四位数是年份或片名里的数字，收进来会让
   // `Blade.Runner.2049.mkv` 与 `Blade.Runner.2049.2017.zh.srt` 判成两集。
-  final loose =
-      RegExp(r'(?<![0-9a-z])(\d{2,3})(?![0-9a-z])').allMatches(stem).toList();
+  final loose = _reLooseEpisode.allMatches(stem).toList();
   if (loose.isNotEmpty) {
     return 'e${int.parse(loose.last.group(1)!)}';
   }
-  m = RegExp(r'(\d{2,4})$').firstMatch(stem);
+  m = _reTrailingNumber.firstMatch(stem);
   if (m != null) {
     // 纯数字文件名（`101.mp4`）与「片名 + 数字」都算，但要求数字前不是字母，
     // 避免把 `x264`、`h264` 之类的编码名当集数。
@@ -162,11 +210,11 @@ bool _isAsciiLetter(int c) =>
 String _core(String stem) {
   var s = stem;
   // 方括号、圆括号里的通常是发布组和站点标签，整段丢掉。
-  s = s.replaceAll(RegExp(r'\[[^\]]*\]'), ' ');
-  s = s.replaceAll(RegExp(r'\([^)]*\)'), ' ');
-  s = s.replaceAll(RegExp(r'\{[^}]*\}'), ' ');
+  s = s.replaceAll(_reBracketGroup, ' ');
+  s = s.replaceAll(_reParenGroup, ' ');
+  s = s.replaceAll(_reBraceGroup, ' ');
   // 标点统一成空格，中英文都按空格切。
-  s = s.replaceAll(RegExp(r'[^0-9a-z\u4e00-\u9fff]+'), ' ');
+  s = s.replaceAll(_reNonWord, ' ');
   final out = <String>[];
   for (final t in s.split(' ')) {
     if (t.isEmpty) continue;
@@ -181,19 +229,19 @@ String _core(String stem) {
 /// 8 位十六进制、且带数字的串，基本是发布组算出来的 CRC（`D12B2CA8`）。
 bool _isHashLike(String t) {
   if (t.length != 8) return false;
-  if (!RegExp(r'^[0-9a-f]{8}$').hasMatch(t)) return false;
-  return t.contains(RegExp(r'[0-9]'));
+  if (!_reCrcHex.hasMatch(t)) return false;
+  return t.contains(_reDigit);
 }
 
 /// [rest] 是否只是语言标签、噪声词或纯分隔符。
 bool _onlyDecoration(String rest) {
-  final s = rest.replaceAll(RegExp(r'[^0-9a-z\u4e00-\u9fff]+'), ' ').trim();
+  final s = rest.replaceAll(_reNonWord, ' ').trim();
   if (s.isEmpty) return true;
   for (final t in s.split(' ')) {
     if (t.isEmpty) continue;
     if (_languageTokens.contains(t)) continue;
     if (_noiseTokens.contains(t)) continue;
-    if (RegExp(r'^v\d+$').hasMatch(t)) continue; // v2 / v3 版本号
+    if (_reVersionSuffix.hasMatch(t)) continue; // v2 / v3 版本号
     return false;
   }
   return true;
@@ -225,4 +273,101 @@ List<String> _bigrams(String s) {
     r.add(s.substring(i, i + 2));
   }
   return r;
+}
+
+/// 一个文件名在配对算法里的解析结果。
+///
+/// 列表分组要对「视频×字幕」的每个组合做判定，若每次都从文件名重新解析，
+/// 同一个名字会被解析上百次。把解析结果缓存成 [SubtitleKey] 之后，判定
+/// 退化成几次字符串比较；配对语义仍由 [subtitleBelongsTo] 单独拥有，
+/// 这里只是它的展开形式。
+///
+/// 字段全部来自 [subtitleBelongsTo] 用到的中间量：
+/// - [stem]、[core] 分别对应 `_stem(name)`、`_core(stem)`；
+/// - [episode] 对应 `_episodeKey(stem)`。
+class SubtitleKey {
+  SubtitleKey._({
+    required this.stem,
+    required this.core,
+    required this.episode,
+    required this.bigrams,
+  });
+
+  /// 解析 [name]。空名字返回 `null`，与 [subtitleBelongsTo] 的空名判否一致。
+  static SubtitleKey? parse(String name) {
+    final stem = _stem(name);
+    if (stem.isEmpty) return null;
+    final core = _core(stem);
+    return SubtitleKey._(
+      stem: stem,
+      core: core,
+      episode: _episodeKey(stem),
+      bigrams: core.isEmpty ? const [] : _bigrams(core),
+    );
+  }
+
+  /// 去掉扩展名并转小写后的主干。
+  final String stem;
+
+  /// 摘掉发布组/质量/语言标签后的主体。
+  final String core;
+
+  /// 归一化后的集数键，认不出为 `null`。
+  final String? episode;
+
+  /// [core] 的字符二元组，供 Dice 相似度使用。
+  final List<String> bigrams;
+
+  /// 与 [subtitleBelongsTo] 逐级等价的判定，只是把已经算过的中间量复用起来。
+  bool matches(SubtitleKey other) {
+    final a = stem;
+    final b = other.stem;
+    if (a.isEmpty || b.isEmpty) return false;
+    if (a == b) return true;
+
+    // 第一级：主干前缀 + 分隔符。
+    if (b.length > a.length && b.startsWith(a) && _isSeparator(b[a.length])) {
+      return true;
+    }
+
+    // 第二级：集数。两边都认得出来时以集数为准。
+    final ka = episode;
+    final kb = other.episode;
+    if (ka != null && kb != null && ka != kb) return false;
+
+    final ca = core;
+    final cb = other.core;
+    if (ca.isEmpty || cb.isEmpty) return false;
+
+    if (ka != null && kb != null) return true;
+    if (ca == cb) return true;
+
+    // 第三级：一方是另一方的前缀时，多出来的部分必须只是语言/噪声标签。
+    if (cb.startsWith(ca)) {
+      return _onlyDecoration(cb.substring(ca.length));
+    }
+    if (ca.startsWith(cb)) {
+      return _onlyDecoration(ca.substring(cb.length));
+    }
+
+    return _diceBigrams(bigrams, other.bigrams) >= 0.86;
+  }
+}
+
+/// [SubtitleKey.bigrams] 版本的 Dice 系数，避免为判定再拆一遍二元组。
+double _diceBigrams(List<String> x, List<String> y) {
+  if (x.isEmpty || y.isEmpty) return 0;
+  var common = 0;
+  final pool = <String, int>{};
+  for (final g in y) {
+    pool[g] = (pool[g] ?? 0) + 1;
+  }
+  for (final g in x) {
+    final n = pool[g] ?? 0;
+    if (n > 0) {
+      common++;
+      pool[g] = n - 1;
+    }
+  }
+  return 2 * common / (x.length + y.length);
 }

@@ -248,10 +248,20 @@ class ThumbnailCache {
       }
 
       final image = await decodeThumb(bytes);
-      if (image != null) _memory[key] = image;
+      if (image == null) {
+        /* 文件在、却解不出来：多半是写到一半被中断、或者版本升级后格式变了。
+         * 以前这里直接 return null —— 坏文件留在盘上，失败标记也不写，于是
+         * 每次滚回这一行都要把整个流程重走一遍（读盘 + 四字节校验 + 失败）。
+         * 一份坏缓存应当在第一次发现时就被清掉，并按「解不出封面」记住一段时间。 */
+        final marker = File('${dir.path}${Platform.pathSeparator}$key.none');
+        unawaited(file.delete().catchError((_) => file));
+        unawaited(_writeMarker(marker));
+        return null;
+      }
+      _memory[key] = image;
       if (_verbose) {
         // ignore: avoid_print
-        print('LanPlayer thumb: $key ${image?.width}x${image?.height} '
+        print('LanPlayer thumb: $key ${image.width}x${image.height} '
             'disk=$fromDisk ${watch.elapsedMilliseconds}ms $url');
       }
       return image;

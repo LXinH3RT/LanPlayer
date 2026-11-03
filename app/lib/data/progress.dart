@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data' show BytesBuilder;
@@ -235,6 +236,29 @@ class ProgressStore {
       e.durationUs = durationUs;
       e.updatedAt = DateTime.now();
     }
+    /* 进度是每 5 秒记一次的高频写入，而 _flush() 要全表排序、全量序列化、
+     * 再同步落盘 —— 一次几百上千条时在 UI 线程上能卡出掉帧。调用方并不等
+     * 这个结果，落盘晚一帧没有区别，所以这里合并：短时间内连续 save 只写
+     * 最后一次。真正要「立刻可见」的路径（退出播放页、清除进度）仍走
+     * _flush()。 */
+    _scheduleFlush();
+  }
+
+  Timer? _flushTimer;
+
+  /// 合并高频写入：250 ms 内多次调用只落一次盘。
+  void _scheduleFlush() {
+    _flushTimer?.cancel();
+    _flushTimer = Timer(const Duration(milliseconds: 250), () {
+      _flushTimer = null;
+      unawaited(_flush());
+    });
+  }
+
+  /// 立即落盘并取消待执行的合并写入（清除、退出播放页时用）。
+  Future<void> flushNow() async {
+    _flushTimer?.cancel();
+    _flushTimer = null;
     await _flush();
   }
 
@@ -242,7 +266,7 @@ class ProgressStore {
     if (!_loaded) {
       await load();
     }
-    if (_entries.remove(sanitizeKey(key)) != null) await _flush();
+    if (_entries.remove(sanitizeKey(key)) != null) await flushNow();
   }
 
   Future<void> _flush() async {
