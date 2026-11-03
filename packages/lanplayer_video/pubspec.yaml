@@ -1,6 +1,6 @@
 name: lanplayer_video
 description: Cross-platform texture bridge for the LanPlayer FFmpeg core.
-version: 0.1.0
+version: 0.1.8+9
 publish_to: "none"
 
 environment:

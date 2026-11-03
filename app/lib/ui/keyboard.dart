@@ -98,9 +98,14 @@ class BackKeyHandler {
   ///
   /// 不用重建页面也能生效：`_trigger` 每次事件都问 `_matches`，而
   /// `_matches` 读的是这个字段。
+  ///
+  /// `null` 与构造函数里的语义一致：回到默认绑定，而不是「没有绑定」。
+  /// 调用方有两种 —— 一种把当前设置里的键传进来，另一种（本地选择器）
+  /// 允许调用者不指定，此时应当用默认的 Backspace。
   void rebind(LogicalKeyboardKey? key) {
-    if (key == _key) return;
-    _key = key;
+    final next = key ?? ShortcutBindings.empty.keyFor(ShortcutAction.back);
+    if (next == _key) return;
+    _key = next;
     _trigger.reset();
   }
 

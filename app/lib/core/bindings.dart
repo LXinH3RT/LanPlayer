@@ -10,6 +10,11 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
+/// 内核导出接口的版本号。
+///
+/// 必须与 `native/src/core/player.c` 的 `lp_abi_version()` 一致。两边对不上
+/// 时结构体布局、函数签名都可能悄悄错位，症状是随机崩溃或读到垃圾值，
+/// 所以 [LpBindings.load] 会在查完符号之后立刻比对一次。
 const int abiVersion = 1;
 
 /// 内核事件类型，与 `native/include/lanplayer/lp_types.h` 的 `LP_EVENT_*` 一一对应。
@@ -160,7 +165,25 @@ class NativeCore {
   final DynamicLibrary _lib;
 
   static NativeCore? _instance;
-  static NativeCore get instance => _instance ??= NativeCore._(_open());
+
+  /// 取全局实例，并把内核的 ABI 版本对一次。
+  ///
+  /// 只在第一次构造时校验：导出函数按名字查，签名不写在符号表里，接口号
+  /// 对不上时参数、结构体布局都可能悄悄错位 —— 症状是随机崩溃或读到垃圾值。
+  /// 早点停在一句明确的话上，比播到一半崩掉好得多。
+  static NativeCore get instance => _instance ??= _openChecked();
+
+  static NativeCore _openChecked() {
+    final core = NativeCore._(_open());
+    final actual = core.version;
+    if (actual != abiVersion) {
+      throw StateError(
+        'lanplayer 内核的接口版本是 $actual，这个构建需要 $abiVersion。'
+        '两边的库文件不配套，请重新安装或重新构建。',
+      );
+    }
+    return core;
+  }
 
   static DynamicLibrary _open() {
     if (Platform.isAndroid) {

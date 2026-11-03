@@ -228,6 +228,8 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
 
   @override
   Widget build(BuildContext context) {
+    // 调用方换了绑定（设置里改过「返回上一级」）时立刻跟上。
+    _backKey.rebind(widget.backKey);
     final title = _stack.isEmpty ? '添加本地文件/文件夹' : _stack.last.title;
     final choice = _choice;
     // The dialog needs an explicit height: a Column that sizes itself to its

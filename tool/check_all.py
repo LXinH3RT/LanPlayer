@@ -6084,6 +6084,75 @@ def check_review5_fixes() -> None:
         "and the host textures detach the player before it is freed")
 
 
+def check_runtime_guards() -> None:
+    """启动期的三道自检：ABI 版本、返回键绑定、共享包的版本号。
+
+    这三处的共同点是「写错了也不报错」。ABI 版本不查，库和 Dart 代码不配套
+    时会在第一次调用里炸在别的地方；返回键绑定不重推，用户改完设置当场没
+    反应，下次进页面才好；包版本号不跟，`pub get` 的解析结果取决于 pub 的
+    缓存而不是仓库里写的值。
+    """
+    def text_of(rel: str) -> str:
+        return (ROOT / rel).read_text(encoding="utf-8")
+
+    bindings = text_of("app/lib/core/bindings.dart")
+    for needle, why in (
+        ("static NativeCore _openChecked()",
+         "the core is opened without checking its ABI version; a mismatched "
+         "lanplayer.dll would be accepted and fail somewhere far away"),
+        ("if (actual != abiVersion) {",
+         "the ABI check compares nothing; both sides would load regardless"),
+        ("两边的库文件不配套",
+         "a mismatched core surfaces as a bare error without telling the user "
+         "that the library and the app do not belong together"),
+    ):
+        if needle not in bindings:
+            problems.append(f"app/lib/core/bindings.dart: {why}")
+
+    keyboard = text_of("app/lib/ui/keyboard.dart")
+    if "void rebind(LogicalKeyboardKey? key) {" not in keyboard:
+        problems.append(
+            "app/lib/ui/keyboard.dart: BackKeyHandler lost rebind; a changed "
+            "back-key binding would only take effect on the next page open")
+    if "final next = key ?? ShortcutBindings.empty.keyFor(ShortcutAction.back);" not in keyboard:
+        problems.append(
+            "app/lib/ui/keyboard.dart: rebind no longer treats null as the default "
+            "binding; the folder picker passes null on purpose and would end up "
+            "with no back key at all")
+    for rel, needle, why in (
+        ("app/lib/ui/browser_screen.dart",
+         "_backKey.rebind(SettingsStore.instance.value.shortcuts",
+         "the browser page binds the back key once and never follows a later change"),
+        ("app/lib/ui/folder_picker.dart", "_backKey.rebind(widget.backKey);",
+         "the folder picker never follows a changed back-key binding"),
+    ):
+        if needle not in text_of(rel):
+            problems.append(f"{rel}: {why}")
+
+    app_version = ""
+    for line in text_of("app/pubspec.yaml").splitlines():
+        if line.startswith("version: "):
+            app_version = line.split(":", 1)[1].strip()
+            break
+    if not app_version:
+        problems.append("app/pubspec.yaml: no version line")
+    for rel in ("packages/lanplayer_core/pubspec.yaml", "packages/lanplayer_video/pubspec.yaml"):
+        found = ""
+        for line in text_of(rel).splitlines():
+            if line.startswith("version: "):
+                found = line.split(":", 1)[1].strip()
+                break
+        if found != app_version:
+            problems.append(
+                f"{rel}: version {found or '(none)'} does not match the app's "
+                f"{app_version}; the two ship together and should carry one number")
+
+    notes.append(
+        "runtime guards: a mismatched core ABI is rejected at startup, a changed "
+        "back-key binding reaches the open pages, and every package carries the "
+        "app's version")
+
+
 def check_platform_lifecycle() -> None:
     """宿主生命周期：Surface 回收、音频中断、竖拍视频的朝向。
 
@@ -6341,6 +6410,7 @@ def main() -> int:
     check_windows_single_instance()
     check_texture_delivery()
     check_review5_fixes()
+    check_runtime_guards()
     check_platform_lifecycle()
     check_startup_home()
     check_surface_tap()

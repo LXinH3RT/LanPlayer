@@ -193,6 +193,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // 每次 build 把当前绑定推给 handler：设置里改了「返回上一级」之后，
+    // 这个页面不该还按老键响应。rebind 内部会比对，没变就是一次赋值。
+    _backKey.rebind(SettingsStore.instance.value.shortcuts.keyFor(ShortcutAction.back));
     // 每次 build 都重算目录项，列表随刷新与导航实时更新。
     //
     // 用 `browsable` 而不是 `entries`：目录 + 视频 + 音频。字幕不单独占一行，

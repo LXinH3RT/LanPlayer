@@ -1,6 +1,6 @@
 name: lanplayer_core
 description: LanPlayer 的 C 内核（FFmpeg + libsmb2），以 Flutter FFI 插件形式打包给 iOS / iPadOS / macOS。
-version: 0.1.0
+version: 0.1.8+9
 publish_to: none
 
 environment:
