@@ -51,6 +51,13 @@ class _ShortcutRecorderState extends State<ShortcutRecorder> {
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.handled;
     final key = event.logicalKey;
+    // Esc 是「算了，不改了」。这条必须排在所有判断前面：它是唯一一个既能
+    // 关对话框、又完全可能被当成「绑定 Esc」的键 —— 用户按 Esc 想退出时
+    // 把某个动作绑到 Esc 上，之后那颗键在主界面还会被别的层先消费掉。
+    if (key == LogicalKeyboardKey.escape) {
+      Navigator.of(context).pop();
+      return KeyEventResult.handled;
+    }
     // 只按了修饰键：告诉用户还不够，别把 Shift 本身绑上去。
     if (_isModifier(key)) {
       setState(() => _hint = '还差一个主键 —— 比如 Shift + P');

@@ -6187,6 +6187,39 @@ def check_browser_error_surface() -> None:
         "finally block")
 
 
+def check_list_row_work() -> None:
+    """列表滚动路径上不该做的重复计算。
+
+    两处：一行的「进度」和「续播位置」查的是同一张表（各自还要
+    `sanitizeKey` 一遍键），后者现在从前者拿 duration；返回上一级时那次
+    `_navigate` 是即发即忘，得写明 `unawaited`，否则下次有人补上 `await`
+    就会让返回键等一次网络往返。
+    """
+    row = (ROOT / "app/lib/ui/widgets/media_row.dart").read_text(
+        encoding="utf-8", errors="replace")
+    if ".resumablePosition(entry.path, progress.durationUs)" not in row:
+        problems.append(
+            "app/lib/ui/widgets/media_row.dart: the row looks the resume "
+            "position up from the key again instead of reusing the entry it "
+            "just read; every visible line pays for a second key sanitising")
+
+    browser = (ROOT / "app/lib/ui/browser_screen.dart").read_text(
+        encoding="utf-8", errors="replace")
+    if "unawaited(_navigate(_listing.parent, push: false));" not in browser:
+        problems.append(
+            "app/lib/ui/browser_screen.dart: going up fires _navigate without "
+            "saying it is fire-and-forget; a later await there would make the "
+            "back key wait for a network round trip")
+    if "      _navigate(_listing.parent, push: false);" in browser:
+        problems.append(
+            "app/lib/ui/browser_screen.dart: the bare _navigate call is back")
+
+    notes.append(
+        "list rows: a row reuses the progress entry it just read instead of "
+        "sanitising the same key twice, and going up marks its navigation as "
+        "fire-and-forget")
+
+
 def check_runtime_guards() -> None:
     """启动期的三道自检：ABI 版本、返回键绑定、共享包的版本号。
 
@@ -6743,6 +6776,7 @@ def main() -> int:
     check_audio_underfill()
     check_browser_error_surface()
     check_runtime_guards()
+    check_list_row_work()
     check_dart_hot_paths()
     check_boot_failure()
     check_platform_lifecycle()

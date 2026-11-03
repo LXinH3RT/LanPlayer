@@ -69,9 +69,14 @@ class MediaRow extends StatelessWidget {
     final subs =
         entry.isVideo ? listing.subtitlesFor(entry) : const <MediaEntry>[];
 
+    // 下面两件事查的是同一张表。entry() 与 resumablePosition() 各自
+    // 还要再 sanitizeKey 一遍键（一张 4096 项的缓存表），而列表滚动的
+    // 每一行都要走这条路。
     final progress = playable ? ProgressStore.instance.entry(entry.path) : null;
-    final watched = ProgressStore.instance
-        .resumablePosition(entry.path, progress?.durationUs ?? 0);
+    final watched = progress == null
+        ? null
+        : ProgressStore.instance
+            .resumablePosition(entry.path, progress.durationUs);
     final watchedPct =
         (progress == null || progress.durationUs <= 0 || watched == null)
             ? null

@@ -164,7 +164,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
       return;
     }
     if (_listing.parent.isNotEmpty) {
-      _navigate(_listing.parent, push: false);
+      // 返回上一级只关心「请求发出去了」，落库与报错都在 _navigate
+      // 自己里面。不写这一层时分析器无从判断是漏了 await 还是有意
+      // 的即发即忘。
+      unawaited(_navigate(_listing.parent, push: false));
     }
   }
 
