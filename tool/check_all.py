@@ -6105,6 +6105,88 @@ def check_review5_fixes() -> None:
         "and the host textures detach the player before it is freed")
 
 
+def check_audio_underfill() -> None:
+    """三个音频回调都要把「没拉满」的那段补成静音。
+
+    回调拿到一块缓冲区去填，`lp_audio_pull_pcm` 可能只给回一部分（环里就
+    这么多）。剩下的那段如果原样交回去，设备会把上一轮留在同一块内存里的
+    样本再播一遍：听感不是欠载的静音，而是一小段回声。CoreAudio 那端一直
+    是对的，另外两端漏了。
+    """
+    win = (ROOT / "native/src/platform/win32/win32_platform.c").read_text(
+        encoding="utf-8", errors="replace")
+    if win.count("lp_audio_pull_pcm(") != 3:
+        problems.append(
+            "native/src/platform/win32/win32_platform.c: the WASAPI renderer no "
+            "longer pulls in all three places (render thread, priming chunk, "
+            "waveOut fill)")
+    if win.count("if (got < frames) {") != 1:
+        problems.append(
+            "native/src/platform/win32/win32_platform.c: the render thread does "
+            "not top up a partial pull; the tail of the buffer would replay the "
+            "previous chunk as an echo")
+    if win.count("if (primed < s->frames_per_buffer) {") != 1:
+        problems.append(
+            "native/src/platform/win32/win32_platform.c: the priming chunk is "
+            "released without being topped up")
+    if "IAudioRenderClient_ReleaseBuffer(s->was_render, (UINT32)frames, 0);" not in win:
+        problems.append(
+            "native/src/platform/win32/win32_platform.c: the render buffer is no "
+            "longer released with the full length after a partial pull")
+
+    aa = (ROOT / "native/src/platform/android/aaudio_sink.c").read_text(
+        encoding="utf-8", errors="replace")
+    if "memset(samples + from, 0, (total - from) * sizeof(float));" not in aa:
+        problems.append(
+            "native/src/platform/android/aaudio_sink.c: a partial pull is not "
+            "zero-filled; AAudio would replay the stale tail of its buffer")
+    if "#include <string.h>" not in aa:
+        problems.append(
+            "native/src/platform/android/aaudio_sink.c: memset is used without "
+            "including <string.h>")
+
+    notes.append(
+        "audio underfill: every platform zero-fills the part of its callback "
+        "buffer that the ring could not supply, so an underrun is silence "
+        "instead of the previous chunk played twice")
+
+
+def check_browser_error_surface() -> None:
+    """浏览链路里「不是网络错误」的异常也要落到界面上。
+
+    这两处原来只 catch `MediaSourceException`：解析越界、状态错乱这类异常
+    被 `finally` 吞掉，转圈收了、页面没动，用户只觉得点了没反应。服务器
+    保存失败同理 —— 写盘抛错时以前连一句提示都没有。
+    """
+    browser = (ROOT / "app/lib/ui/browser_screen.dart").read_text(
+        encoding="utf-8", errors="replace")
+    if browser.count("} catch (e) {") != 2:
+        problems.append(
+            "app/lib/ui/browser_screen.dart: navigation and refresh no longer "
+            "catch anything but MediaSourceException; a non-network failure "
+            "would stop the spinner and leave the old directory on screen")
+    if browser.count("await showError(context, '$e');") != 2:
+        problems.append(
+            "app/lib/ui/browser_screen.dart: an unexpected navigation failure is "
+            "caught but never shown")
+
+    edit = (ROOT / "app/lib/ui/server_edit_screen.dart").read_text(
+        encoding="utf-8", errors="replace")
+    if "_status = '保存失败：$e';" not in edit:
+        problems.append(
+            "app/lib/ui/server_edit_screen.dart: a failed save is swallowed; the "
+            "dialog would close over an unsaved profile")
+    if "} catch (e) {\n      // 写盘失败" not in edit:
+        problems.append(
+            "app/lib/ui/server_edit_screen.dart: the save path no longer catches "
+            "every failure; only the exception types it names would be reported")
+
+    notes.append(
+        "error surface: a browser failure that is not a network error and a "
+        "failed profile save both reach the user instead of vanishing into a "
+        "finally block")
+
+
 def check_runtime_guards() -> None:
     """启动期的三道自检：ABI 版本、返回键绑定、共享包的版本号。
 
@@ -6658,6 +6740,8 @@ def main() -> int:
     check_windows_single_instance()
     check_texture_delivery()
     check_review5_fixes()
+    check_audio_underfill()
+    check_browser_error_surface()
     check_runtime_guards()
     check_dart_hot_paths()
     check_boot_failure()

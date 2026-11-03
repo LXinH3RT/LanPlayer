@@ -228,6 +228,13 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
       await ServerStore.instance.upsert(_build());
       if (!mounted) return;
       Navigator.of(context).pop(true);
+    } catch (e) {
+      // 写盘失败以前被 finally 吞掉：转圈收了、页面留在原地，好像什么都没发生。
+      if (!mounted) return;
+      setState(() {
+        _status = '保存失败：$e';
+        _statusOk = false;
+      });
     } finally {
       if (mounted) setState(() => _busy = false);
     }

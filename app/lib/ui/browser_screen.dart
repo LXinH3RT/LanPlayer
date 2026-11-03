@@ -113,6 +113,12 @@ class _BrowserScreenState extends State<BrowserScreen> {
       if (!mounted || _navGen != gen) return;
       _markOffline(e.message);
       await showError(context, offlineHint(url, e.message));
+    } catch (e) {
+      // 只有 MediaSourceException 是「网络这边的事」。其余异常
+      // （解析越界、状态错乱）以前被 finally 悄悄吞掉：进度条收了，
+      // 页面还停在旧目录，用户只觉得点了没反应。
+      if (!mounted || _navGen != gen) return;
+      await showError(context, '$e');
     } finally {
       if (mounted && _navGen == gen) setState(() => _loading = false);
     }
@@ -137,6 +143,9 @@ class _BrowserScreenState extends State<BrowserScreen> {
       if (!mounted || _navGen != gen) return;
       _markOffline(e.message);
       await showError(context, offlineHint(_listing.url, e.message));
+    } catch (e) {
+      if (!mounted || _navGen != gen) return;
+      await showError(context, '$e');
     } finally {
       if (mounted && _navGen == gen) setState(() => _loading = false);
     }

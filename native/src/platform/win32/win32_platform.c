@@ -574,7 +574,19 @@ static void *was_thread(void *arg)
             IAudioRenderClient_ReleaseBuffer(s->was_render, avail, AUDCLNT_BUFFERFLAGS_SILENT);
             break;
         }
-        lp_audio_pull_pcm(s->player, (float *)dst, frames);
+        int got = lp_audio_pull_pcm(s->player, (float *)dst, frames);
+        if (got < 0) {
+            got = 0;
+        }
+        /* 拿不满时剩下的那块缓冲区是上一轮的旧样本。原样交回去等于
+         * 把上一块的最后几十毫秒再播一遍，听感上是「回声」而不是
+         * 欠载静音。 */
+        if (got < frames) {
+            size_t channels = (size_t)(s->channels > 0 ? s->channels : 2);
+            float *samples = (float *)dst;
+            memset(samples + (size_t)got * channels, 0,
+                   ((size_t)frames - (size_t)got) * channels * sizeof(float));
+        }
         IAudioRenderClient_ReleaseBuffer(s->was_render, (UINT32)frames, 0);
     }
     return NULL;
@@ -657,7 +669,17 @@ static int was_start(LpAudioSink *s, int sample_rate, int channels)
     /* Prime the first chunk so the engine does not start on a hole. */
     BYTE *dst = NULL;
     if (SUCCEEDED(IAudioRenderClient_GetBuffer(s->was_render, (UINT32)s->frames_per_buffer, &dst)) && dst) {
-        lp_audio_pull_pcm(s->player, (float *)dst, s->frames_per_buffer);
+        int primed = lp_audio_pull_pcm(s->player, (float *)dst, s->frames_per_buffer);
+        if (primed < 0) {
+            primed = 0;
+        }
+        if (primed < s->frames_per_buffer) {
+            size_t channels = (size_t)(s->channels > 0 ? s->channels : 2);
+            float *samples = (float *)dst;
+            memset(samples + (size_t)primed * channels, 0,
+                   ((size_t)s->frames_per_buffer - (size_t)primed) * channels *
+                       sizeof(float));
+        }
         IAudioRenderClient_ReleaseBuffer(s->was_render, (UINT32)s->frames_per_buffer, 0);
     }
 
