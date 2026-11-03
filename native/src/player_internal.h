@@ -310,6 +310,13 @@ int lp_hw_decoder_receive(LpVideoDecoder *d, LpDecodedFrame *out);
 /* Present at the sync deadline (Android releases the buffer; Apple publishes
  * the pixel buffer to the texture bridge). */
 int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f);
+/* 解码器自己丢掉的帧数（只增不减，调用方按需取差）。
+ *
+ * 这些帧从来没交到内核手上：VideoToolbox 的 push_frame 在队列满时
+ * 会顶掉最旧的一帧，MediaCodec 在 present 失败时会释放掉输出缓冲。
+ * 它们既不计入 decoded 也不计入 dropped，光看那两个数会以为一帧
+ * 都没丢 —— 上一轮排查 iPad 卡顿时正是被这一点带偏的。 */
+int64_t lp_hw_decoder_frames_dropped(LpVideoDecoder *d);
 void lp_hw_decoder_flush(LpVideoDecoder *d);
 void lp_hw_decoder_destroy(LpVideoDecoder *d);
 
@@ -682,6 +689,16 @@ typedef struct LpVideoStream {
     atomic_int eof;
     int64_t frames_decoded;
     int64_t frames_dropped;
+    /* 解码器交出来、但因为 seek 而被就地作废的帧数（既没上屏也不算「迟到」
+     * 丢帧）。守恒式里的第四项：
+     *     解码器交出的帧 = frames_decoded + frames_dropped + frames_discarded
+     * 三项之和与解码器实际交出数对不上，就说明有帧在某条分支里被无声吞掉。
+     * 这条式子在排查「一帧没丢、画面却卡」时是唯一能自证的东西 —— 那时
+     * dropped 与 decoded 都对得上，差额藏在一条没人计数的 break 里。 */
+    int64_t frames_discarded;
+    /* 解码器实际交出来的帧数（收到就算，不管后面是上屏、丢还是作废）。
+     * 与上面三项之和比对即可自证守恒；快照里直接给差额。 */
+    int64_t frames_received;
     /* 上一次真正上屏的时刻（av_gettime_relative，微秒）。用来给「已经落后于
      * 主时钟」的帧补一个最小间隔：硬解是一次一批地吐帧的，只按主时钟判断
      * 会让一批帧在几毫秒内连续上屏、随后空等下一批，观感是一顿一冲。 */

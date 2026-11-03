@@ -40,6 +40,8 @@ struct LpVideoDecoder {
     } queue[LP_VT_QUEUE];
     int head;
     int count;
+    /* push_frame 顶掉最旧帧的次数。见 lp_hw_decoder_frames_dropped。 */
+    int64_t frames_dropped;
 };
 
 static int64_t cmtime_to_us(CMTime t)
@@ -236,6 +238,7 @@ static void push_frame(LpVideoDecoder *d, CVPixelBufferRef image, int64_t pts_us
         d->queue[d->head].image = NULL;
         d->head = (d->head + 1) % LP_VT_QUEUE;
         d->count--;
+        d->frames_dropped++;
     }
     int slot = (d->head + d->count) % LP_VT_QUEUE;
     d->queue[slot].image = (CVPixelBufferRef)CVBufferRetain(image);
@@ -491,6 +494,17 @@ int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f)
     }
     f->handle = NULL;
     return LP_OK;
+}
+
+int64_t lp_hw_decoder_frames_dropped(LpVideoDecoder *d)
+{
+    if (!d) {
+        return 0;
+    }
+    pthread_mutex_lock(&d->mutex);
+    int64_t n = d->frames_dropped;
+    pthread_mutex_unlock(&d->mutex);
+    return n;
 }
 
 void lp_hw_decoder_flush(LpVideoDecoder *d)

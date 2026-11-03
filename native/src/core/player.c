@@ -314,12 +314,26 @@ static void *player_tick_fn(void *arg)
                 p->vout.pull_wait_max_us = 0;
                 p->vout.pull_wait_sum_us = 0;
                 p->vout.pull_wait_count = 0;
+                /* 解码器自己丢掉的帧：VideoToolbox / MediaCodec 的内部队列
+                 * 顶掉旧帧（见 lp_hw_decoder_frames_dropped）。这些帧从来没交到
+                 * 内核手上，既不在 decoded 里也不在 dropped 里 —— 于是「一帧没
+                 * 丢」的统计可以和肉眼可见的卡顿同时成立。 */
+                const long long decoder_dropped =
+                    (long long)(p->video.hw ? lp_hw_decoder_frames_dropped(p->video.hw) : 0);
                 const long long pull_fast = (long long)p->vout.pull_fast;
                 const long long pull_mid = (long long)p->vout.pull_mid;
                 const long long pull_slow = (long long)p->vout.pull_slow;
                 p->vout.pull_fast = 0;
                 p->vout.pull_mid = 0;
                 p->vout.pull_slow = 0;
+                /* 帧数守恒：解码器交出来的帧必须恰好分成「上屏」「内核按主时钟
+                 * 判定迟到而丢」「seek 时就地作废」三类。差额不为零就说明有帧
+                 * 在一条没人计数的分支里被吞掉了 —— 一轮排查里正是因为缺了
+                 * 最后一项，统计上才会出现「一帧没丢、画面却在卡」的自相矛盾。
+                 * 正常情况下 frames_unaccounted 恒为 0。 */
+                const long long frames_unaccounted =
+                    (long long)(p->video.frames_received - p->video.frames_decoded -
+                                p->video.frames_dropped - p->video.frames_discarded);
                 emit_owned_json(p, LP_EVENT_STATS, 0,
                                 lp_str_printf("{\"fps\":%.2f,\"dropped\":%lld,\"decoded\":%lld,"
                                               "\"av_diff\":%lld,\"hw\":\"%s\",\"queued\":%d,"
@@ -331,7 +345,8 @@ static void *player_tick_fn(void *arg)
                                               "\"pull_null_run\":%lld,"
                                               "\"pull_wait_ms\":%lld,\"pull_wait_avg_ms\":%lld,"
                                               "\"pull_fast\":%lld,\"pull_mid\":%lld,"
-                                              "\"pull_slow\":%lld}",
+                                              "\"pull_slow\":%lld,\"decoder_dropped\":%lld,"
+                                              "\"frames_unaccounted\":%lld}",
                                               fps, (long long)p->stats_dropped,
                                               (long long)p->stats_frames, (long long)av,
                                               p->video.hw_name ? p->video.hw_name : "none",
@@ -342,7 +357,8 @@ static void *player_tick_fn(void *arg)
                                               (long long)p->vout.frames_published,
                                               pull_calls, pull_hits, pull_null_run_max,
                                               pull_wait_max, pull_wait_avg,
-                                              pull_fast, pull_mid, pull_slow));
+                                              pull_fast, pull_mid, pull_slow,
+                                              decoder_dropped, frames_unaccounted));
             }
         }
 

@@ -532,9 +532,16 @@ void *lp_video_thread_fn(void *arg)
                     p->video.in_flight--;
                 }
                 int drop = wait_for_presentation(p, pts_us, serial, frame_dur);
+                /* 计数放在判定之前、节拍之后：节拍里可能睡到下一个帧周期，
+                 * 睡着的这几十毫秒里这一帧既没进 decoded 也没进 dropped，守恒
+                 * 式会把它当成「被吞掉的帧」报出来（Windows 实测每秒都是 1）。
+                 * 放到这里以后，从计数到落账只隔几条指令。 */
+                p->video.frames_received++;
                 if (drop < 0) {
                     /* Seek or stop: release the buffer and let the outer loop
-                     * re-sync (do NOT exit the thread). */
+                     * re-sync (do NOT exit the thread). 这一帧既没上屏也不算
+                     * 迟到丢帧，必须单独记一笔，否则守恒式上会凭空少一帧。 */
+                    p->video.frames_discarded++;
                     lp_hw_decoder_present(p->video.hw, &hf);
                     break;
                 }
@@ -569,7 +576,9 @@ void *lp_video_thread_fn(void *arg)
             }
             AVFrame *shown = maybe_deinterlace(p, frame);
             int drop = wait_for_presentation(p, pts_us, serial, frame_dur);
+            p->video.frames_received++;
             if (drop < 0) {
+                p->video.frames_discarded++;
                 av_frame_unref(frame);
                 break;
             }
@@ -633,6 +642,11 @@ int lp_video_start(LpPlayer *p)
      * 判断「本片是否已经出过画面」（见 wait_for_presentation）。不在这里
      * 清零，播放列表里第二个文件之后的头两秒仍会被当成晚到丢掉。 */
     p->video.frames_decoded = 0;
+    /* 守恒式的另外三项也要跟着归零，否则连播第二个文件时差额会从上一部
+     * 片子遗留的计数里冒出来，看起来像凭空丢帧。 */
+    p->video.frames_dropped = 0;
+    p->video.frames_discarded = 0;
+    p->video.frames_received = 0;
     p->video.last_present_at_us = 0;
     p->video.next_present_at_us = 0;
     p->video.in_flight = 0;

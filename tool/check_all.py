@@ -5566,6 +5566,62 @@ def check_texture_delivery() -> None:
                 f"{rel} answers lp_hw_decoder_is_async with the wrong verdict; "
                 f"it must return {want_async}")
 
+    # 解码器自己丢掉的帧必须能被数出来。这些帧从来没进过内核，既不在
+    # decoded 里也不在 dropped 里 —— 上一轮排查 iPad 卡顿时，「dropped=0、
+    # fps 满帧」与肉眼可见的卡顿同时成立，就是因为少了这一路计数。
+    for rel in (
+        "native/src/platform/apple/videotoolbox_decoder.c",
+        "native/src/platform/android/media_codec_decoder.c",
+        "native/src/platform/win32/d3d11va_decoder.c",
+        "native/src/platform/stub/stub_platform.c",
+    ):
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "int64_t lp_hw_decoder_frames_dropped(LpVideoDecoder *d)" not in text:
+            problems.append(
+                f"{rel} does not answer lp_hw_decoder_frames_dropped; frames the "
+                f"decoder throws away would stay invisible in the stats")
+    for rel, needle, why in (
+        ("native/src/platform/apple/videotoolbox_decoder.c", "d->frames_dropped++;",
+         "the VideoToolbox output queue can still discard the oldest frame "
+         "without counting it; that is one of the two ways frames vanish "
+         "silently on Apple"),
+        ("native/src/platform/android/media_codec_decoder.c", "d->frames_dropped++;",
+         "a MediaCodec output buffer that cannot be released is never counted; "
+         "the frame is gone with no trace in any statistic"),
+        ("native/src/core/player.c", "lp_hw_decoder_frames_dropped(p->video.hw)",
+         "the stats event never reports the decoder's own drops"),
+        ("native/src/core/player.c", 'decoder_dropped\\":%lld',
+         "the decoder drop count is computed but not emitted in the stats JSON"),
+        ("native/src/core/player.c",
+         "p->video.frames_received - p->video.frames_decoded -",
+         "the stats no longer reconcile received frames against shown, dropped "
+         "and discarded ones; a frame swallowed on an unaccounted branch would "
+         "go unnoticed again"),
+    ):
+        path = ROOT / rel
+        if not path.exists():
+            continue
+        if needle not in path.read_text(encoding="utf-8"):
+            problems.append(f"{rel}: {why} ({needle})")
+
+    # 帧数守恒的第三项：seek 时作废的帧。硬解与软解各有一次计数，少一处就会
+    # 在每次 seek 之后报出虚假差额，所以这里按次数断言，不只查「出现过」。
+    video_src = (ROOT / "native/src/core/video.c").read_text(encoding="utf-8")
+    discarded_hits = video_src.count("p->video.frames_discarded++;")
+    if discarded_hits != 2:
+        problems.append(
+            "native/src/core/video.c: frames thrown away on seek are counted "
+            f"{discarded_hits} time(s), expected once on the hardware path and "
+            "once on the software path; the conservation check would then report "
+            "a false gap after every seek")
+    if video_src.count("p->video.frames_received++;") != 2:
+        problems.append(
+            "native/src/core/video.c: received frames are not counted on both "
+            "decode paths, so the conservation check only covers one of them")
+
     for path, name in ((ios, "AppDelegate.swift"),
                        (macos, "MainFlutterWindow.swift")):
         if not path.exists():

@@ -110,6 +110,21 @@ class PlayerController extends ChangeNotifier {
   int pullFast = 0;
   int pullMid = 0;
   int pullSlow = 0;
+
+  /// 解码器内部丢掉的帧数（累计）。
+  ///
+  /// 与 [dropped]、[droppedDelivery] 都不是一回事：VideoToolbox 的输出队列
+  /// 满了会顶掉最旧的一帧，MediaCodec 的输出缓冲交不回去也会丢。这些帧从来
+  /// 没进过内核，所以既不在 decoded 里也不在 dropped 里 —— 只看那两个数会
+  /// 以为一帧都没丢，而画面确实少了一帧。
+  int decoderDropped = 0;
+
+  /// 帧数守恒的差额：解码器交出的帧减去上屏、迟到丢帧、seek 作废三者之和。
+  ///
+  /// 正常恒为 0。不为 0 就说明有一帧在某条分支里被无声吞掉 —— 这正是
+  /// 「一帧没丢、画面却在卡」时唯一能自证的东西。
+  int framesUnaccounted = 0;
+
   int avDiffUs = 0;
   int queuedPackets = 0;
   bool buffering = false;
@@ -390,6 +405,8 @@ class PlayerController extends ChangeNotifier {
         pullFast = (map['pull_fast'] as num?)?.toInt() ?? 0;
         pullMid = (map['pull_mid'] as num?)?.toInt() ?? 0;
         pullSlow = (map['pull_slow'] as num?)?.toInt() ?? 0;
+        decoderDropped = (map['decoder_dropped'] as num?)?.toInt() ?? 0;
+        framesUnaccounted = (map['frames_unaccounted'] as num?)?.toInt() ?? 0;
         avDiffUs = (map['av_diff'] as num?)?.toInt() ?? 0;
         queuedPackets = (map['queued'] as num?)?.toInt() ?? 0;
         final hw = map['hw'] as String?;
@@ -408,7 +425,8 @@ class PlayerController extends ChangeNotifier {
             'buffered=${map['buffered_ms']} hw=$hwActive '
             'pull=$pullCalls/$pullHits null=$pullNullRun '
             'wait=$pullWaitMs/${pullWaitAvgMs}ms '
-            'seq=$pullFast/$pullMid/${pullSlow}');
+            'seq=$pullFast/$pullMid/${pullSlow} '
+            'decdrop=$decoderDropped unacc=$framesUnaccounted');
         // Lighter cadence: stats change constantly, do not rebuild the tree
         // unless the user asked for the debugging overlay.
         if (!wantsStats) return;

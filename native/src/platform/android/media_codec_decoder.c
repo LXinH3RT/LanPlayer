@@ -127,6 +127,8 @@ struct LpVideoDecoder {
     size_t byte_bytes;
     int avcc; /* 1 = 码流是 AVCC 长度前缀，进解码器前要转 Annex-B */
     int avcc_checked;
+    /* 输出缓冲交不回解码器的次数。见 lp_hw_decoder_frames_dropped。 */
+    int64_t frames_dropped;
 };
 
 static const char *mime_for_codec(enum AVCodecID id)
@@ -422,8 +424,22 @@ int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f)
     }
     /* render=true: the codec copies the frame into the surface right now. */
     media_status_t st = AMediaCodec_releaseOutputBuffer(d->codec, (size_t)f->index, true);
-    d->presented++;
-    return st == AMEDIA_OK ? LP_OK : LP_ERR_CODEC;
+    if (st == AMEDIA_OK) {
+        d->presented++;
+        return LP_OK;
+    }
+    /* 交不回去就等于这一帧丢了：它已经离开解码器、又没上屏，内核那边也拿不到。
+     * 不在这里记一笔，统计里就是一帧都没丢。 */
+    d->frames_dropped++;
+    return LP_ERR_CODEC;
+}
+
+int64_t lp_hw_decoder_frames_dropped(LpVideoDecoder *d)
+{
+    if (!d) {
+        return 0;
+    }
+    return d->frames_dropped;
 }
 
 void lp_hw_decoder_flush(LpVideoDecoder *d)

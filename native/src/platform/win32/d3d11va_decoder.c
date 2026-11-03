@@ -352,6 +352,13 @@ int lp_hw_decoder_present(LpVideoDecoder *d, LpDecodedFrame *f)
     return LP_OK;
 }
 
+int64_t lp_hw_decoder_frames_dropped(LpVideoDecoder *d)
+{
+    (void)d;
+    /* d3d11va 走同步 avcodec_receive_frame，内核不积压，没有内部丢帧。 */
+    return 0;
+}
+
 void lp_hw_decoder_flush(LpVideoDecoder *d)
 {
     if (!d) {
