@@ -6,6 +6,7 @@ import '../data/lan_scan.dart';
 import '../data/models.dart';
 import '../data/repository.dart';
 import '../data/stores.dart';
+import '../data/trace.dart';
 
 /// 手工填写 SMB 服务器；「测试连接」会真的跑一次内核的 probe，
 /// 而不是假装成功。
@@ -117,12 +118,17 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
       // 反查主机名是锦上添花，超时就直接显示 IP，不能拖住界面。
       await resolveNames(hosts, timeout: const Duration(milliseconds: 800));
       // 扫描结果打进日志，方便在没人看屏幕的时候验证（自动化用）。
-      for (final host in hosts) {
+      //
+      // 只在 trace 打开时输出：发布版往控制台写一遍局域网主机表没有意义，
+      // 而且这份列表是用户网络的一部分。
+      if (traceEnabled) {
+        for (final host in hosts) {
+          // ignore: avoid_print
+          print('LanPlayer lan host: ${host.address} name=${host.name ?? "-"}');
+        }
         // ignore: avoid_print
-        print('LanPlayer lan host: ${host.address} name=${host.name ?? "-"}');
+        print('LanPlayer lan scan: ${subnets.first} -> ${hosts.length} hosts');
       }
-      // ignore: avoid_print
-      print('LanPlayer lan scan: ${subnets.first} -> ${hosts.length} hosts');
       if (!mounted) return;
       setState(() {
         _scanning = false;

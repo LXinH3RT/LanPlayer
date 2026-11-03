@@ -229,8 +229,10 @@ class _BrowserScreenState extends State<BrowserScreen> {
               Text(
                 // 字幕不单独计数：它们已经被归属到视频下面，单独报个数会让
                 // 用户以为列表里还有没显示出来的东西。
-                '${entries.where((e) => e.isVideo).length} 个视频 · '
-                '${entries.where((e) => e.isDir).length} 个文件夹'
+                // videos / folders 在 DirectoryListing 里已经懒算一次并
+                // 记住；这里再 where() 一遍等于每帧重扫整份目录。
+                '${_listing.videos.length} 个视频 · '
+                '${_listing.folders.length} 个文件夹'
                 '${_listing.subtitles.isNotEmpty ? ' · ${_listing.subtitles.length} 个字幕已关联' : ''}',
                 style:
                     const TextStyle(fontSize: 12, fontWeight: FontWeight.w400),

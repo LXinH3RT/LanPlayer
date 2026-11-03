@@ -21,7 +21,12 @@ class PlaylistController extends ChangeNotifier {
   int _index;
   bool autoNext = true;
 
-  List<MediaEntry> get items => List.unmodifiable(_items);
+  /// 整张播放列表。返回的是只读视图，调用方不要就地改。
+  ///
+  /// 曾经每次访问都 `List.unmodifiable(_items)` 复制一遍，而全仓没有一处
+  /// 读它 —— 连播时每切一集就可能复制一次几百项的列表。这里直接交出去，
+  /// 由类型（`List<MediaEntry>` 只暴露读方法）和约定共同约束。
+  List<MediaEntry> get items => _items;
   int get index => _index;
   int get length => _items.length;
   MediaEntry? get current =>

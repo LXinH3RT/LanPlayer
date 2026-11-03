@@ -85,8 +85,12 @@ String describeServerLine(ServerProfile p) {
   return parts.join('  ·  ');
 }
 
+/// 路径分隔符。原来每次调用现编一次 `RegExp`，而它按「每个来源的每一行」
+/// 调用。
+final RegExp _rePathSeparator = RegExp(r'[\\/]');
+
 String _lastSegment(String path) {
-  final segments = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty);
+  final segments = path.split(_rePathSeparator).where((s) => s.isNotEmpty);
   return segments.isEmpty ? path : segments.last;
 }
 

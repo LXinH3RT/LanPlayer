@@ -18,7 +18,6 @@ class NumberField extends StatefulWidget {
     required this.onChanged,
     this.min,
     this.max,
-    this.suffix,
     this.width = 96,
   });
 
@@ -32,7 +31,6 @@ class NumberField extends StatefulWidget {
   final int? max;
 
   /// 输入框右边的单位，如「秒」「%」。
-  final String? suffix;
 
   final double width;
 
@@ -101,12 +99,10 @@ class _NumberFieldState extends State<NumberField> {
           FilteringTextInputFormatter.digitsOnly,
           LengthLimitingTextInputFormatter(6),
         ],
-        decoration: InputDecoration(
+        decoration: const InputDecoration(
           isDense: true,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-          border: const OutlineInputBorder(),
-          suffixText: widget.suffix,
+          contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          border: OutlineInputBorder(),
         ),
         onSubmitted: (_) => _commit(),
       ),

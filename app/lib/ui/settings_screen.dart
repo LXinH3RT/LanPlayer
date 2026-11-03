@@ -523,12 +523,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// 内核接口版本。只为在「关于」页显示一行字，而 `_pane()` 每次重建都会
+  /// 读一次 —— 那是跨 FFI 的调用，还带 try/catch。接口版本在进程生命周期内
+  /// 不会变，拿到一次就记住（拿不到也记住 null）。
+  int? _abiCache;
+  bool _abiLoaded = false;
+
   int? _safeAbi() {
+    if (_abiLoaded) return _abiCache;
+    _abiLoaded = true;
     try {
-      return NativeCore.instance.version;
+      _abiCache = NativeCore.instance.version;
     } catch (_) {
-      return null;
+      _abiCache = null;
     }
+    return _abiCache;
   }
 
   /// 「外观」页每一档的说明。文案要说清「选了会发生什么」，而不是重复选项名。

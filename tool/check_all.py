@@ -1205,8 +1205,14 @@ def check_thumbnails() -> None:
     browser_code = "\n".join(
         l for l in browser.read_text(encoding="utf-8").splitlines()
         if not l.strip().startswith("//"))
-    if "e.isVideo" not in browser_code:
-        problems.append("the browser list must only request covers for videos")
+    # 封面只给视频取：音频取一帧没有意义，还白花一次网络往返或解码。
+    # 这一行住在 media_row 里（首页与浏览页共用同一个行组件），不在浏览页。
+    row_code = "\n".join(
+        l for l in row.read_text(encoding="utf-8").splitlines()
+        if not l.strip().startswith("//")) if row.exists() else ""
+    if "entry.isVideo\n          ? ThumbnailTile(" not in row_code:
+        problems.append("only videos may request a cover; audio should stay on "
+                        "its icon instead of paying for a decode")
 
     # Going back re-used the listing snapshot taken on the way in, so a rename
     # on the server stayed invisible until the user pressed refresh.  The back
@@ -6191,6 +6197,80 @@ def check_runtime_guards() -> None:
         "the surface arrives is caught before the queue is started")
 
 
+def check_dart_hot_paths() -> None:
+    """列表与设置页的热路径：这些写法改回去不会报错，只会变慢。
+
+    每一条都对应一次真实的每帧开销：`build()` 里重扫整份目录、每帧跨一次
+    FFI、每个来源行现编一次正则。它们都不影响功能，所以只有静态断言能拦住。
+    """
+    def text_of(rel: str) -> str:
+        return (ROOT / rel).read_text(encoding="utf-8")
+
+    probes = (
+        ("app/lib/data/home_sources.dart",
+         "final RegExp _rePathSeparator = RegExp(r'[\\\\/]');",
+         "the path separator regex is compiled once per source line again"),
+        ("app/lib/data/home_sources.dart",
+         "path.split(_rePathSeparator)",
+         "the cached separator regex is declared but never used"),
+        ("app/lib/ui/browser_screen.dart",
+         "'${_listing.videos.length} 个视频 · '",
+         "the header counts videos by scanning the directory tree again on "
+         "every frame instead of using the cached list"),
+        ("app/lib/ui/browser_screen.dart",
+         "'${_listing.folders.length} 个文件夹'",
+         "the header counts folders by scanning the directory tree again on "
+         "every frame instead of using the cached list"),
+        ("app/lib/ui/home_screen.dart",
+         "if (identical(servers, _sourcesServers) &&",
+         "the home source list is rebuilt from scratch on every read again; "
+         "build(), _loadAll() and _onStoreChanged() all read it"),
+        ("app/lib/ui/settings_screen.dart",
+         "if (_abiLoaded) return _abiCache;",
+         "the settings pane asks the core for its ABI version across FFI on "
+         "every rebuild again; it cannot change within one process"),
+        ("app/lib/ui/server_edit_screen.dart",
+         "if (traceEnabled) {\n        for (final host in hosts) {",
+         "the LAN scan result is printed unconditionally again; that list is "
+         "part of the user's network"),
+        ("app/lib/player/playlist.dart",
+         "List<MediaEntry> get items => _items;",
+         "the playlist getter copies the whole list on every read again"),
+    )
+    cache: dict[str, str] = {}
+    for rel, needle, why in probes:
+        if rel not in cache:
+            cache[rel] = text_of(rel)
+        n = cache[rel].count(needle)
+        if n != 1:
+            problems.append(f"{rel}: {why} (found {n} occurrences)")
+
+    # 三处零调用的死代码，删掉之后不该再冒出来。
+    gone = (
+        ("app/lib/ui/feedback.dart", "String describeServer(ServerProfile p)",
+         "the UI copy of describeServer is back; the data layer already has "
+         "describeServerLine and this one has no callers"),
+        ("app/lib/ui/widgets/number_field.dart", "this.suffix,",
+         "NumberField grew a suffix again; the unit belongs outside the box"),
+        ("app/lib/ui/feedback.dart", "../data/models.dart",
+         "feedback.dart no longer needs the model import once describeServer "
+         "is gone"),
+    )
+    for rel, needle, why in gone:
+        text = cache.get(rel)
+        if text is None:
+            text = text_of(rel)
+            cache[rel] = text
+        if needle in text:
+            problems.append(f"{rel}: {why}")
+
+    notes.append(
+        "dart hot paths: the directory header and the LAN scan use their "
+        "cached lists, the home source list is reused across reads, the "
+        "settings pane reads the ABI version once, and the zero-call helpers "
+        "are gone")
+
+
 
 def check_platform_lifecycle() -> None:
     """宿主生命周期：Surface 回收、音频中断、竖拍视频的朝向。
@@ -6450,6 +6530,7 @@ def main() -> int:
     check_texture_delivery()
     check_review5_fixes()
     check_runtime_guards()
+    check_dart_hot_paths()
     check_platform_lifecycle()
     check_startup_home()
     check_surface_tap()

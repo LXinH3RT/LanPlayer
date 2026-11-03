@@ -76,10 +76,29 @@ class _HomeScreenState extends State<HomeScreen> {
   /// 一小节最多直接列这么多行，其余收在「还有 N 项」后面。
   static const _maxRows = 8;
 
-  List<HomeSource> get _sources => buildHomeSources(
-        ServerStore.instance.servers,
-        LocalFolderStore.instance.folders,
-      );
+  /// 摊平后的来源列表。
+  ///
+  /// 两个 store 都只在读盘完成或增删改时变，所以按「服务器列表 + 本地目录
+  /// 列表的同一性」缓存一次。以前每次读 getter 都重新 buildHomeSources，
+  /// 而 build() 里读它、_loadAll 里读它、_onStoreChanged 里还要再读一次。
+  List<HomeSource>? _sourcesCache;
+  List<ServerProfile>? _sourcesServers;
+  List<LocalFolder>? _sourcesFolders;
+
+  List<HomeSource> get _sources {
+    final servers = ServerStore.instance.servers;
+    final folders = LocalFolderStore.instance.folders;
+    if (identical(servers, _sourcesServers) &&
+        identical(folders, _sourcesFolders) &&
+        _sourcesCache != null) {
+      return _sourcesCache!;
+    }
+    final built = buildHomeSources(servers, folders);
+    _sourcesServers = servers;
+    _sourcesFolders = folders;
+    _sourcesCache = built;
+    return built;
+  }
 
   /// 两个 store 都读完磁盘了吗。
   ///
