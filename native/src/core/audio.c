@@ -354,6 +354,10 @@ void *lp_audio_thread_fn(void *arg)
         }
 
         if (p->audio.draining && !pending && !p->audio.eof) {
+            /* FFmpeg 的内建解码器在 drain 之后会立刻回 EOF，走不到这里；硬解
+             * 回退路径上 eof 由收帧循环异步置位，于是这一段会变成无 sleep 的
+             * 紧循环，把一整颗核心烧掉。 */
+            av_usleep(1000);
             continue;
         }
         if (p->audio.eof) {

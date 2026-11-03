@@ -6151,6 +6151,45 @@ def check_runtime_guards() -> None:
         "runtime guards: a mismatched core ABI is rejected at startup, a changed "
         "back-key binding reaches the open pages, and every package carries the "
         "app's version")
+    demux_seek = text_of("native/src/core/demux.c")
+    for needle, why in (
+        ('LP_WARN("demux", "seek to %lld us failed: %d"',
+         "a failed seek is logged without the return code; nothing downstream "
+         "can tell that the position did not move"),
+        ('lp_emit_error(p, LP_ERR_IO, "seek failed");',
+         "a failed seek is silent; the UI would show the old position while the "
+         "user believes the drag took effect"),
+    ):
+        if needle not in demux_seek:
+            problems.append(f"native/src/core/demux.c: {why}")
+    seek_fail = demux_seek.find('lp_emit_error(p, LP_ERR_IO, "seek failed");')
+    if seek_fail < 0 or "lp_emit_buffering(p, 0, 0);" not in demux_seek[seek_fail:seek_fail + 400]:
+        problems.append(
+            "native/src/core/demux.c: the failed-seek path does not clear the "
+            "buffering flag; the spinner would sit there until playback resumes")
+
+    audio_src = text_of("native/src/core/audio.c")
+    if "            av_usleep(1000);\n            continue;\n        }\n        if (p->audio.eof) {" not in audio_src:
+        problems.append(
+            "native/src/core/audio.c: the drain wait loop spins without sleeping; "
+            "on a fallback decoder that sets eof asynchronously it burns a core")
+
+    player_src = text_of("native/src/core/player.c")
+    for needle, why in (
+        ("int best = av_find_best_stream(", 
+         "av_find_best_stream is called without keeping its result; a negative "
+         "return would be stored as the stream index"),
+        ('LP_WARN("player", "no video stream after the surface arrived',
+         "a missing video stream after the surface arrives is not reported"),
+    ):
+        if needle not in player_src:
+            problems.append(f"native/src/core/player.c: {why}")
+
+    notes.append(
+        "recovery paths: a seek that cannot move reports it and clears the spinner, "
+        "a drained decoder does not spin, and a video stream that disappears after "
+        "the surface arrives is caught before the queue is started")
+
 
 
 def check_platform_lifecycle() -> None:

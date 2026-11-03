@@ -1029,7 +1029,16 @@ int32_t lp_player_set_surface(LpPlayer *p, void *native_window, int32_t width, i
         p->video.thread_started) {
         int64_t pos = lp_master_clock_us(p);
         lp_video_stop(p);
-        p->video.stream_index = av_find_best_stream(p->fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+        /* av_find_best_stream 失败会返回负值。以前不校验就往 lp_video_start
+         * 送：它看到 stream_index < 0 直接返回 LP_OK 却不建线程，调用方以为
+         * 起来了，照样 lp_pq_start + lp_request_seek —— 队列有人喂没人消费，
+         * 内存一路涨到背压卡死 demux。 */
+        int best = av_find_best_stream(p->fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+        if (best < 0) {
+            LP_WARN("player", "no video stream after the surface arrived: %d", best);
+            return LP_ERR_UNSUPPORTED;
+        }
+        p->video.stream_index = best;
         if (lp_video_start(p) == LP_OK) {
             lp_pq_start(&p->video.pq);
             lp_request_seek(p, pos);

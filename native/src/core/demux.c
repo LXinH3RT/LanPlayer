@@ -428,7 +428,19 @@ static void perform_seek(LpPlayer *p, int64_t target_us)
         r = av_seek_frame(p->fmt, -1, ts, AVSEEK_FLAG_BACKWARD);
     }
     if (r < 0) {
-        LP_WARN("demux", "seek to %lld us failed", (long long)target_us);
+        /* 退不回去也不能装作退回去了：以前这里只打一行 WARN，随后照样递增
+         * serial、清 eof、重置时钟、发 buffering —— 界面看到的是「seek 完成」
+         * 然后画面从原来的位置继续，用户以为拖动失效。现在把失败报上去，
+         * 时钟留在原地，播放位置不会被伪造成目标点。 */
+        LP_WARN("demux", "seek to %lld us failed: %d", (long long)target_us, r);
+        lp_emit_error(p, LP_ERR_IO, "seek failed");
+        /* 已经发出 buffering=1 的清除点只认「队列重新有数据」，而这次 seek
+         * 之后队列就是空的，转圈会一直挂着。这里就地清掉：位置没变，也就
+         * 没有在缓冲什么。 */
+        lp_emit_buffering(p, 0, 0);
+        LP_DEBUG("demux", "seek -> %lld us failed, clock left at %.3f s",
+                 (long long)target_us, lp_clock_get(&p->extc));
+        return;
     }
     /* serial 是原子量，必须走原子读改写。以前这里写成 `p->serial++`：
      * 读-改-写不是一次操作，而 video.c/audio.c 里同时在裸读它来判断
