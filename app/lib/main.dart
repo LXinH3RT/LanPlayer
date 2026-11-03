@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'data/boot_status.dart';
 import 'data/folders.dart';
 import 'data/location.dart';
 import 'data/models.dart';
@@ -55,6 +56,9 @@ Future<void> main() async {
 /// 失败不抛给上层 —— 拿不到状态目录时宁可当作「没有保存过服务器」，
 /// 也好过因为 `throw StateError` 让整个 app 起不来。
 Future<void> _boot() async {
+  // 失败要能被首页看见：状态目录打不开时下面的 store 全部读不成，界面若只
+  // 停在空白上，用户既不知道发生了什么也没法自救。
+  BootStatus.instance.retry = _boot;
   try {
     final dir = await AppStorage.directory();
     if (traceEnabled && !traceHasFile) {
@@ -67,16 +71,26 @@ Future<void> _boot() async {
   } catch (e) {
     // ignore: avoid_print
     print("LanPlayer storage error: $e");
+    BootStatus.instance.failed(e);
+    return;
   }
-  await Future.wait<void>([
-    ServerStore.instance.load(),
-    LocalFolderStore.instance.load(),
-    SettingsStore.instance.load(),
-    ProgressStore.instance.load(),
-  ]);
+  try {
+    await Future.wait<void>([
+      ServerStore.instance.load(),
+      LocalFolderStore.instance.load(),
+      SettingsStore.instance.load(),
+      ProgressStore.instance.load(),
+    ]);
+  } catch (e) {
+    // ignore: avoid_print
+    print("LanPlayer store error: $e");
+    BootStatus.instance.failed(e);
+    return;
+  }
   // 外观设置读盘之后立刻套用：否则启动那一下会先按默认黑色画出来，
   // 选了「白色」的用户会看到界面闪一次黑再变白。
   ThemeController.instance.apply(SettingsStore.instance.value.themeMode);
+  BootStatus.instance.succeeded();
   // ignore: avoid_print
   print("LanPlayer loaded: servers=${ServerStore.instance.servers.length} "
       "folders=${LocalFolderStore.instance.folders.length}");

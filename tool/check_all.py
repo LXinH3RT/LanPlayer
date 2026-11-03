@@ -6212,6 +6212,94 @@ def check_runtime_guards() -> None:
         "the surface arrives is caught before the queue is started")
 
 
+def check_boot_failure() -> None:
+    """启动失败要能在界面上看到，而不是留一块空白。
+
+    状态目录打不开（磁盘满、权限被收回、容器被系统清掉）时四个 store 一个
+    都读不成。以前首页在这条路径上画的是 `SizedBox.expand()`：没有说明、
+    没有按钮，用户只能杀掉重开，重开还是同一块空白。
+    """
+    def text_of(rel: str) -> str:
+        return (ROOT / rel).read_text(encoding="utf-8", errors="replace")
+
+    boot = ROOT / "app/lib/data/boot_status.dart"
+    if not boot.exists():
+        problems.append(
+            "app/lib/data/boot_status.dart is missing; a failed boot has "
+            "nowhere to report itself and the home screen stays blank")
+        return
+    bs = text_of("app/lib/data/boot_status.dart")
+    for needle, why in (
+        ("class BootStatus extends ChangeNotifier",
+         "the boot result has to be observable, otherwise nobody repaints "
+         "once it fails"),
+        ("static final BootStatus instance",
+         "callers must share one instance; a per-widget copy would never see "
+         "the failure"),
+        ("void failed(Object error)", "nothing can record a boot failure"),
+        ("void succeeded()", "a boot could never come back from a failure"),
+        ("Future<void> Function()? retry;",
+         "the failure screen has no way back to the boot routine"),
+    ):
+        if needle not in bs:
+            problems.append(f"app/lib/data/boot_status.dart: {why} ({needle})")
+
+    main = text_of("app/lib/main.dart")
+    for needle, why in (
+        ("BootStatus.instance.retry = _boot;",
+         "the retry hook is never connected; the button on the failure screen "
+         "would do nothing"),
+        ("BootStatus.instance.failed(e);",
+         "a failed boot is swallowed again; the home screen would stay blank"),
+        ("BootStatus.instance.succeeded();",
+         "a successful boot never clears the failure, so the error would "
+         "survive the retry"),
+    ):
+        if needle not in main:
+            problems.append(f"app/lib/main.dart: {why} ({needle})")
+    if main.count("BootStatus.instance.failed(e);") != 2:
+        problems.append(
+            "app/lib/main.dart: only one of the two boot steps reports its "
+            "failure; a state directory that opens but cannot be read would "
+            "still end in a blank screen")
+
+    home = text_of("app/lib/ui/home_screen.dart")
+    for needle, why in (
+        ("_BootFailureIfAny(status: BootStatus.instance)",
+         "the empty home screen no longer offers a failure view"),
+        ("BootStatus.instance.addListener(_onBootChanged);",
+         "the home screen never listens for the boot result; the failure view "
+         "would only appear after an unrelated rebuild"),
+        ("BootStatus.instance.removeListener(_onBootChanged);",
+         "the boot listener is added but never removed"),
+        ("onPressed: status.retry == null",
+         "the retry button is wired unconditionally; it would throw when no "
+         "boot routine is attached"),
+        ("打不开配置目录",
+         "the failure view lost its title and is back to an unexplained blank"),
+    ):
+        if needle not in home:
+            problems.append(f"app/lib/ui/home_screen.dart: {why} ({needle})")
+    if "const _BootFailureIfAny()" in home:
+        problems.append(
+            "app/lib/ui/home_screen.dart: the failure view is a const no-arg "
+            "widget again; a canonical const child is never rebuilt, so the "
+            "message would stay on screen after a successful retry")
+    # 读单例必须发生在父级的 build 里，由参数传进来。若改回「组件内部自己读
+    # 单例」，它就会退化成那个 const 无参组件，重试成功后擦不掉。
+    fail_body = home.split("class _BootFailureIfAny", 1)[-1]
+    if "final status = BootStatus.instance;" in fail_body:
+        problems.append(
+            "app/lib/ui/home_screen.dart: the failure view reads the boot "
+            "singleton inside its own build; it can no longer be invalidated "
+            "by a retry and would keep showing the old error")
+
+    notes.append(
+        "boot failure: a state directory that cannot be opened or read shows "
+        "up on the home screen with the underlying error and a retry that "
+        "re-runs the same boot routine")
+
+
 def check_dart_hot_paths() -> None:
     """列表与设置页的热路径：这些写法改回去不会报错，只会变慢。
 
@@ -6572,6 +6660,7 @@ def main() -> int:
     check_review5_fixes()
     check_runtime_guards()
     check_dart_hot_paths()
+    check_boot_failure()
     check_platform_lifecycle()
     check_startup_home()
     check_surface_tap()

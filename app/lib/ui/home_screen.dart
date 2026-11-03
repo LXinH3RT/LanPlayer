@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 
+import '../data/boot_status.dart';
 import '../data/folders.dart';
 import '../data/home_sources.dart';
 import '../data/location.dart';
@@ -116,6 +117,7 @@ class _HomeScreenState extends State<HomeScreen> {
     // 停在空状态。
     ServerStore.instance.addListener(_onStoreChanged);
     LocalFolderStore.instance.addListener(_onStoreChanged);
+    BootStatus.instance.addListener(_onBootChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadAll());
   }
 
@@ -125,7 +127,12 @@ class _HomeScreenState extends State<HomeScreen> {
     _storeSyncTimer = null;
     ServerStore.instance.removeListener(_onStoreChanged);
     LocalFolderStore.instance.removeListener(_onStoreChanged);
+    BootStatus.instance.removeListener(_onBootChanged);
     super.dispose();
+  }
+
+  void _onBootChanged() {
+    if (mounted) setState(() {});
   }
 
   /// store 变化：读完磁盘、增删来源、改名都会走到这里。
@@ -621,13 +628,17 @@ class _HomeScreenState extends State<HomeScreen> {
       //
       // 还没读完磁盘时先留空：这时候说「还没有内容」是错的，用户会以为
       // 保存的服务器丢了。读取只占开头几毫秒到几十毫秒，空一帧看不出来。
+      //
+      // 但读失败不能也留空。状态目录打不开时四个 store 一个都读不成，界面
+      // 会永远停在这块空白上 —— 既没有说明也没有可以点的东西。那种情况
+      // 画一个能看懂的说明加重试按钮。
       body: sources.isEmpty
           ? (_storesReady
               ? _EmptyState(
                   onAdd: _addMenu,
                   onLocal: _addLocalFolder,
                 )
-              : const SizedBox.expand())
+              : _BootFailureIfAny(status: BootStatus.instance))
           : Column(
               children: [
                 if (showSourceFilter(sources.length))
@@ -999,6 +1010,72 @@ class _EmptyState extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 启动失败时，代替那块空白说明原因并给一个重试入口。
+///
+/// 只有「启动已经结束但没成功」时才画东西：还在读的时候保持空白是对的，
+/// 那一瞬间说「出错了」会吓人。
+class _BootFailureIfAny extends StatelessWidget {
+  const _BootFailureIfAny({required this.status});
+
+  /// 启动状态。做成参数而不是在 build 里读单例，是为了让这个组件不是
+  /// `const` —— 同一个 const 实例在元素树里会被判成「没变」而跳过重建，
+  /// 重试成功之后那句错误就擦不掉了。
+  final BootStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!status.done || status.failure == null) {
+      return const SizedBox.expand();
+    }
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.sd_card_alert_outlined, size: 64, color: scheme.error),
+              const SizedBox(height: 20),
+              const Text(
+                '打不开配置目录',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                '保存的服务器和观看进度都在配置目录里，这次没能读到。'
+                '常见原因是磁盘已满，或者系统收回了这个应用的文件夹权限。',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '${status.failure}',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 48),
+                  ),
+                  onPressed: status.retry == null
+                      ? null
+                      : () => unawaited(status.retry!()),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('重试'),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
