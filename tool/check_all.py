@@ -273,6 +273,9 @@ REQUIRED = [
     "native/src/core/video.c",
     "native/src/core/audio.c",
     "native/src/core/subtitle.c",
+    "native/src/core/subtitle_parse.c",
+    "native/src/core/subtitle_track.c",
+    "native/src/core/subtitle_internal.h",
     "native/src/core/submatch.c",
     "native/src/core/queue.c",
     "native/src/core/audio_ring.c",
@@ -2096,6 +2099,25 @@ def check_transport_behaviour() -> None:
     notes.append("transport registry: lookup, alias, URL shape and the scheme list all come "
                  "from the one table")
 
+# 字幕子系统在第五轮评审后拆成三个编译单元（见 subtitle_internal.h）。
+# 下面这些检查守的是行为，行为跨段分布，所以要读合并文本。
+SUBTITLE_SOURCES = (
+    "native/src/core/subtitle_parse.c",
+    "native/src/core/subtitle_track.c",
+    "native/src/core/subtitle.c",
+)
+
+
+def subtitle_text() -> str:
+    """三段字幕源码拼在一起，段间留空行避免相邻行粘连成一个 token。"""
+    parts = []
+    for rel in SUBTITLE_SOURCES:
+        path = ROOT / rel
+        parts.append(path.read_text(encoding="utf-8") if path.exists() else "")
+    return "\n\n".join(parts)
+
+
+
 def check_subtitle_robustness() -> None:
     """Runs the malformed-subtitle test and pins the one path it cannot reach.
 
@@ -2130,12 +2152,11 @@ def check_subtitle_robustness() -> None:
     # lp_subtitle_add_file 要完整的 LpPlayer（加载互斥量、source 表），纯 C
     # 测试建不出来，所以第 2.2 条只能用形状断言：重新加锁之后必须先重读
     # nb_tracks，再拿它算下标。少了这一步就是锁外的旧槽位号。
-    subs = ROOT / "native" / "src" / "core" / "subtitle.c"
-    text = subs.read_text(encoding="utf-8")
+    text = subtitle_text()
     marker = "int lp_subtitle_add_file("
     start = text.find(marker)
     if start < 0:
-        problems.append("native/src/core/subtitle.c lost lp_subtitle_add_file")
+        problems.append("native/src/core/subtitle*.c lost lp_subtitle_add_file")
         return
     body = text[start:text.find("\n}\n", start)]
     relock = body.rfind("pthread_mutex_lock(&p->subs.mutex);")
@@ -3489,11 +3510,9 @@ def check_subtitle_fonts() -> None:
     requested as a family: doing so defeats the platform default and can land on
     a face without CJK glyphs.
     """
-    sub = ROOT / "native" / "src" / "core" / "subtitle.c"
-    if not sub.exists():
-        problems.append("native/src/core/subtitle.c missing")
-    else:
-        st = sub.read_text(encoding="utf-8")
+    st = subtitle_text()
+    if not st.strip():
+        problems.append("native/src/core/subtitle*.c missing")
         if "b->st.font_name[n] = '\\0';" not in st:
             problems.append("subtitle.c lost the inline \\fn parser; an ASS line "
                             "that changes family mid-sentence would be painted "
@@ -3633,22 +3652,21 @@ def check_subtitle_fonts() -> None:
                 "\\pos are no longer grouped separately; simultaneous "
                 "dialogues would be stacked on top of each other")
 
-    core = ROOT / "native" / "src" / "core" / "subtitle.c"
-    if core.exists():
-        ct = core.read_text(encoding="utf-8")
+    ct = subtitle_text()
+    if ct.strip():
         if ct.count(",\\\"style\\\":{") < 2:
             problems.append(
-                "native/src/core/subtitle.c: append_runs_json() stopped "
+                "native/src/core/subtitle*.c: append_runs_json() stopped "
                 "emitting a per-line style; the host cannot paint two "
                 "dialogues differently")
         if "play_res_y" not in ct:
             problems.append(
-                "native/src/core/subtitle.c stopped reporting play_res_y; "
+                "native/src/core/subtitle*.c stopped reporting play_res_y; "
                 "margins and outlines are script units and cannot be turned "
                 "into pixels without it")
         if 'while (*nm == ' not in ct:
             problems.append(
-                "native/src/core/subtitle.c: the Style: name is no longer "
+                "native/src/core/subtitle*.c: the Style: name is no longer "
                 "trimmed; ' Default' never matches and every line falls back "
                 "to the first style in the file")
         # ass_color() must read colours as unsigned: every value with an alpha
@@ -3656,7 +3674,7 @@ def check_subtitle_fonts() -> None:
         # which turned &H80202020 into half-transparent white.
         if "strtoul(digits" not in ct or "strtoul(v" not in ct:
             problems.append(
-                "native/src/core/subtitle.c: ass_color() must parse with "
+                "native/src/core/subtitle*.c: ass_color() must parse with "
                 "strtoul; strtol overflows on 32-bit long and every colour "
                 "with an alpha byte collapses to half-transparent white")
 
@@ -3676,7 +3694,7 @@ def check_subtitle_advanced() -> None:
     them looked like plain centred text.  Each feature needs a link from the
     core's parser all the way to the painter; every link can regress on its own.
     """
-    core = ROOT / "native" / "src" / "core" / "subtitle.c"
+    # 三段合并文本由 subtitle_text() 提供（第五轮评审 6.4 拆分后）。
     header = ROOT / "native" / "src" / "player_internal.h"
     test = ROOT / "native" / "tests" / "lp_subanim_test.c"
     if not test.exists():
@@ -3697,8 +3715,8 @@ def check_subtitle_advanced() -> None:
                 problems.append(
                     f"player_internal.h lost {token} ({why}); a subtitle "
                     f"using it would silently fall back to plain text")
-    if core.exists():
-        ct = core.read_text(encoding="utf-8")
+    ct = subtitle_text()
+    if ct.strip():
         for token, why in (
             ("anim_window", "the animation window parser"),
             ("path_consume", "the drawing path command parser"),
@@ -3711,7 +3729,7 @@ def check_subtitle_advanced() -> None:
         ):
             if token not in ct:
                 problems.append(
-                    f"native/src/core/subtitle.c lost {token} ({why})")
+                    f"native/src/core/subtitle*.c lost {token} ({why})")
         # alpha 的字节序：单字节的 `&H80&` 曾经被当成 32 位整色右移读取，
         # 结果恒 0，所有淡入都是全不透明。
         if "raw > 0xFFul" not in ct:
@@ -3829,8 +3847,8 @@ def check_subtitle_advanced() -> None:
             problems.append(
                 "player_internal.h lost LpSubRun.clip_inverse; \\iclip would "
                 "be painted the same way as \\clip, i.e. keep the wrong half")
-    if core.exists():
-        ct = core.read_text(encoding="utf-8")
+    ct = subtitle_text()
+    if ct.strip():
         # \fr 简写：rz/rx/ry 已被前面的分支吃掉，剩下的 'r' 只可能是 \fr，
         # 不能再拿 tag_has_arg() 当「没有后缀」的判据。
         if '!strncmp(p, "r", 1) && !tag_has_arg(p + 1)' in ct:
@@ -6028,7 +6046,7 @@ def check_review5_fixes() -> None:
             "native/src/core/queue.c: back pressure needs both limits again; a "
             "stream of tiny packets can grow the queue without bound")
 
-    subs = text_of("native/src/core/subtitle.c")
+    subs = subtitle_text()
     for needle, why in (
         ("if (!p || !p->subs_inited) {",
          "lp_subtitle_set_delay reaches for the subtitle mutex before it is "
@@ -6228,6 +6246,91 @@ def check_browser_error_surface() -> None:
         "error surface: a browser failure that is not a network error and a "
         "failed profile save both reach the user instead of vanishing into a "
         "finally block")
+
+
+def check_subtitle_split() -> None:
+    """字幕子系统的三段拆分（第五轮评审 6.4）。
+
+    拆之前这里是一个 3793 行的文件，解析、轨道状态机、事件打包全挤在一起。
+    拆开之后最怕两件事：一是有人图省事又把新函数塞回 subtitle.c、让它重新
+    长回一两千行；二是跨段的 static 函数被改回 static（别的段就链接不到），
+    或者三段各自复制一份共享结构体（改一处忘一处）。
+
+    这里只守结构，不守行为 —— 行为由 check_subtitle_fonts() 与
+    check_subtitle_advanced() 负责，它们读的是三段合并文本。
+    """
+    limits = {
+        "native/src/core/subtitle.c": (900, "the event packing unit"),
+        "native/src/core/subtitle_parse.c": (2600, "the parsing unit"),
+        "native/src/core/subtitle_track.c": (1400, "the track unit"),
+    }
+    for rel, (cap, what) in limits.items():
+        path = ROOT / rel
+        if not path.exists():
+            problems.append(f"{rel} is missing; {what} of the subtitle "
+                            f"subsystem no longer exists")
+            continue
+        count = len(path.read_text(encoding="utf-8").splitlines())
+        if count > cap:
+            problems.append(
+                f"{rel} grew to {count} lines ({what} is capped at {cap}); the "
+                f"subsystem is drifting back into one file")
+
+    header = ROOT / "native/src/core/subtitle_internal.h"
+    if not header.exists():
+        problems.append("native/src/core/subtitle_internal.h is missing; the "
+                        "three units have no shared declarations")
+    else:
+        ht = header.read_text(encoding="utf-8")
+        for token, why in (
+            ("typedef struct AssCtx {", "the ASS coordinate context"),
+            ("typedef struct SubRunState {", "the run style state"),
+            ("typedef struct SubRich {", "the line accumulator"),
+            ("int lp_sub_compile_text(", "parsing an override-tag line"),
+            ("void lp_sub_cue_free(", "releasing a cue"),
+            ("void lp_sub_overlay_update(", "refreshing the graphics overlay"),
+        ):
+            if token not in ht:
+                problems.append(f"subtitle_internal.h lost {token} ({why}); the "
+                                f"units would each declare their own copy")
+
+    # 共享结构体只能定义一次，否则三段各自长大、字段迟早对不上。
+    for token in ("typedef struct AssCtx {", "typedef struct SubRunState {",
+                  "typedef struct SubRich {"):
+        holders = [rel for rel in SUBTITLE_SOURCES
+                   if token in (ROOT / rel).read_text(encoding="utf-8")]
+        if holders:
+            problems.append(
+                f"{token} is defined in {', '.join(holders)}; it must live only "
+                f"in subtitle_internal.h")
+
+    # 跨段调用的函数必须是公开符号（带 lp_sub_ 前缀），不能回到 static。
+    cross = {
+        "native/src/core/subtitle_parse.c": (
+            "lp_sub_parse_ass", "lp_sub_parse_srt", "lp_sub_parse_vtt",
+            "lp_sub_compile_text", "lp_sub_rich_init", "lp_sub_rich_append",
+            "lp_sub_merge_cue_into", "lp_sub_decode_text", "lp_sub_split_fields",
+        ),
+        "native/src/core/subtitle_track.c": (
+            "lp_sub_cue_free", "lp_sub_style_default", "lp_sub_track_style",
+            "lp_sub_overlay_reset", "lp_sub_overlay_update",
+        ),
+    }
+    for rel, names in cross.items():
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        for name in names:
+            if re.search(r"\bstatic\b[^\n]*\b" + name + r"\s*\(", text):
+                problems.append(
+                    f"{rel}: {name}() is static again; the other units cannot "
+                    f"see it and the subsystem would have to be merged back")
+            if f"{name}(" not in text:
+                problems.append(f"{rel} lost {name}(); the split moved it "
+                                f"somewhere the linker cannot find")
+
+    notes.append(
+        "subtitle split: parsing, the track state machine and event packing are "
+        "three compilation units sharing one header, with the cross-unit "
+        "symbols public and the shared structs defined exactly once")
 
 
 def check_list_row_work() -> None:
@@ -6819,6 +6922,7 @@ def main() -> int:
     check_audio_underfill()
     check_browser_error_surface()
     check_present_contract()
+    check_subtitle_split()
     check_runtime_guards()
     check_list_row_work()
     check_dart_hot_paths()

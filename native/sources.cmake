@@ -24,6 +24,8 @@ set(LP_CORE_SOURCES
     src/core/video.c
     src/core/audio.c
     src/core/subtitle.c
+    src/core/subtitle_parse.c
+    src/core/subtitle_track.c
     src/core/submatch.c
     src/core/thumb.c
     src/core/player.c

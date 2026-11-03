@@ -38,6 +38,8 @@ def collect_decls() -> dict[str, Path]:
     decls: dict[str, Path] = {}
     extra_headers = [
         SRC / "player_internal.h",
+        # 字幕子系统在第五轮评审后拆成三个编译单元，跨段声明只有这里能看到。
+        SRC / "core" / "subtitle_internal.h",
         SRC / "source" / "source_internal.h",
         SRC / "platform" / "win32" / "win32_preview.h",
     ]
