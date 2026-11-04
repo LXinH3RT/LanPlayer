@@ -33,6 +33,15 @@ if hasattr(sys.stdout, "reconfigure"):
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / ".tools"
 
+# GitHub 的 release 资源在部分网络下拿不到：TLS 被掐断时 curl 直接报
+# schannel error 35、连接归零。这类镜像按原样代理同一条 URL，等于把二进制
+# 交给第三方，所以**不默认启用**，只认显式配置：
+#     LP_GITHUB_MIRROR=https://gh-proxy.com/ python tool/fetch_deps.py ffmpeg
+# 多个镜像用逗号隔开；直连成功时永远不会碰它们。
+def github_mirrors() -> tuple[str, ...]:
+    raw = os.environ.get("LP_GITHUB_MIRROR", "")
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
 ARTIFACTS = {
     "zig": {
         "url": "https://ziglang.org/download/0.13.0/zig-windows-x86_64-0.13.0.zip",
@@ -44,6 +53,10 @@ ARTIFACTS = {
     "ffmpeg": {
         "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
                "ffmpeg-master-latest-win64-gpl-shared.zip",
+        # `latest` 是每天重建的浮动标签，重建窗口里旧资源已经被删、新的还没
+        # 传完，请求就会 404（CI 上撞到过一次：重试四次全 404，几分钟后重跑
+        # 就好）。改成先问 API 拿到最近一个 autobuild 的不可变资产地址。
+        "resolve": {"repo": "BtbN/FFmpeg-Builds", "asset_suffix": "-win64-gpl-shared.zip"},
         "dest": "ffmpeg.zip",
         "extract_to": "ffmpeg",
         "strip": 1,
@@ -167,42 +180,87 @@ def human(n: float) -> str:
         n /= 1024
     return f"{n:.1f} GiB"
 
+def resolve_asset(spec: dict) -> str | None:
+    """把 `latest` 这类浮动标签换成最近一次 autobuild 的固定资产地址。
+
+    浮动标签在重建窗口里会短暂丢资源，而 autobuild-* 的 tag 一旦发布就不会
+    改动，重跑永远拿到同一份。取不到（限流、离线）就退回原来的地址，下载
+    逻辑本身还有重试。
+    """
+    rule = spec.get("resolve")
+    if not rule:
+        return None
+    url = (f"https://api.github.com/repos/{rule['repo']}"
+           f"/releases?per_page=10")
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "lanplayer-fetch/1",
+            "Accept": "application/vnd.github+json",
+        })
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            releases = json.loads(resp.read())
+    except (urllib.error.URLError, IOError, TimeoutError, ValueError) as exc:
+        print(f"  cannot resolve a fixed release ({exc}); using the given url")
+        return None
+    for release in releases:
+        if not str(release.get("tag_name", "")).startswith("autobuild-"):
+            continue
+        for asset in release.get("assets", []):
+            name = asset.get("name", "")
+            if name.endswith(rule["asset_suffix"]):
+                print(f"  pinned to {release['tag_name']}/{name}")
+                return asset["browser_download_url"]
+    print("  no matching asset in recent releases; using the given url")
+    return None
+
 def download(url: str, dest: Path, retries: int = 4) -> None:
     if dest.exists() and dest.stat().st_size > 0:
         print(f"  cached {dest.name} ({human(dest.stat().st_size)})")
         return
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + ".part")
+    # 直连优先；只有直连彻底失败才轮询镜像。GitHub 的 release 资源会在
+    # 重新上传 latest 时短暂 404，也可能在部分网络下连不上，这两种情况
+    # 换一条路径就过去了，不值得让整个构建失败。
+    candidates = [url]
+    if "://github.com/" in url:
+        candidates += [mirror + url for mirror in github_mirrors()]
     last_err: Exception | None = None
-    for attempt in range(1, retries + 1):
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "lanplayer-fetch/1"})
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                total = int(resp.headers.get("Content-Length") or 0)
-                print(f"  GET {url}\n       -> {dest} ({human(total) if total else 'size unknown'})")
-                got = 0
-                t0 = time.time()
-                with open(part, "wb") as fh:
-                    while True:
-                        chunk = resp.read(1024 * 256)
-                        if not chunk:
-                            break
-                        fh.write(chunk)
-                        got += len(chunk)
-                        if total and got % (1024 * 1024 * 8) < 1024 * 256:
-                            pct = got * 100 // total
-                            speed = got / max(1e-6, time.time() - t0)
-                            print(f"       {pct:3d}%  {human(got)}  {human(speed)}/s", flush=True)
-            if total and part.stat().st_size != total:
-                raise IOError(f"size mismatch: {part.stat().st_size} != {total}")
-            part.replace(dest)
-            print(f"  done  {dest.name} ({human(dest.stat().st_size)})")
-            return
-        except (urllib.error.URLError, IOError, TimeoutError) as exc:
-            last_err = exc
-            print(f"  attempt {attempt}/{retries} failed: {exc}")
-            part.unlink(missing_ok=True)
-            time.sleep(2 * attempt)
+    for source in candidates:
+        for attempt in range(1, retries + 1):
+            try:
+                req = urllib.request.Request(source, headers={"User-Agent": "lanplayer-fetch/1"})
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    total = int(resp.headers.get("Content-Length") or 0)
+                    print(f"  GET {source}\n       -> {dest} ({human(total) if total else 'size unknown'})")
+                    got = 0
+                    t0 = time.time()
+                    with open(part, "wb") as fh:
+                        while True:
+                            chunk = resp.read(1024 * 256)
+                            if not chunk:
+                                break
+                            fh.write(chunk)
+                            got += len(chunk)
+                            if total and got % (1024 * 1024 * 8) < 1024 * 256:
+                                pct = got * 100 // total
+                                speed = got / max(1e-6, time.time() - t0)
+                                print(f"       {pct:3d}%  {human(got)}  {human(speed)}/s", flush=True)
+                if total and part.stat().st_size != total:
+                    raise IOError(f"size mismatch: {part.stat().st_size} != {total}")
+                part.replace(dest)
+                print(f"  done  {dest.name} ({human(dest.stat().st_size)})")
+                return
+            except (urllib.error.URLError, IOError, TimeoutError) as exc:
+                last_err = exc
+                print(f"  attempt {attempt}/{retries} failed: {exc}")
+                part.unlink(missing_ok=True)
+                # 404 说明这条路径的资源此刻不存在，换镜像比原地重试有用。
+                if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+                    break
+                time.sleep(2 * attempt)
+        if source != candidates[-1]:
+            print(f"  falling back to the next source")
     raise SystemExit(f"download failed: {url}: {last_err}")
 
 def extract(archive: Path, dest: Path, strip_dirs: int = 1) -> None:
@@ -285,7 +343,8 @@ def main(argv: list[str]) -> int:
             print(f"  cached {target.name}/")
             continue
         archive = TOOLS / spec["dest"]
-        download(spec["url"], archive)
+        pinned = resolve_asset(spec)
+        download(pinned or spec["url"], archive)
         extract(archive, target, spec["strip"])
         # Unpacked and verified -- the multi-hundred-MB archive has no further
         # use and the extract target is the cache.
