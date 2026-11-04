@@ -8,9 +8,9 @@ import 'package:flutter/widgets.dart';
 
 import 'channel.dart';
 
-/// 移动端视频画面的载体：一块原生 `SurfaceView`，通过平台视图嵌进 Flutter。
+/// 移动端视频画面的载体：一块原生视图，通过平台视图嵌进 Flutter。
 ///
-/// 桌面端返回 null —— 那边走的是外部纹理，画面由 `Texture(textureId:)` 画。
+/// 桌面端返回一块空画布 —— 那边走的是外部纹理，画面由 `Texture(textureId:)` 画。
 ///
 /// 为什么移动端要这么绕：Flutter 引擎只要看到有活跃的外部纹理，就会在每个
 /// vsync 上把整棵 layer tree 重新光栅化一次，与纹理有没有更新无关。120 Hz
@@ -20,23 +20,39 @@ import 'channel.dart';
 /// 系统合成器就绕开了这条约束：内核算好一帧就上屏一次，屏幕刷多少次与内容帧率
 /// 无关。
 ///
-/// 走的平台视图实现是 `initSurfaceAndroidView`（`SurfaceAndroidViewController`），
-/// **不是** `AndroidView` 默认的 `initAndroidView` —— 后者内部是
-/// `TextureAndroidViewController`，把原生视图画进一块纹理再合成，那就又回到
-/// 纹理路径上了，等于白改。
+/// 两个移动平台的承载物不同，契约相同（view type 都是
+/// [lanplayerVideoSurfaceViewType]，由各自的宿主注册）：
+///
+/// * Android：`VideoSurfaceView.kt` 的 `SurfaceView`，走
+///   `PlatformViewLink` + `initSurfaceAndroidView`
+///   （`SurfaceAndroidViewController`），**不是** `AndroidView` 默认的
+///   `initAndroidView` —— 后者内部是 `TextureAndroidViewController`，把原生视图
+///   画进一块纹理再合成，那就又回到纹理路径上了，等于白改。
+/// * iOS：`VideoPlatformView.swift` 的 `AVSampleBufferDisplayLayer`，直接交给
+///   `UiKitView`。UIKit 视图本身就是引擎合成的一部分，没有 Android 那种
+///   「SurfaceView 单独进视图层级」的分叉，因此不需要 `PlatformViewLink`
+///   这一层间接。
 class VideoSurfaceView extends StatelessWidget {
   const VideoSurfaceView({super.key});
 
-  /// 只有 Android 有平台视图实现（`VideoSurfaceView.kt`）。
-  ///
-  /// iOS 上还在用 `AVSampleBufferDisplayLayer` 之前的那条纹理路，等那边接好
-  /// 之后这个判定要一起放开。
-  static bool get isSupported => Platform.isAndroid;
+  /// 两个移动平台都有平台视图实现：Android 是 `VideoSurfaceView.kt`，
+  /// iOS 是 `VideoPlatformView.swift`。桌面仍然走外部纹理。
+  static bool get isSupported => Platform.isAndroid || Platform.isIOS;
 
   @override
   Widget build(BuildContext context) {
     if (!isSupported) {
       return const SizedBox.expand();
+    }
+    if (Platform.isIOS) {
+      return UiKitView(
+        viewType: lanplayerVideoSurfaceViewType,
+        layoutDirection: TextDirection.ltr,
+        creationParams: const <String, Object>{},
+        creationParamsCodec: const StandardMessageCodec(),
+        hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+        gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+      );
     }
     return PlatformViewLink(
       viewType: lanplayerVideoSurfaceViewType,
@@ -60,7 +76,7 @@ class VideoSurfaceView extends StatelessWidget {
   }
 }
 
-/// 平台视图控制器给的那张「画布」。
+/// 安卓平台视图控制器给的那张「画布」。
 ///
 /// [PlatformViewController] 本身不画东西；安卓这边要用 [AndroidViewSurface]，
 /// 它会按控制器的 `requiresViewComposition` 选择 `_PlatformLayerBasedAndroidViewSurface`

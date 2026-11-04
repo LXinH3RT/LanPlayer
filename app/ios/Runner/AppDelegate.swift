@@ -13,14 +13,22 @@ import CoreVideo
   /// 全局唯一的引擎；SceneDelegate 用它创建 FlutterViewController。
   private(set) lazy var engine: FlutterEngine = FlutterEngine(name: "lanplayer")
   private var channel: FlutterMethodChannel?
-  private var texture: PlayerTexture?
   private var player: OpaquePointer?
-  /// 插件 registrar 与纹理注册表：**必须缓存**，不能每次重新取。
+  /// 画面帧的去处。iOS 从 0.1.9 起不再注册外部纹理，改为把每帧塞进
+  /// `AVSampleBufferDisplayLayer`（见 VideoPlatformView.swift）。
+  ///
+  /// 内核的帧回调只有一个槽位（`native/src/core/player.c` 里
+  /// `p->vout.frame_cb` 是单字段赋值），所以「纹理取帧」和「显示层推帧」
+  /// 这两条路不能同时存在，这里必须二选一。
+  let videoBridge = VideoFrameBridge()
+  /// 插件 registrar：**必须缓存**，不能每次重新取。
   /// `registrarForPlugin:` 对同名插件只允许调一次，第二次会走
   /// `NSAssertionHandler` → abort（真机日志里是 EXC_CRASH / SIGABRT，
   /// 栈顶 `-[FlutterEngine registrarForPlugin:]`）。
+  ///
+  /// iOS 侧不再持有 `FlutterTextureRegistry`：画面改由平台视图显示之后，
+  /// 这里既没有纹理要注册，也没有 `textureFrameAvailable` 要通知。
   private var registrar: FlutterPluginRegistrar?
-  private var textures: FlutterTextureRegistry?
   /// 最近一次「播放页要不要横屏」的请求。scene 尚未接好窗口时请求会被系统
   /// 丢掉，靠它在前台之后补发，见 applyPendingOrientation()。
   private var pendingLandscape: Bool?
@@ -135,7 +143,12 @@ import CoreVideo
     // 取一次存下来，后面所有地方复用。
     let reg = engine.registrar(forPlugin: "lanplayer")
     registrar = reg
-    textures = reg?.textures()
+    // 画面走平台视图：把视图工厂挂到 registrar 上，Dart 侧按同样的类型名创建。
+    // 类型名的字面量定义在 VideoPlatformView.swift 里，与 Dart 的
+    // `lanplayerVideoSurfaceViewType` 逐字相同。
+    reg?.register(
+      VideoPlatformViewFactory(bridge: videoBridge),
+      withId: lanplayerVideoSurfaceViewType)
 
     let ch = FlutterMethodChannel(
       name: "lanplayer/video", binaryMessenger: controller.binaryMessenger)
@@ -147,33 +160,27 @@ import CoreVideo
       }
       switch call.method {
       case "createTexture":
-        guard let registry = self.textures else {
-          result(FlutterError(code: "no-registry", message: nil, details: nil))
-          return
-        }
-        let tex = PlayerTexture(player: self.player)
-        let textureId = registry.register(tex)
-        tex.textureId = textureId
-        self.texture = tex
-        result(["textureId": textureId, "window": 0])
+        // 名字还叫 createTexture（Dart 侧与另外三个宿主共用一套方法名），
+        // 但 iOS 不再注册外部纹理：`textureId: -1` + `platformView: true`
+        // 让 Dart 侧走平台视图那条路，画面由 AVSampleBufferDisplayLayer 显示。
+        //
+        // 为什么放弃纹理：引擎只要看到有活跃的外部纹理就每个 vsync 重绘整棵
+        // layer tree（flutter/flutter#188616、#192181），120 Hz 屏放 30 fps
+        // 内容时四次合成里三次在重绘同一张图 —— 这就是「音频正常、画面卡顿」
+        // 的根，与解码快慢无关。
+        result(["textureId": -1, "window": 0, "platformView": true])
       case "attachPlayer":
         let args = call.arguments as? [String: Any]
         if let raw = args?["player"] as? Int {
           self.player = OpaquePointer(bitPattern: raw)
-          self.texture?.player = self.player
-          self.installFrameCallback()
+          self.videoBridge.bind(player: self.player)
         }
         result(nil)
       case "destroyTexture":
-        self.removeFrameCallback()
-        if let tex = self.texture {
-          // 先摘指针再注销：注销之后引擎不会再调 copyPixelBuffer，而 detach
-          // 会等已经进去的那一次返回。Dart 侧是 await 这个方法之后才释放
-          // 播放器，所以到这里返回时，内核对象已经没人引用了。
-          tex.detach()
-          self.textures?.unregisterTexture(tex.textureId)
-        }
-        self.texture = nil
+        // 先把播放器从显示层那条路上摘下来，再让 Dart 释放它：回调里会读
+        // 裸指针，晚一步就是 use-after-free。
+        self.videoBridge.unbind()
+        self.player = nil
         result(nil)
       case "lockLandscape":
         self.requestOrientation(landscape: (call.arguments as? Bool) ?? false)
@@ -298,30 +305,6 @@ import CoreVideo
     requestOrientation(landscape: want)
   }
 
-  /// 内核在解码线程回调；textureFrameAvailable 本身线程安全，直接调用即可。
-  ///
-  /// 以前这里绕了一次 DispatchQueue.main.async 再通知。头文件写得很清楚：
-  /// 「This will trigger a call to -copyPixelBuffer on the raster thread」，
-  /// 引擎本来就是在 raster 线程按 vsync 来取的，先挤进主队列只是给每一帧
-  /// 多加一段主线程延迟。主线程一忙（界面动画、字幕重排），内核那边的单槽
-  /// 缓冲早就被下一帧顶掉，于是画面跳帧而音频照常 —— 这就是「音频正常、
-  /// 画面卡顿」在 iPad 上的来源。
-  private func installFrameCallback() {
-    guard let player else { return }
-    let ctx = Unmanaged.passUnretained(self).toOpaque()
-    lp_player_install_frame_callback(player, { user in
-      guard let user else { return }
-      let delegate = Unmanaged<AppDelegate>.fromOpaque(user).takeUnretainedValue()
-      if let tex = delegate.texture {
-        delegate.textures?.textureFrameAvailable(tex.textureId)
-      }
-    }, ctx)
-  }
-
-  private func removeFrameCallback() {
-    guard let player else { return }
-    lp_player_install_frame_callback(player, nil, nil)
-  }
 }
 
 /// 最小的 UIScene 适配：创建窗口、把 FlutterViewController 放到根上，
@@ -354,53 +337,5 @@ import CoreVideo
     app?.configureAudioSession()
     // 启动瞬间 scene 还没接好，那次横屏请求会被系统丢掉，这里补发。
     app?.applyPendingOrientation()
-  }
-}
-
-/// 把内核给出的 CVPixelBuffer 零拷贝交给 Flutter 纹理：像素缓冲是
-/// IOSurface 支持的，直接让引擎读取即可。
-final class PlayerTexture: NSObject, FlutterTexture {
-  /// 播放器裸指针只在主线程赋值、在 raster 线程读，所以走同一把锁。
-  /// 以前它是普通存储属性：主线程释放播放器与 raster 线程取帧之间没有任何
-  /// 同步，取帧那一侧可能正好锁在已销毁的 mutex 上。
-  private let lock = NSLock()
-  private var storedPlayer: OpaquePointer?
-
-  var player: OpaquePointer? {
-    get {
-      lock.lock()
-      defer { lock.unlock() }
-      return storedPlayer
-    }
-    set {
-      lock.lock()
-      storedPlayer = newValue
-      lock.unlock()
-    }
-  }
-
-  var textureId: Int64 = -1
-
-  init(player: OpaquePointer?) {
-    self.storedPlayer = player
-  }
-
-  /// 释放播放器之前调用。锁在这里不只是防数据竞争：它保证已经进到
-  /// copyPixelBuffer 里的那一次调用走完，之后内核对象才可以被 free。
-  func detach() {
-    lock.lock()
-    storedPlayer = nil
-    lock.unlock()
-  }
-
-  func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
-    // 整段持有锁：先取指针、再调内核，两步之间不能被 detach 挤进来。
-    lock.lock()
-    defer { lock.unlock() }
-    guard let player = storedPlayer, let buffer = lp_player_copy_pixel_buffer(player) else {
-      return nil
-    }
-    // 内核返回的是 +1 引用，所有权转交 Flutter。
-    return Unmanaged<CVPixelBuffer>.fromOpaque(buffer)
   }
 }

@@ -2755,6 +2755,11 @@ def check_video_bridge_contract() -> None:
     android_activity = (ROOT / "app" / "android" / "app" / "src" / "main" /
                         "kotlin" / "dev" / "lanplayer" / "app" /
                         "MainActivity.kt")
+    ios_view = ROOT / "app" / "ios" / "Runner" / "VideoPlatformView.swift"
+    ios_delegate = ROOT / "app" / "ios" / "Runner" / "AppDelegate.swift"
+    # 两端逐字比对用的那一份「标准答案」，两个平台分支共用。
+    expected = re.search(
+        r"lanplayerVideoSurfaceViewType\s*=\s*'([^']+)'", contract)
     if "lanplayerVideoSurfaceViewType" not in contract:
         problems.append("packages/lanplayer_video/lib/src/channel.dart no "
                         "longer declares lanplayerVideoSurfaceViewType; the "
@@ -2767,8 +2772,6 @@ def check_video_bridge_contract() -> None:
     else:
         kt = android_view.read_text(encoding="utf-8")
         declared = re.search(r'VIEW_TYPE\s*=\s*"([^"]+)"', kt)
-        expected = re.search(
-            r"lanplayerVideoSurfaceViewType\s*=\s*'([^']+)'", contract)
         if declared is None:
             problems.append("VideoSurfaceView.kt no longer declares VIEW_TYPE; "
                             "MainActivity cannot register the factory")
@@ -2828,6 +2831,70 @@ def check_video_bridge_contract() -> None:
             problems.append("surface_view.dart no longer builds an "
                             "AndroidViewSurface for the controller; a plain "
                             "widget cannot place a native view")
+
+    # 6b. iOS 一侧的同一份契约。
+    #     两端各有一处「必须逐字相同」的类型名，任何一边改名都会让引擎报
+    #     unknown view type，而现场表现只是黑屏。
+    supported = re.search(r"static bool get isSupported\s*=>\s*([^;]+);", sv_code)
+    if supported is None:
+        problems.append("surface_view.dart lost the isSupported predicate; the "
+                        "player screen falls back to an empty box everywhere")
+    elif "Platform.isIOS" not in supported.group(1):
+        problems.append("surface_view.dart no longer claims iOS in "
+                        "isSupported; the iPhone/iPad would fall back to an "
+                        "empty box and show no picture at all")
+    elif "Platform.isAndroid" not in supported.group(1):
+        problems.append("surface_view.dart no longer claims Android in "
+                        "isSupported; the Android surface would disappear")
+    if "UiKitView(" not in sv_code:
+        problems.append("surface_view.dart no longer builds a UiKitView on "
+                        "iOS; the UIView that hosts the display layer would "
+                        "never be created or composited")
+    if re.search(r"initUiKitView\(", sv_code):
+        problems.append("surface_view.dart calls initUiKitView directly; "
+                        "UiKitView already creates its controller, and doing it "
+                        "by hand leaves a second, unmanaged platform view "
+                        "behind")
+    if not ios_view.exists():
+        problems.append("app/ios/Runner/VideoPlatformView.swift is gone; iOS "
+                        "has no view to carry the decoding output and the "
+                        "player screen would stay black")
+    else:
+        swift = ios_view.read_text(encoding="utf-8")
+        declared_ios = re.search(
+            r'let\s+lanplayerVideoSurfaceViewType\s*=\s*"([^"]+)"', swift)
+        if declared_ios is None:
+            problems.append("VideoPlatformView.swift no longer declares "
+                            "lanplayerVideoSurfaceViewType as a literal; the "
+                            "two sides could drift apart silently")
+        elif expected is not None and declared_ios.group(1) != expected.group(1):
+            problems.append(
+                f"platform view type mismatch on iOS: channel.dart says "
+                f"{expected.group(1)!r} but VideoPlatformView.swift registers "
+                f"{declared_ios.group(1)!r}; the engine would never find the "
+                f"factory and the picture would stay blank")
+        if "AVSampleBufferDisplayLayer.self" not in swift:
+            problems.append("VideoPlatformView.swift no longer makes the view "
+                            "back itself with AVSampleBufferDisplayLayer")
+        if "FlutterPlatformViewFactory" not in swift:
+            problems.append("VideoPlatformView.swift no longer implements "
+                            "FlutterPlatformViewFactory; the registrar has "
+                            "nothing to register")
+        if "func view() -> UIView" not in swift:
+            problems.append("VideoPlatformView.swift no longer answers view(); "
+                            "the FlutterPlatformView protocol needs the UIView "
+                            "to composite")
+    if not ios_delegate.exists():
+        problems.append("app/ios/Runner/AppDelegate.swift is gone")
+    else:
+        adv = ios_delegate.read_text(encoding="utf-8")
+        ad_code = "\n".join(
+            line for line in adv.splitlines()
+            if not line.strip().startswith("//"))
+        if "register(" not in ad_code or "withId:" not in ad_code:
+            problems.append("AppDelegate.swift never registers the iOS platform "
+                            "view factory; creating the view would fail with an "
+                            "unknown view type")
 
     # 7. 平台视图的布局尺寸就是它的缓冲区尺寸。
     #    纹理那条路把画面塞进一个「1000 逻辑像素高」的虚拟盒子，好让
@@ -5907,35 +5974,79 @@ def check_texture_delivery() -> None:
             "native/src/core/video.c: received frames are not counted on both "
             "decode paths, so the conservation check only covers one of them")
 
-    for path, name in ((ios, "AppDelegate.swift"),
-                       (macos, "MainFlutterWindow.swift")):
-        if not path.exists():
-            problems.append(f"{name} is gone")
-            continue
-        text = path.read_text(encoding="utf-8")
+    # macOS 仍是外部纹理：没有平台视图那条路，帧只能交给纹理注册表。
+    if not macos.exists():
+        problems.append("MainFlutterWindow.swift is gone")
+    else:
+        text = macos.read_text(encoding="utf-8")
         if "textureFrameAvailable(" not in text:
-            problems.append(f"{name} never notifies the texture registry")
+            problems.append("MainFlutterWindow.swift never notifies the texture "
+                            "registry")
         start = text.find("func installFrameCallback()")
         if start < 0:
-            problems.append(f"{name} lost installFrameCallback()")
-            continue
-        end = text.find("\n  }", start)
-        body = text[start:end if end > 0 else len(text)]
-        if "DispatchQueue.main.async" in body:
-            problems.append(
-                f"{name} hops to the main queue before notifying the texture "
-                "registry; textureFrameAvailable is safe from any thread and "
-                "the extra hop delays every frame by up to a runloop, which "
-                "is what made video stutter while audio stayed smooth")
+            problems.append("MainFlutterWindow.swift lost installFrameCallback()")
+        else:
+            end = text.find("\n  }", start)
+            body = text[start:end if end > 0 else len(text)]
+            if "DispatchQueue.main.async" in body:
+                problems.append(
+                    "MainFlutterWindow.swift hops to the main queue before "
+                    "notifying the texture registry; textureFrameAvailable is safe "
+                    "from any thread and the extra hop delays every frame by up to "
+                    "a runloop, which is what made video stutter while audio "
+                    "stayed smooth")
 
-    notes.append("texture delivery: the Apple hosts hand every decoded frame "
-                 "straight to the texture registry, the core counts the frames "
-                 "a busy raster thread never picked up and reports the spacing "
-                 "on both sides of that hand-off (publish intervals inside the "
-                 "core, pull intervals as the engine asks for frames), the "
-                 "stats event keeps them apart from decode drops, and late "
-                 "frames are spaced by the real frame period instead of being "
-                 "flushed as a batch")
+    # iOS 不再走纹理，画面由 AVSampleBufferDisplayLayer 直接显示。这条路上
+    # 有三个开关一旦被改回去，症状全部是「音频正常、画面不动」，而屏幕上看
+    # 不出原因，所以逐个钉住。
+    ios_platform = ROOT / "app" / "ios" / "Runner" / "VideoPlatformView.swift"
+    if not ios.exists():
+        problems.append("AppDelegate.swift is gone")
+    elif not ios_platform.exists():
+        problems.append(
+            "app/ios/Runner/VideoPlatformView.swift is gone; iOS would have "
+            "neither a texture nor a display layer to show the picture on")
+    else:
+        delegate = ios.read_text(encoding="utf-8")
+        layer = ios_platform.read_text(encoding="utf-8")
+        for needle, why in (
+            ("AVSampleBufferDisplayLayer.self",
+             "VideoDisplayView no longer backs itself with "
+             "AVSampleBufferDisplayLayer; nothing would render the enqueued "
+             "sample buffers"),
+            ("displayLayer.sampleBufferRenderer.enqueue(",
+             "the iOS 17+ path no longer enqueues through sampleBufferRenderer; "
+             "the layer-level AVQueuedSampleBufferRendering methods are deprecated "
+             "since iOS 18 and unsafe off the main thread"),
+            ("kCMSampleAttachmentKey_DisplayImmediately",
+             "sample buffers are enqueued without the display-immediately "
+             "attachment; the layer would schedule them against the host's made-up "
+             "timestamps and show them late or never"),
+            ("lp_player_install_frame_callback(",
+             "the bridge never installs the core frame callback; no frame would "
+             "ever reach the display layer"),
+        ):
+            if needle not in layer:
+                problems.append(f"app/ios/Runner/VideoPlatformView.swift: {why}")
+        if '"platformView": true' not in delegate:
+            problems.append(
+                "AppDelegate.swift no longer answers createTexture with "
+                "platformView: true; Dart would keep the external texture path "
+                "and the engine would repaint the whole layer tree every vsync")
+        if "register(" not in delegate or "withId:" not in delegate:
+            problems.append(
+                "AppDelegate.swift never registers the platform view factory; "
+                "creating the view would fail with an unknown view type")
+
+    notes.append("texture delivery: the macOS host hands every decoded frame "
+                 "straight to the texture registry, iOS shows the picture through "
+                 "an AVSampleBufferDisplayLayer platform view so no external "
+                 "texture is ever live, the core counts the frames a busy raster "
+                 "thread never picked up and reports the spacing on both sides of "
+                 "that hand-off (publish intervals inside the core, pull intervals "
+                 "as the engine asks for frames), the stats event keeps them apart "
+                 "from decode drops, and late frames are spaced by the real frame "
+                 "period instead of being flushed as a batch")
 
 
 def check_startup_home() -> None:
@@ -6315,9 +6426,9 @@ def check_review5_fixes() -> None:
         if needle not in text:
             problems.append(f"{rel}: lost its subtitle blending behaviour")
 
-    # 宿主纹理：销毁时必须先摘播放器指针。
-    for rel in ("app/ios/Runner/AppDelegate.swift",
-                "app/macos/Runner/MainFlutterWindow.swift"):
+    # 宿主纹理：销毁时必须先摘播放器指针。iOS 已改走平台视图，纹理侧
+    # 已无 PlayerTexture，只留下 macOS 这一份。
+    for rel in ("app/macos/Runner/MainFlutterWindow.swift",):
         text = text_of(rel)
         if "func detach()" not in text:
             problems.append(
