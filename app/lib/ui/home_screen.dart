@@ -80,23 +80,31 @@ class _HomeScreenState extends State<HomeScreen> {
   /// 摊平后的来源列表。
   ///
   /// 两个 store 都只在读盘完成或增删改时变，所以按「服务器列表 + 本地目录
-  /// 列表的同一性」缓存一次。以前每次读 getter 都重新 buildHomeSources，
+  /// 列表的内容版本号」缓存一次。以前每次读 getter 都重新 buildHomeSources，
   /// 而 build() 里读它、_loadAll 里读它、_onStoreChanged 里还要再读一次。
+  ///
+  /// 版本号而不是列表实例的同一性：两个 store 的 List 字段是固定的同一个
+  /// 实例，增删都在原地做，`identical` 永远是 true —— 用它判断就等于永不
+  /// 失效。0.1.8 的安卓 release 包加完本地文件夹首页仍是空状态、重启自愈
+  /// 不能，根因就在这里：首帧按空列表缓存了 buildHomeSources 的结果，之后
+  /// 加了目录，缓存不失效，_loadAll 拿到的还是空列表直接 return。
   List<HomeSource>? _sourcesCache;
-  List<ServerProfile>? _sourcesServers;
-  List<LocalFolder>? _sourcesFolders;
+  int? _sourcesServersRev;
+  int? _sourcesFoldersRev;
 
   List<HomeSource> get _sources {
     final servers = ServerStore.instance.servers;
     final folders = LocalFolderStore.instance.folders;
-    if (identical(servers, _sourcesServers) &&
-        identical(folders, _sourcesFolders) &&
+    final serversRev = ServerStore.instance.revision;
+    final foldersRev = LocalFolderStore.instance.revision;
+    if (serversRev == _sourcesServersRev &&
+        foldersRev == _sourcesFoldersRev &&
         _sourcesCache != null) {
       return _sourcesCache!;
     }
     final built = buildHomeSources(servers, folders);
-    _sourcesServers = servers;
-    _sourcesFolders = folders;
+    _sourcesServersRev = serversRev;
+    _sourcesFoldersRev = foldersRev;
     _sourcesCache = built;
     return built;
   }

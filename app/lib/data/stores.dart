@@ -157,6 +157,16 @@ class ServerStore extends ChangeNotifier {
   final List<ServerProfile> servers = <ServerProfile>[];
   bool _loaded = false;
 
+  /// 内容版本号，每次列表变化自增。
+  ///
+  /// [servers] 是固定的那个 List 实例，增删改都在原地做，所以外部无法用
+  /// 「是不是同一个列表」判断内容变没变。首页按版本号缓存摊平后的来源
+  /// 列表，只认这两个数字。
+  int _revision = 0;
+
+  /// 内容版本号。只在内容真的变了时才 +1。
+  int get revision => _revision;
+
   /// 磁盘上的列表是否已经读进来了。首页靠它区分「真的没有来源」与
   /// 「还没读完」—— 后者不该显示空状态。
   bool get loaded => _loaded;
@@ -171,6 +181,7 @@ class ServerStore extends ChangeNotifier {
       ..clear()
       ..addAll(items);
     _loaded = true;
+    _revision++;
     notifyListeners();
   }
 
@@ -179,6 +190,7 @@ class ServerStore extends ChangeNotifier {
   void debugReset() {
     servers.clear();
     _loaded = false;
+    _revision++;
   }
 
   Future<void> load() async {
@@ -195,6 +207,7 @@ class ServerStore extends ChangeNotifier {
       }
     }
     _loaded = true;
+    _revision++;
     notifyListeners();
   }
 
@@ -232,6 +245,7 @@ class ServerStore extends ChangeNotifier {
       'version': 1,
       'servers': servers.map((s) => s.toJson()).toList(),
     });
+    _revision++;
     notifyListeners();
   }
 }

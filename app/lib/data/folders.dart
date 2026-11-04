@@ -80,6 +80,15 @@ class LocalFolderStore extends ChangeNotifier {
   final List<LocalFolder> folders = <LocalFolder>[];
   bool _loaded = false;
 
+  /// 内容版本号，每次列表变化自增。
+  ///
+  /// [folders] 是固定的那个 List 实例，增删都在原地做，外部没法靠「是不是
+  /// 同一个列表」判断内容变没变。首页按版本号缓存摊平后的来源列表。
+  int _revision = 0;
+
+  /// 内容版本号。只在内容真的变了时才 +1。
+  int get revision => _revision;
+
   /// 已经读过磁盘。首页用它区分「真的没有来源」与「还没读完」。
   bool get loaded => _loaded;
 
@@ -93,6 +102,7 @@ class LocalFolderStore extends ChangeNotifier {
       ..clear()
       ..addAll(items);
     _loaded = true;
+    _revision++;
     notifyListeners();
   }
 
@@ -101,6 +111,7 @@ class LocalFolderStore extends ChangeNotifier {
   void debugReset() {
     folders.clear();
     _loaded = false;
+    _revision++;
   }
 
   Future<void> load() async {
@@ -119,6 +130,7 @@ class LocalFolderStore extends ChangeNotifier {
       }
     }
     _loaded = true;
+    _revision++;
     notifyListeners();
   }
 
@@ -195,6 +207,7 @@ class LocalFolderStore extends ChangeNotifier {
       'version': 1,
       'folders': folders.map((f) => f.toJson()).toList(),
     });
+    _revision++;
     notifyListeners();
   }
 }

@@ -1466,6 +1466,28 @@ def check_thumbnails() -> None:
         if "showSourceFilter(" not in hc:
             problems.append("home_screen must offer the source filter when "
                             "several sources are on the page")
+        # 来源列表的缓存必须按 store 的内容版本号失效，不能按 List 实例的
+        # 同一性。两个 store 的 List 字段是固定的同一个实例，增删都在原地
+        # 做，`identical` 恒为真 —— 用它当判据等于永不失效：加完本地文件夹
+        # 首页仍显示「还没有内容」，重启也自愈不了（首帧又按空列表缓存一遍）。
+        if "ServerStore.instance.revision" not in hc:
+            problems.append("home_screen must invalidate its source cache on "
+                            "ServerStore revision; the list instance never "
+                            "changes, so a same-instance check never expires")
+        if "LocalFolderStore.instance.revision" not in hc:
+            problems.append("home_screen must invalidate its source cache on "
+                            "LocalFolderStore revision; the list instance "
+                            "never changes, so a same-instance check never "
+                            "expires")
+        for store, path in (("ServerStore", ROOT / "app" / "lib" / "data" / "stores.dart"),
+                            ("LocalFolderStore", folders)):
+            if not path.is_file():
+                continue
+            body = path.read_text(encoding="utf-8")
+            if "int get revision" not in body:
+                problems.append(f"{store} must expose an int revision getter; "
+                                f"the home screen has no other way to tell "
+                                f"that the in-place list changed")
         # 首页有来源时不再挂一个右下的浮动按钮，添加入口收进顶栏，紧挨设置。
         # 反过来的写法（FloatingActionButton 又冒出来）会让列表底部永远空出
         # 一条挡板的空白，也和「空状态页已经有两颗按钮」重复。
@@ -6843,7 +6865,7 @@ def check_dart_hot_paths() -> None:
          "the header counts folders by scanning the directory tree again on "
          "every frame instead of using the cached list"),
         ("app/lib/ui/home_screen.dart",
-         "if (identical(servers, _sourcesServers) &&",
+         "if (serversRev == _sourcesServersRev &&",
          "the home source list is rebuilt from scratch on every read again; "
          "build(), _loadAll() and _onStoreChanged() all read it"),
         ("app/lib/ui/settings_screen.dart",
