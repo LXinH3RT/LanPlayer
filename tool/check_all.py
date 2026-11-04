@@ -2008,6 +2008,23 @@ def check_native_runtime() -> None:
         problems.append("native smoke test failed:\n" + out.strip()[-1500:])
     else:
         notes.append("native runtime: ABI + schemes OK")
+    # 这个可执行文件链的是 stub 后端：`lp_render_available()` 为假，
+    # `lp_render_draw()` 恒返回 LP_ERR_UNSUPPORTED。解码出来的帧必须照样算作
+    # 「已解码」，否则 headless 构建里 decoded 永远是 0，一段正常片子会被判成
+    # 「6 秒没解出一帧」（CI 的 `windows x64 native core` 因此红了两轮）。
+    # 只跑一次带片子的冒烟测试来钉住这一点；缺片子时跳过并说明。
+    clip = ROOT / "build" / "media" / "clip.mp4"
+    if not clip.exists():
+        notes.append("native runtime: no clip.mp4, headless decode check skipped")
+        return
+    code, out = run([str(exe), str(clip), "6"], env=env, cwd=str(out_dir))
+    if code != 0 or "all checks passed" not in out:
+        problems.append("native smoke test with a clip failed; the headless "
+                        "build has no renderer, so every frame must still count "
+                        "as decoded:\n" + out.strip()[-1500:])
+    else:
+        notes.append("native runtime: the null renderer decodes a clip without "
+                     "counting every frame as a drop")
 
 def check_hw_decode() -> None:
     """Runs the D3D11VA end-to-end test when the native build exists.
@@ -5399,6 +5416,18 @@ def check_playback_orientation() -> None:
         if "lockLandscape" not in st_ios:
             problems.append("AppDelegate.swift no longer answers the "
                             "lockLandscape method")
+        # `#available(iOS 26.0, *)` only guards the running OS; the compiler
+        # still has to resolve the member against the SDK being built with.
+        # CI and most development machines sit on an 18.x SDK, where reading
+        # these turns the whole iOS build red.  Comments may mention them.
+        code_ios = "\n".join(line for line in st_ios.splitlines()
+                             if not line.strip().startswith("//"))
+        for newer in ("isInterfaceOrientationLocked", "effectiveGeometry"):
+            if newer in code_ios:
+                problems.append(f"AppDelegate.swift reads {newer}, which only "
+                                "exists in the iPadOS 26 SDK; #available does "
+                                "not protect the compiler, so every machine on "
+                                "an 18.x SDK fails to build iOS")
     if contract.exists():
         ct = contract.read_text(encoding="utf-8")
         if "lockLandscape" not in ct:

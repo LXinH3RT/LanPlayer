@@ -233,23 +233,22 @@ import CoreVideo
       let bounds = win?.bounds ?? .zero
       // iPadOS 26 起窗口由系统分配：只在「scene 居中、与屏幕同尺寸、未被遮挡」
       // 三项都成立时才允许锁定界面方向（见 UIViewController.h 的
-      // prefersInterfaceOrientationLocked）。所以日志里要把屏幕尺寸、窗口实际
-      // frame、当前方向锁状态一起打出来，才能分清「系统拒绝方向」和「窗口不是
-      // 全屏」；`requestGeometryUpdate` 的成功不回调，只有失败才回调，前后两次
-      // 尺寸对比是唯一能证明请求生效的证据。
+      // prefersInterfaceOrientationLocked）。所以日志里要把屏幕尺寸与窗口实际
+      // frame 一起打出来，才能分清「系统拒绝方向」和「窗口不是全屏」；
+      // `requestGeometryUpdate` 的成功不回调，只有失败才回调，前后两次尺寸对比
+      // 是唯一能证明请求生效的证据。
+      //
+      // 方向锁状态本身（`UIWindowScene.Geometry.isInterfaceOrientationLocked`）
+      // 读不到：它随 iPadOS 26 的 SDK 一起出现，而 CI 与多数开发机的 iOS SDK
+      // 还停在 18.x；`#available` 只挡运行期，挡不住编译期对这个成员的解析，
+      // 会直接把整个 iOS 构建打红。这里只留尺寸证据。
       let screen = scene.screen.bounds
-      // `isInterfaceOrientationLocked` 是 iOS 26 才有的，老系统上按「没锁」记。
-      var locked = false
-      if #available(iOS 26.0, *) {
-        locked = scene.effectiveGeometry.isInterfaceOrientationLocked
-      }
       NSLog("LanPlayer orientation: requesting geometry (landscape=\(landscape), "
               + "attempt=\(attempt), scene=\(scene.activationState.rawValue), "
               + "interfaceOrientation=\(scene.interfaceOrientation.rawValue), "
               + "vcMask=\(vcMask), windows=\(scene.windows.count), "
               + "screen=\(Int(screen.width))x\(Int(screen.height)), "
-              + "frame=\(Int(bounds.width))x\(Int(bounds.height)), "
-              + "locked=\(locked))")
+              + "frame=\(Int(bounds.width))x\(Int(bounds.height)))")
       // 关键顺序：先让 FlutterViewController 放开对目标方向的支持，再请求几何。
       // 反过来的话系统看到「当前窗口只支持竖屏」，直接把这个请求丢掉。
       root?.setNeedsUpdateOfSupportedInterfaceOrientations()

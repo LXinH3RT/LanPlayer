@@ -710,8 +710,15 @@ void *lp_video_thread_fn(void *arg)
             } else {
                 /* 上屏失败（窗口没了、surface 被回收）就把这一帧算成丢帧，
                  * 否则 frames_decoded 会一直涨而屏幕上什么都没有。以前这里
-                 * 直接丢弃返回值。 */
-                if (lp_render_draw(p, shown) < 0) {
+                 * 直接丢弃返回值。
+                 *
+                 * 但「压根没有渲染器」不算失败：headless 构建（CI 的
+                 * lp_smoke_test 走 stub 后端）里 lp_render_draw 恒返回
+                 * LP_ERR_UNSUPPORTED，按上屏失败算会让 decoded 永远是 0，
+                 * 于是一个解码完全正常的片子被判成「6 秒没解出一帧」。
+                 * 有没有渲染器和渲染器报错是两件事，分开判。 */
+                int drawn = lp_render_available() ? lp_render_draw(p, shown) : LP_OK;
+                if (drawn < 0) {
                     p->video.frames_dropped++;
                     p->stats_dropped++;
                     av_frame_unref(frame);
