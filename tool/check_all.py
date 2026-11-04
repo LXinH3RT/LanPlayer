@@ -2829,6 +2829,37 @@ def check_video_bridge_contract() -> None:
                             "AndroidViewSurface for the controller; a plain "
                             "widget cannot place a native view")
 
+    # 7. 平台视图的布局尺寸就是它的缓冲区尺寸。
+    #    纹理那条路把画面塞进一个「1000 逻辑像素高」的虚拟盒子，好让
+    #    FittedBox 按视频比例贴合 —— 纹理只是把位图画进目标矩形，给多大都
+    #    无所谓。平台视图不行：系统按布局尺寸分配真实的图形缓冲，1778×1000
+    #    逻辑在 520 dpi 屏上就是 5777×3250 物理像素，约 76 MB 一块、三缓冲
+    #    两百多兆，比整屏还大四倍。这条回归在真机上只看画面是看不出来的
+    #    （照样流畅播放），只有 `GraphicBufferAllocator` 日志会露出来。
+    video_surface_widget = (ROOT / "app" / "lib" / "ui" / "widgets" /
+                            "video_surface.dart")
+    if not video_surface_widget.exists():
+        problems.append("app/lib/ui/widgets/video_surface.dart is gone")
+    else:
+        vs = video_surface_widget.read_text(encoding="utf-8")
+        if "this.nativeSurface = false" not in vs:
+            problems.append("VideoSurface lost the nativeSurface flag; the "
+                            "platform view would be laid out inside the "
+                            "1000-logical-pixel virtual box and get a "
+                            "graphics buffer several times the screen size")
+        if "fittedSize(" not in vs:
+            problems.append("VideoSurface no longer computes the fitted "
+                            "rectangle for native surfaces; the platform view "
+                            "would size its buffer off the virtual box")
+        player = (ROOT / "app" / "lib" / "ui" / "player_screen.dart")
+        if player.exists():
+            ps = player.read_text(encoding="utf-8")
+            if "nativeSurface: texture.platformView" not in ps:
+                problems.append("player_screen.dart no longer passes "
+                                "nativeSurface: texture.platformView to "
+                                "VideoSurface; the Android surface would go "
+                                "back to the oversized-buffer layout")
+
     if not problems:
         notes.append("video bridge: one channel contract, four hosts answering "
                      "the same names, and Android showing the picture through "

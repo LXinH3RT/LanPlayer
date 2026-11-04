@@ -1789,6 +1789,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     return VideoSurface(
       scaleMode: _settings.scaleMode,
       videoAspectRatio: _videoAspectRatio,
+      // 平台视图的布局尺寸就是它的缓冲区尺寸，不能跟着纹理那条路的
+      // 虚拟盒子走（见 [VideoSurface.nativeSurface]）。
+      nativeSurface: texture.platformView,
       child: RotatedBox(
         quarterTurns: _videoQuarterTurns,
         child: picture,
