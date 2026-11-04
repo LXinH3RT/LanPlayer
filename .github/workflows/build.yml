@@ -140,6 +140,16 @@ jobs:
       - name: build apk
         working-directory: app
         run: flutter build apk --release --target-platform android-arm64
+      - name: upload apk
+        # 没有这一步，CI 的 APK 只存在于那个跑完就销毁的容器里：想做真机验证
+        # 就得自己搭一套 SDK/NDK，而 Windows 开发机上这套工具链根本不存在。
+        # 名字固定，方便 `gh run download --name lanplayer-apk` 直接取。
+        uses: actions/upload-artifact@v4
+        with:
+          name: lanplayer-apk
+          path: app/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
 
   apple:
     name: apple (iOS build only)

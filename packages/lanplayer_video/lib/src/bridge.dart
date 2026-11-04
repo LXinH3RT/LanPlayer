@@ -6,10 +6,10 @@ import 'channel.dart';
 
 export 'channel.dart';
 
-/// 一块由平台侧创建的视频纹理。
+/// 一块由平台侧创建的视频输出。
 ///
-/// Android：[windowPtr] 是平台给出的 `ANativeWindow*`，内核（EGL 软解或
-/// MediaCodec 硬解）直接画进去。
+/// Android：[platformView] 为真，画面由平台视图（原生 `SurfaceView`）提供，
+/// 内核直接画进那块 Surface，Dart 侧不碰纹理也不碰窗口指针。
 /// iOS / macOS： [windowPtr] 为 [TextureWindowPtr.inProcess]，内核发布
 /// `CVPixelBuffer`，Swift 的 `FlutterTexture` 去取。
 /// Windows： 同样为 [TextureWindowPtr.inProcess]，插件用 D3D11 共享纹理把帧
@@ -20,6 +20,7 @@ class VideoTexture {
     required this.windowPtr,
     required this.width,
     required this.height,
+    this.platformView = false,
   });
 
   final int textureId;
@@ -27,15 +28,22 @@ class VideoTexture {
   final int width;
   final int height;
 
-  /// 内核要不要自己往窗口里画。只有 Android 是 true。
-  bool get needsSurface => windowPtr != TextureWindowPtr.inProcess;
+  /// 画面由原生平台视图提供（Android）。为真时 [textureId] 无意义，Dart 侧
+  /// 应该建 `VideoSurfaceView` 而不是 `Texture`。
+  final bool platformView;
+
+  /// 内核要不要自己往窗口里画，且这个窗口指针是否需要 Dart 转交。
+  ///
+  /// 平台视图自己管窗口，Dart 不转交，所以这里明确要求「不是平台视图」。
+  bool get needsSurface =>
+      !platformView && windowPtr != TextureWindowPtr.inProcess;
 }
 
 /// 视频纹理通道的 Dart 侧。
 ///
-/// 三个宿主（Windows C++ 插件 / macOS Swift / iOS Swift）注册同一个方法通道，
-/// 所以这里的调用点在整个工程里只有一份。通道名、方法名、参数键都在
-/// `src/channel.dart` 里；原生侧由静态检查保证三份实现认同一套名字。
+/// 四份宿主（Windows C++ 插件 / macOS Swift / iOS Swift / Android Kotlin）注册
+/// 同一个方法通道，所以这里的调用点在整个工程里只有一份。通道名、方法名、
+/// 参数键都在 `src/channel.dart` 里；原生侧由静态检查保证四份实现认同一套名字。
 ///
 /// 所有方法都对 `MissingPluginException` / `PlatformException` 保持静默并返回
 /// 「没做成」：桌面测试宿主、`flutter test`、以及没有插件的平台上，播放器应该
@@ -65,6 +73,7 @@ class VideoTextureBridge {
         windowPtr: (map[TextureReplyKey.window] as num?)?.toInt() ?? 0,
         width: width,
         height: height,
+        platformView: map[TextureReplyKey.platformView] == true,
       );
       _current = tex;
       return tex;

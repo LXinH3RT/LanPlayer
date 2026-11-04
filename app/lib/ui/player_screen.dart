@@ -246,10 +246,16 @@ class _PlayerScreenState extends State<PlayerScreen>
   /// 更新，旋转之后画面会被拉伸或留黑边。宽或高变化不到
   /// [_surfaceResizeThreshold] 时不下发：拖窗口时尺寸每帧都在小步变化，
   /// 逐帧调 FFI 只是把内核的视口反复重建。
+  ///
+  /// 平台视图那条路不走这里：Android 的 SurfaceView 尺寸由系统布局决定，
+  /// 宿主在 `surfaceChanged` 里直接把真实宽高交给内核，比这里按屏幕长/短边
+  /// 算出来的数字准。
   void _syncSurfaceSize() {
     if (!mounted) return;
     // 没有纹理（LANPLAYER_NO_TEXTURE=1）时内核根本没有渲染目标，下发了也没处用。
     if (_texture == null) return;
+    // 平台视图自己管尺寸，别用 Dart 算的数值覆盖系统布局的结果。
+    if (_texture!.platformView) return;
     // [_bootstrap] 还没跑完时没有可比的基准尺寸，等它把初值填上再说。
     if (_surfaceWidth <= 0 || _surfaceHeight <= 0) return;
     if (_player.nativeHandle == null) return;
@@ -1747,7 +1753,15 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  /// 画面本体：一张纹理按选定的缩放方式铺到整块区域上。
+  /// 画面本体：按选定的缩放方式铺满整块区域。
+  ///
+  /// 两种载体，按宿主分：
+  ///
+  /// - 桌面端与 iOS：Flutter 外部纹理，用 `Texture(textureId:)` 画。
+  /// - Android：原生 `SurfaceView` 平台视图。引擎只要看到有活跃的外部纹理，
+  ///   就会在每个 vsync 上重绘整棵 layer tree，与纹理有没有更新无关；120 Hz
+  ///   屏幕上放 30 fps 内容时四分之三的合成是白做的。SurfaceView 由系统合成器
+  ///   直接叠加，不进引擎的合成循环。
   ///
   /// 缩放不能交给内核：`scale_mode` 只有 Android 的 EGL 渲染器会读，桌面和 iOS
   /// 走的是 Flutter 外部纹理，内核帧被原样交给引擎。所以在这里用
@@ -1761,20 +1775,23 @@ class _PlayerScreenState extends State<PlayerScreen>
             child: Text('无视频输出', style: TextStyle(color: Colors.white38))),
       );
     }
+    // 竖着拍的手机视频把画面存成横的，真正的朝向记在容器的
+    // DISPLAYMATRIX 里（内核读出来换算成 rotation）。这里在显示层转正，
+    // 而不是让每个渲染后端去转像素：像素旋转每帧都要多一次全画面拷贝，
+    // 硬解的 Surface / CVPixelBuffer 还改不了尺寸，四个后端各写一遍更容易
+    // 写错。RotatedBox 只影响布局与绘制变换，没有额外拷贝。
+    //
+    // 转 90 / 270 度时宽高互换，这一份由 _videoAspectRatio 用
+    // displayWidth / displayHeight 保证，两者必须一致。
+    final picture = texture.platformView
+        ? const VideoSurfaceView()
+        : Texture(textureId: texture.textureId);
     return VideoSurface(
       scaleMode: _settings.scaleMode,
       videoAspectRatio: _videoAspectRatio,
-      // 竖着拍的手机视频把画面存成横的，真正的朝向记在容器的
-      // DISPLAYMATRIX 里（内核读出来换算成 rotation）。这里在显示层转正，
-      // 而不是让每个渲染后端去转像素：像素旋转每帧都要多一次全画面拷贝，
-      // 硬解的 Surface / CVPixelBuffer 还改不了尺寸，四个后端各写一遍更容易
-      // 写错。RotatedBox 只影响布局与绘制变换，没有额外拷贝。
-      //
-      // 转 90 / 270 度时宽高互换，这一份由 _videoAspectRatio 用
-      // displayWidth / displayHeight 保证，两者必须一致。
       child: RotatedBox(
         quarterTurns: _videoQuarterTurns,
-        child: Texture(textureId: texture.textureId),
+        child: picture,
       ),
     );
   }

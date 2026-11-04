@@ -13,13 +13,30 @@ library;
 /// 通道名。三个宿主与 Dart 侧都必须用它。
 const String lanplayerVideoChannel = 'lanplayer/video';
 
+/// 移动端视频输出的平台视图类型名。
+///
+/// Android 侧注册同一个字符串（`VideoSurfaceView.VIEW_TYPE`）。名字对不上时
+/// 现象是「一块永远黑的区域」，没有任何异常，所以 `tool/check_all.py` 会逐字
+/// 比对两边的字面量。
+///
+/// 为什么移动端不用纹理而用平台视图：Flutter 引擎只要看到有活跃的外部纹理，
+/// 就会在每个 vsync 上重绘整棵 layer tree，与纹理有没有更新无关。120 Hz 屏幕
+/// 放 30 fps 内容时四分之三的合成是白做的，而这条约束在引擎层面没有开关
+/// （`flutter/flutter#188616`、`flutter/flutter#192181`）。SurfaceView 的
+/// Surface 由系统合成器直接叠加，完全不进引擎的合成循环。
+const String lanplayerVideoSurfaceViewType = 'dev.lanplayer/video_surface';
+
 /// `createTexture` 的返回键。
 abstract final class TextureReplyKey {
-  /// 平台侧注册的 Flutter 纹理 id。
+  /// 平台侧注册的 Flutter 纹理 id；[platformView] 为真时是 -1。
   static const String textureId = 'textureId';
 
   /// 原生窗口指针；0 表示「内核直接投递帧」，见 [TextureWindowPtr.inProcess]。
   static const String window = 'window';
+
+  /// 真：这块画面由平台视图提供，Dart 侧应建 `VideoSurfaceView` 而不是
+  /// `Texture`。Android 目前总是如此。
+  static const String platformView = 'platformView';
 }
 
 /// `createTexture` 的参数键，以及它们的默认值（与原生侧一致）。

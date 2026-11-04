@@ -160,6 +160,17 @@ def check_build_matrix() -> None:
                                 f"old are retired and the job is cancelled while "
                                 f"queued, so nothing in it ever runs")
 
+        # 构建出来的 APK 必须能被取走。没有 upload-artifact，包只活在那个跑完
+        # 就销毁的容器里；Windows 开发机上没有 Android SDK/NDK/JDK，真机验证
+        # 就变成一句空话。
+        if "actions/upload-artifact" not in text:
+            problems.append("build.yml never uploads the apk; the only machine that "
+                            "can build one has no way to get it, so Android changes "
+                            "can never be tried on a device")
+        elif "app/build/app/outputs/flutter-apk/app-release.apk" not in text:
+            problems.append("build.yml uploads an artifact but not the release apk; "
+                            "the uploaded bundle would be missing the file to install")
+
     settings = APP / "android" / "settings.gradle"
     if not settings.exists():
         problems.append("app/android/settings.gradle missing")
@@ -216,7 +227,8 @@ def check_build_matrix() -> None:
         problems.append("scripts/build_android_deps.py no longer links the prebuilt "
                         "FFmpeg / libsmb2 objects for 16 KB pages")
 
-    notes.append("build matrix: four host builds in CI, and the Android toolchain "
+    notes.append("build matrix: four host builds in CI, the Android apk is "
+                 "uploaded so it can reach a phone, and the Android toolchain "
                  "stays inside the range compileSdk 35 and 16 KB pages need")
 
 
@@ -303,6 +315,7 @@ REQUIRED = [
     "app/lib/ui/player_screen.dart",
     "app/lib/ui/startup_reset.dart",
     "app/android/app/src/main/kotlin/dev/lanplayer/app/MainActivity.kt",
+    "app/android/app/src/main/kotlin/dev/lanplayer/app/VideoSurfaceView.kt",
     # A Gradle project needs these to build at all.  They are the stock Flutter
     # 3.27 templates (settings.gradle / build.gradle / gradle.properties /
     # wrapper), plus the res/ tree AndroidManifest.xml references via
@@ -323,6 +336,7 @@ REQUIRED = [
     "app/windows/runner/win32_window.cpp",
     "app/windows/flutter/generated_plugin_registrant.cc",
     "packages/lanplayer_video/pubspec.yaml",
+    "packages/lanplayer_video/lib/src/surface_view.dart",
     "packages/lanplayer_video/windows/CMakeLists.txt",
     "packages/lanplayer_video/windows/lanplayer_video_plugin.cpp",
     "packages/lanplayer_video/windows/include/lanplayer_video/lan_player_video_plugin.h",
@@ -2689,9 +2703,97 @@ def check_video_bridge_contract() -> None:
                             "longer derives needsSurface from "
                             "TextureWindowPtr.inProcess")
 
+    # 6. 移动端平台视图：Android 不再用外部纹理，画面交给一块 SurfaceView。
+    #    这条路的失效模式全是「没有任何异常的黑屏」—— 视图类型名对不上，
+    #    引擎只是找不到工厂；工厂没注册，视图建不出来；Dart 侧误用
+    #    initAndroidView，SurfaceView 会被画进一块纹理，绕了一圈又回到
+    #    每 vsync 重绘的老路上。三种都只能靠逐字比对钉住。
+    surface_view = (ROOT / "packages" / "lanplayer_video" / "lib" / "src" /
+                    "surface_view.dart")
+    android_view = (ROOT / "app" / "android" / "app" / "src" / "main" /
+                    "kotlin" / "dev" / "lanplayer" / "app" /
+                    "VideoSurfaceView.kt")
+    android_activity = (ROOT / "app" / "android" / "app" / "src" / "main" /
+                        "kotlin" / "dev" / "lanplayer" / "app" /
+                        "MainActivity.kt")
+    if "lanplayerVideoSurfaceViewType" not in contract:
+        problems.append("packages/lanplayer_video/lib/src/channel.dart no "
+                        "longer declares lanplayerVideoSurfaceViewType; the "
+                        "platform view type would be a bare string literal on "
+                        "both sides again")
+    if not android_view.exists():
+        problems.append("app/android/.../VideoSurfaceView.kt is gone; Android "
+                        "has no surface for the decoder to draw into and the "
+                        "player screen would stay black")
+    else:
+        kt = android_view.read_text(encoding="utf-8")
+        declared = re.search(r'VIEW_TYPE\s*=\s*"([^"]+)"', kt)
+        expected = re.search(
+            r"lanplayerVideoSurfaceViewType\s*=\s*'([^']+)'", contract)
+        if declared is None:
+            problems.append("VideoSurfaceView.kt no longer declares VIEW_TYPE; "
+                            "MainActivity cannot register the factory")
+        elif expected is None:
+            problems.append("channel.dart no longer gives "
+                            "lanplayerVideoSurfaceViewType a literal value, so "
+                            "the two sides cannot be compared")
+        elif declared.group(1) != expected.group(1):
+            problems.append(
+                f"platform view type mismatch: channel.dart says "
+                f"{expected.group(1)!r} but VideoSurfaceView.kt registers "
+                f"{declared.group(1)!r}; the engine would never find the "
+                f"factory and the surface would stay blank")
+        if "PlatformViewFactory" not in kt:
+            problems.append("VideoSurfaceView.kt no longer defines a "
+                            "PlatformViewFactory; registerViewFactory would "
+                            "have nothing to hand the engine")
+        if "holder.addCallback" not in kt and "addCallback(" not in kt:
+            problems.append("VideoSurfaceView.kt no longer listens for surface "
+                            "callbacks; the decoder would never be told when "
+                            "the surface appears or goes away")
+    if not android_activity.exists():
+        problems.append("MainActivity.kt is gone")
+    else:
+        act = android_activity.read_text(encoding="utf-8")
+        if "registerViewFactory" not in act:
+            problems.append("MainActivity.kt no longer calls "
+                            "registerViewFactory; the platform view would fail "
+                            "to create on every device")
+        if "nativeResizeSurface" not in act:
+            problems.append("MainActivity.kt lost nativeResizeSurface; the "
+                            "decoder output would keep the size it was first "
+                            "given after the surface is re-laid-out")
+
+    if not surface_view.exists():
+        problems.append("packages/lanplayer_video/lib/src/surface_view.dart is "
+                        "gone; the player screen has nothing to show on "
+                        "Android")
+    else:
+        sv = surface_view.read_text(encoding="utf-8")
+        sv_code = "\n".join(
+            line for line in sv.splitlines()
+            if not line.strip().startswith("//"))
+        if "PlatformViewsService.initSurfaceAndroidView(" not in sv_code:
+            problems.append("surface_view.dart no longer uses "
+                            "initSurfaceAndroidView; AndroidView's default "
+                            "initAndroidView renders the view into a texture, "
+                            "which is the very path this change exists to "
+                            "avoid")
+        if re.search(r"initAndroidView\(", sv_code):
+            problems.append("surface_view.dart calls initAndroidView, which is "
+                            "the texture-based path")
+        if "lanplayerVideoSurfaceViewType" not in sv_code:
+            problems.append("surface_view.dart hard-codes the platform view "
+                            "type instead of importing the contract constant")
+        if "AndroidViewSurface(" not in sv_code:
+            problems.append("surface_view.dart no longer builds an "
+                            "AndroidViewSurface for the controller; a plain "
+                            "widget cannot place a native view")
+
     if not problems:
         notes.append("video bridge: one channel contract, four hosts answering "
-                     "the same names")
+                     "the same names, and Android showing the picture through "
+                     "a SurfaceView instead of an external texture")
 
 def check_dart_tests() -> None:
     """Run the Dart test suite (share key + subtitle rendering).
@@ -6799,19 +6901,51 @@ def check_platform_lifecycle() -> None:
         return (ROOT / rel).read_text(encoding="utf-8")
 
     kotlin = text_of("app/android/app/src/main/kotlin/dev/lanplayer/app/MainActivity.kt")
+    surface = text_of(
+        "app/android/app/src/main/kotlin/dev/lanplayer/app/VideoSurfaceView.kt")
+    # Surface 的生死从 TextureRegistry.SurfaceProducer 的 callback 换到了
+    # SurfaceHolder.Callback（画面不再走外部纹理），但三条约束一字未变：
+    # 系统收回 Surface 时必须先把窗口摘下来再释放，重新拿到 Surface 时必须
+    # 再交给内核，晚到的回调用旧指针也不能把新窗口顶掉。
     for needle, why in (
-        ("installSurfaceCallback(p)",
-         "the surface producer is created without a callback; when the system "
-         "reclaims the Surface the core keeps a released ANativeWindow"),
-        ("override fun onSurfaceDestroyed()",
+        ("holder.addCallback(surfaceCallback)",
+         "nothing subscribes to the SurfaceHolder; when the system reclaims the "
+         "Surface the core keeps a released ANativeWindow"),
+        ("override fun surfaceDestroyed(",
          "nothing reacts to the Surface being destroyed"),
-        ("VideoTextureBridge.nativeSetSurface(handle, 0L)",
+        ("override fun surfaceCreated(",
+         "a Surface that comes back never reaches the core; playback would "
+         "resume into nothing"),
+        ("nativeSetSurface(player, 0L)",
          "the core is not told to drop the window before it is released"),
-        ("VideoTextureBridge.nativeSetSurface(handle, w)",
-         "a rebuilt Surface never reaches the core; playback would resume into "
-         "nothing"),
-        ("if (producer !== p) {",
-         "a stale callback from a released producer can still swap the window"),
+        ("nativeReleaseWindow(windowPtr)",
+         "the ANativeWindow reference is never released; every Surface "
+         "recreation leaks one"),
+    ):
+        if needle not in surface:
+            problems.append(f"VideoSurfaceView.kt: {why}")
+    # 先摘窗口再释放，顺序反过来就是 use-after-free：内核可能在另一个线程
+    # 正拿着这个指针画下一帧。这里按出现位置比，不是按存在性。
+    detach_at = surface.find("private fun detach()")
+    if detach_at < 0:
+        problems.append("VideoSurfaceView.kt: detach() is gone")
+    else:
+        body = surface[detach_at:]
+        end = body.find("\n    }")
+        body = body[:end if end > 0 else 800]
+        drop_at = body.find("nativeSetSurface(")
+        release_at = body.find("nativeReleaseWindow(")
+        if drop_at < 0 or release_at < 0 or drop_at > release_at:
+            problems.append(
+                "VideoSurfaceView.kt: the window is released before the core is "
+                "told to drop it; the core could draw into freed memory")
+    for needle, why in (
+        ("registerViewFactory(",
+         "the platform view factory is never registered"),
+        ("VideoTextureBridge.setPlayer(0L)",
+         "closing the activity leaves the bridge holding the freed player"),
+        ("nativeResizeSurface",
+         "the decoder is never told the surface's real size"),
     ):
         if needle not in kotlin:
             problems.append(f"MainActivity.kt: {why}")

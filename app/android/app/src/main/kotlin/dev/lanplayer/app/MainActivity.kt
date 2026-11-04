@@ -4,43 +4,28 @@ import android.Manifest
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.os.Build
-import android.view.Surface
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import io.flutter.view.TextureRegistry
+import io.flutter.plugin.platform.PlatformViewRegistry
 
 /**
- * Hosts the video surface for the FFmpeg core.
+ * 宿主入口：方法通道、权限、方向，以及视频平台视图的注册。
  *
- * The texture is registered with Flutter's surface producer API (not the legacy
- * SurfaceTexture entry).  That matters on Android: with the default Impeller
- * (Vulkan) renderer the legacy path hands out a SurfaceTexture whose frames are
- * never consumed, so MediaCodec keeps dropping every decoded frame
- * (`Render:0 Drop:N` in `dumpsys media.codec`) and the picture stays black even
- * though decoding works.  SurfaceProducer owns the consumer side for us.
+ * 视频画面不再走 Flutter 外部纹理，而是 [VideoSurfaceView] 里那块原生
+ * Surface。原因见那个类的注释：引擎只要看到有活跃的外部纹理就会在每个 vsync
+ * 上重绘整棵 layer tree，与纹理有没有更新无关，120 Hz 屏幕上放 30 fps 内容
+ * 时四分之三的合成是白做的。
  *
- * The Surface is wrapped as an ANativeWindow* and handed to the native layer,
- * which either renders into it with EGL (software decode) or lets MediaCodec
- * render into it directly (hardware decode); Dart draws `Texture(textureId:)`.
+ * 通道上的 `createTexture` 现在只回答「这块画面由平台视图提供」，真正的
+ * `ANativeWindow*` 由平台视图自己交给内核；`attachPlayer` 仍然要收，因为内核
+ * 播放器是 Dart 侧建的，宿主得知道该把这个指针接到哪块 Surface 上。
  */
 class MainActivity : FlutterActivity() {
 
     private var channel: MethodChannel? = null
     private var permChannel: MethodChannel? = null
     private var pendingPermission: MethodChannel.Result? = null
-    private var producer: TextureRegistry.SurfaceProducer? = null
-    /**
-     * Surface 被系统收回时的收尾动作挂在这里。
-     *
-     * `SurfaceProducer` 的 Surface 不是我们自己造的：进程被压到后台、系统
-     * 回收 GPU 资源时它会被销毁，回到前台再给一个新的。旧代码只在
-     * `onDestroy` 里释放窗口，中间这段时间内核攥着一个已经 release 的
-     * `ANativeWindow*` —— 一恢复播放就是 use-after-free。
-     */
-    private var surfaceCallback: TextureRegistry.SurfaceProducer.Callback? = null
-    private var windowPtr: Long = 0
-    private var playerPtr: Long = 0
 
     /**
      * 不参与「进程重建时恢复界面」。
@@ -59,21 +44,25 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         setupPermissions(flutterEngine)
+        registerVideoSurface(flutterEngine)
+
         val ch = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "lanplayer/video")
         channel = ch
         ch.setMethodCallHandler { call, result ->
             when (call.method) {
                 "createTexture" -> {
-                    val width = (call.argument<Int>("width") ?: 1920)
-                    val height = (call.argument<Int>("height") ?: 1080)
-                    result.success(createTexture(flutterEngine, width, height))
+                    // 画面由平台视图提供：没有 Flutter 纹理 id，也没有需要
+                    // Dart 转交的窗口指针。`platformView` 让 Dart 侧知道该建
+                    // 平台视图而不是 `Texture`。
+                    result.success(createPlatformSurfaceReply())
                 }
                 "attachPlayer" -> {
-                    playerPtr = (call.argument<Number>("player")?.toLong() ?: 0L)
+                    val player = call.argument<Number>("player")?.toLong() ?: 0L
+                    VideoTextureBridge.setPlayer(player)
                     result.success(null)
                 }
                 "destroyTexture" -> {
-                    releaseTexture()
+                    VideoTextureBridge.setPlayer(0L)
                     result.success(null)
                 }
                 "lockLandscape" -> {
@@ -84,6 +73,30 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
+
+    /**
+     * 注册视频平台视图工厂。
+     *
+     * 视图类型名必须与 `packages/lanplayer_video/lib/src/channel.dart` 的
+     * `lanplayerVideoSurfaceViewType` 一致，`tool/check_all.py` 会逐字比对。
+     */
+    private fun registerVideoSurface(engine: FlutterEngine) {
+        val registry: PlatformViewRegistry = engine.platformViewsController.registry
+        registry.registerViewFactory(VideoSurfaceView.VIEW_TYPE, VideoSurfaceViewFactory())
+    }
+
+    /**
+     * `createTexture` 的回包。
+     *
+     * 键名与 `packages/lanplayer_video/lib/src/channel.dart` 的 `TextureReplyKey`
+     * 对应。`textureId` 用 -1 明确表示「没有纹理」，`window` 用 0 表示
+     * 「Dart 不要调 `lp_player_set_surface`」—— 窗口由平台视图自己交给内核。
+     */
+    private fun createPlatformSurfaceReply(): Map<String, Any> = mapOf(
+        "textureId" to -1,
+        "window" to 0,
+        "platformView" to true
+    )
 
     /**
      * 播放页要锁横屏时用这一档。
@@ -194,80 +207,8 @@ class MainActivity : FlutterActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
     }
 
-    private fun createTexture(engine: FlutterEngine, width: Int, height: Int): Map<String, Any> {
-        releaseTexture()
-        // FlutterRenderer implements TextureRegistry itself, so there is no
-        // separate `textureRegistry` getter on it (that name only exists on the
-        // iOS/macOS registrar).
-        val p = engine.renderer.createSurfaceProducer()
-        p.setSize(width, height)
-        val s: Surface = p.surface
-        val w = VideoTextureBridge.nativeCreateWindow(s)
-        producer = p
-        windowPtr = w
-        installSurfaceCallback(p)
-        return mapOf("textureId" to p.id(), "window" to w)
-    }
-
-    /**
-     * 让内核在 Surface 换掉之后拿到新的 `ANativeWindow*`。
-     *
-     * `onSurfaceAvailable` 在创建时和每次重建时都会来一次；`onSurfaceDestroyed`
-     * 在系统收回之前来一次。两边的动作都必须短：回调本身在 raster 线程上跑。
-     */
-    private fun installSurfaceCallback(p: TextureRegistry.SurfaceProducer) {
-        val cb = object : TextureRegistry.SurfaceProducer.Callback {
-            override fun onSurfaceAvailable() {
-                val surface = p.surface
-                if (surface == null || producer !== p) {
-                    return
-                }
-                if (windowPtr != 0L) {
-                    VideoTextureBridge.nativeReleaseWindow(windowPtr)
-                    windowPtr = 0L
-                }
-                val w = VideoTextureBridge.nativeCreateWindow(surface)
-                windowPtr = w
-                val handle = playerPtr
-                if (handle != 0L) {
-                    VideoTextureBridge.nativeSetSurface(handle, w)
-                }
-            }
-
-            override fun onSurfaceDestroyed() {
-                if (producer !== p) {
-                    return
-                }
-                val handle = playerPtr
-                if (handle != 0L) {
-                    // 先把内核那边的指针摘掉，再释放 ANativeWindow：
-                    // 反过来的话内核可能正拿着它画下一帧。
-                    VideoTextureBridge.nativeSetSurface(handle, 0L)
-                }
-                if (windowPtr != 0L) {
-                    VideoTextureBridge.nativeReleaseWindow(windowPtr)
-                    windowPtr = 0L
-                }
-            }
-        }
-        surfaceCallback = cb
-        p.setCallback(cb)
-    }
-
-    private fun releaseTexture() {
-        // 不给 setCallback 传 null：它的参数是不是 @Nullable 取决于引擎版本，
-        // 而回调里那句 `producer !== p` 已经能让旧回调自己走空分支。
-        surfaceCallback = null
-        if (windowPtr != 0L) {
-            VideoTextureBridge.nativeReleaseWindow(windowPtr)
-            windowPtr = 0L
-        }
-        producer?.release()
-        producer = null
-    }
-
     override fun onDestroy() {
-        releaseTexture()
+        VideoTextureBridge.setPlayer(0L)
         channel?.setMethodCallHandler(null)
         channel = null
         permChannel?.setMethodCallHandler(null)
@@ -280,14 +221,81 @@ class MainActivity : FlutterActivity() {
     }
 }
 
-/** Must stay in sync with native/src/platform/android/jni_bridge.c. */
+/**
+ * 内核播放器与当前存活平台视图之间的接线板。
+ *
+ * 视图和播放器的创建顺序没有保证：平台视图在播放页首帧就建好（`build` 里
+ * 立刻要出一块画面区域），播放器要等用户点了某一集、Dart 侧 `initialize()`
+ * 之后才有指针；换集时又是同一个视图接一个新的播放器。所以两边都往这里
+ * 登记，谁后到谁负责把线接上。
+ *
+ * 所有方法都可能在任意线程被调（Dart 的通道回调在 UI 线程，Surface 回调在
+ * 各自线程），因此只做短小的同步块，不做任何等待。
+ */
 object VideoTextureBridge {
     init {
         System.loadLibrary("lanplayer")
     }
 
+    private val lock = Any()
+    private var player: Long = 0
+    private val views = mutableListOf<VideoSurfaceView>()
+
+    /** 当前内核播放器指针；0 表示还没有。 */
+    val activePlayer: Long
+        get() = synchronized(lock) { player }
+
+    /** 换播放器：把新指针接到每一块还活着的视图上，旧播放器先摘干净。 */
+    fun setPlayer(ptr: Long) {
+        val live: List<VideoSurfaceView>
+        val previous: Long
+        synchronized(lock) {
+            if (player == ptr) return
+            previous = player
+            player = ptr
+            live = views.toList()
+        }
+        for (v in live) {
+            v.unbindPlayer(previous)
+            if (ptr != 0L) {
+                v.bindPlayer(ptr)
+            }
+        }
+    }
+
+    fun attachView(view: VideoSurfaceView) {
+        val ptr: Long
+        synchronized(lock) {
+            views.add(view)
+            ptr = player
+        }
+        if (ptr != 0L) {
+            view.bindPlayer(ptr)
+        }
+    }
+
+    fun detachView(view: VideoSurfaceView) {
+        synchronized(lock) { views.remove(view) }
+    }
+
+    /** Surface 尺寸变了，但窗口指针没变：只更新内核的渲染目标尺寸。 */
+    fun resizeActive(width: Int, height: Int) {
+        val ptr = activePlayer
+        if (ptr != 0L) {
+            resize(ptr, width, height)
+        }
+    }
+
+    fun resize(ptr: Long, width: Int, height: Int) {
+        if (ptr == 0L || width <= 0 || height <= 0) {
+            return
+        }
+        nativeResizeSurface(ptr, width, height)
+    }
+
+    /** Must stay in sync with native/src/platform/android/jni_bridge.c. */
     @JvmStatic
-    external fun nativeCreateWindow(surface: Surface): Long
+    external fun nativeCreateWindow(surface: android.view.Surface): Long
 
     @JvmStatic
     external fun nativeReleaseWindow(window: Long)
@@ -295,4 +303,8 @@ object VideoTextureBridge {
     /** 只换窗口指针，不重建播放器；`window == 0` 表示当前没有可用 Surface。 */
     @JvmStatic
     external fun nativeSetSurface(player: Long, window: Long)
+
+    /** 窗口尺寸变化；内核据此重设 EGL 视口或硬解缓冲区。 */
+    @JvmStatic
+    external fun nativeResizeSurface(player: Long, width: Int, height: Int)
 }

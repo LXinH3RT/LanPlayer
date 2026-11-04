@@ -58,4 +58,26 @@ Java_dev_lanplayer_app_VideoTextureBridge_nativeSetSurface(JNIEnv *env, jobject 
     lp_player_set_surface(p, (void *)(intptr_t)window, p->vout.window_w, p->vout.window_h);
 }
 
+/*
+ * 窗口尺寸变了（旋转、分屏、SurfaceView 重新布局）。
+ *
+ * SurfaceView 的 Surface 尺寸由系统在布局时定下来，和 Dart 侧算出来的纹理
+ * 尺寸是两回事：以前那条路是 Dart 按屏幕长边/短边算出数字再调
+ * `lp_player_set_surface_size`，现在窗口本身就有真实尺寸，宿主的
+ * `surfaceChanged` 直接把它交过来更准。
+ */
+JNIEXPORT void JNICALL
+Java_dev_lanplayer_app_VideoTextureBridge_nativeResizeSurface(JNIEnv *env, jobject thiz,
+                                                             jlong player, jint width,
+                                                             jint height)
+{
+    (void)env;
+    (void)thiz;
+    if (!player || width <= 0 || height <= 0) {
+        return;
+    }
+    LpPlayer *p = (LpPlayer *)(intptr_t)player;
+    lp_player_set_surface_size(p, width, height);
+}
+
 #endif /* __ANDROID__ */
