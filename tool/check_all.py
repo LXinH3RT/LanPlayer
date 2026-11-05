@@ -2884,6 +2884,26 @@ def check_video_bridge_contract() -> None:
             problems.append("VideoPlatformView.swift no longer answers view(); "
                             "the FlutterPlatformView protocol needs the UIView "
                             "to composite")
+        # 帧回调的摘与装在同一个临界区里完成，是这块代码唯一的不变量：
+        # 一旦有人把内核调用挪到锁外，「置空指针」与「取帧」就不再互斥，
+        # destroyTexture 返回后仍会有取帧落在已释放的播放器上。
+        if "private func installLocked()" not in swift:
+            problems.append("VideoPlatformView.swift no longer installs the "
+                            "frame callback under its own lock; installing it "
+                            "outside the critical section lets unbind() slip "
+                            "between the state change and the kernel call, "
+                            "leaving a callback nobody can remove")
+        if "private func uninstallLocked()" not in swift:
+            problems.append("VideoPlatformView.swift no longer removes the "
+                            "frame callback under its own lock; doing it after "
+                            "clearing the player pointer reopens the window "
+                            "where the decoder thread still sees a live "
+                            "pointer and copies a frame from a freed player")
+        if "uninstallLocked()" not in swift.split("private func installLocked()")[0]:
+            problems.append("VideoPlatformView.swift no longer clears the "
+                            "frame callback from bind()/unbind(); switching "
+                            "players would leave the old callback registered "
+                            "and the new player's frames would never arrive")
     if not ios_delegate.exists():
         problems.append("app/ios/Runner/AppDelegate.swift is gone")
     else:

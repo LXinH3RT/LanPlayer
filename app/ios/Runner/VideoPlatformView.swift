@@ -43,54 +43,78 @@ final class VideoFrameBridge {
   func attach(_ view: VideoDisplayView) {
     lock.lock()
     target = view
+    installLocked()
     lock.unlock()
-    installIfReady()
   }
 
   /// 视图要销毁了：先摘目标再摘内核回调，避免回调落到已释放的视图上。
+  ///
+  /// 只有「退掉的正是当前目标」时才摘回调。路由切换时引擎可能先建好新视图
+  /// 再销毁旧的：此时 `target` 已经是新视图，若照旧无条件摘回调，新视图就
+  /// 再也收不到帧 —— 表现是切一次页面之后画面永久停住，而音频照常。
   func detach(_ view: VideoDisplayView) {
     lock.lock()
-    if target === view {
-      target = nil
+    guard target === view else {
+      lock.unlock()
+      return
     }
+    target = nil
+    // 视图没了就没人接收帧了，回调留着一来白跑、二来会把内核单槽里的帧
+    // 消费掉，症状是「音频继续、画面再也不更新」。
+    uninstallLocked()
     lock.unlock()
-    uninstall()
   }
 
   /// 播放器就位或换人（对应 Dart 侧的 attachPlayer）。
+  ///
+  /// 摘旧回调与换指针在同一个临界区内完成。分开做会留下一个窗口：`storedPlayer`
+  /// 先换成新的，旧播放器上的回调却还没摘，它一旦再进 [deliver]，取的就是
+  /// **新**播放器的帧 —— 帧会串到错误的对象上，并把新播放器单槽里的那帧白白
+  /// 消费掉，让真正的投递丢一帧。
   func bind(player: OpaquePointer?) {
     lock.lock()
-    let previous = installedOn
-    installedOn = nil
+    // 摘的必须是当初装的那个指针：对新的播放器调 install(nil) 什么也摘不掉。
+    uninstallLocked()
     storedPlayer = player
+    installLocked()
     lock.unlock()
-    // 换播放器时旧播放器上的回调要摘掉；摘的必须是当初装的那一个指针。
-    if let previous, previous != player {
-      lp_player_install_frame_callback(previous, nil, nil)
-    }
-    installIfReady()
   }
 
   /// 播放器即将释放（对应 Dart 侧的 destroyTexture）：必须先摘回调，
   /// 否则内核会在已释放的桥对象上回调。
+  ///
+  /// 摘回调与清 `storedPlayer` 必须在**同一个临界区**内完成。分成两步会留下
+  /// 一个窗口：内核解码线程可能已经取到回调函数指针、正要进 [deliver]，此
+  /// 时 `storedPlayer` 仍非空，它就继续调 `lp_player_copy_pixel_buffer`；而
+  /// Dart 侧 `destroyTexture` 一返回就 `dispose()` 掉播放器，这一取就是
+  /// use-after-free。合成一步之后，凡是拿过锁的 `deliver` 必然已经跑完取帧，
+  /// 没进锁的则一定看到 nil 而直接返回。
+  ///
+  /// 原来的 `PlayerTexture.detach()` 靠的就是这条不变量（见
+  /// app/lib/ui/player_screen.dart 的 `_releaseTextureThenPlayer` 注释）。
   func unbind() {
-    uninstall()
     lock.lock()
+    uninstallLocked()
     storedPlayer = nil
     lock.unlock()
   }
 
-  private func installIfReady() {
-    lock.lock()
-    let player = storedPlayer
-    let ready = player != nil && target != nil
-    let current = installedOn
-    if ready, let player, current == nil {
-      installedOn = player
+  /// 装上内核帧回调（若还没装）。**调用方必须持锁**。
+  ///
+  /// 状态变更与内核调用放在同一临界区内，是为了让「已经装了」这件事与
+  /// `installedOn` 永远一致：分开做的话，`unbind` 可能正好插在
+  /// 「置好 `installedOn`」与「真正调 install」之间，它摘一次、随后 install
+  /// 又把回调装回去，留下一个谁也不会再摘的残留。
+  ///
+  /// 锁序安全：内核在 `lp_render_publish_pixel_buffer` 里只持 `vout.mutex`
+  /// 把 `frame_cb` 拷出来，**出锁之后**才调用它
+  /// （native/src/platform/apple/apple_texture.c:118-124），所以 [deliver]
+  /// 进来时不持 `vout.mutex`。这里「先本锁、后 vout.mutex」不会与它成环。
+  private func installLocked() {
+    guard installedOn == nil, let player = storedPlayer, target != nil else {
+      return
     }
-    let shouldInstall = ready && current == nil
-    lock.unlock()
-    guard shouldInstall, let player else { return }
+    installedOn = player
     let ctx = Unmanaged.passUnretained(self).toOpaque()
     lp_player_install_frame_callback(player, { user in
       guard let user else { return }
@@ -99,12 +123,10 @@ final class VideoFrameBridge {
     }, ctx)
   }
 
-  private func uninstall() {
-    lock.lock()
-    let player = installedOn
+  /// 摘掉内核帧回调（若装着）。**调用方必须持锁**。
+  private func uninstallLocked() {
+    guard let player = installedOn else { return }
     installedOn = nil
-    lock.unlock()
-    guard let player else { return }
     lp_player_install_frame_callback(player, nil, nil)
   }
 
