@@ -4768,6 +4768,49 @@ def check_apple_wiring() -> None:
         if f"MACOSX_DEPLOYMENT_TARGET = {min_macos}" not in app_info.read_text(encoding="utf-8"):
             problems.append(f"app/macos/Runner/Configs/AppInfo.xcconfig does not pin "
                             f"MACOSX_DEPLOYMENT_TARGET = {min_macos}")
+    # A stale liblanplayer.a is invisible at build time and poisons every runtime
+    # measurement taken from the app. `flutter build macos` only links whatever
+    # archive the podspec names; it never compiles native/src/**. So after editing
+    # the C core, a plain rebuild links the previous archive and the app behaves
+    # like the old code while every log line looks normal.
+    #
+    # 2026-11-05: a whole macOS stutter investigation went the wrong way because of
+    # this. A stderr probe added to player.c produced zero hits, which read as "the
+    # frame callback is never invoked" and produced a self-consistent but entirely
+    # wrong story about the texture path. Rebuilding the archive made pull/hits and
+    # dropped_delivery flip completely (see AgentsReadMe §13.37).
+    #
+    # The archive is gitignored, so a fresh checkout has nothing to compare and the
+    # check simply has nothing to say. It only fires when an archive exists *and*
+    # is older than the sources it claims to contain.
+    stale_archive_report = ROOT / "native" / "third_party" / "lanplayer" / "apple"
+    if stale_archive_report.is_dir():
+        core_sources: list[str] = []
+        sys.path.insert(0, str(ROOT / "tool"))
+        try:
+            from native_sources import load_sources
+            core_sources = [f"native/{rel}" for rel in load_sources().all_sources()]
+        except (ImportError, OSError, ValueError):
+            core_sources = []
+        for family in ("macosx", "iphoneos", "iphonesimulator"):
+            archive = stale_archive_report / family / "lib" / "liblanplayer.a"
+            if not archive.exists() or not core_sources:
+                continue
+            stamp = archive.stat().st_mtime
+            try:
+                drift = [rel for rel in core_sources
+                         if (ROOT / rel).exists()
+                         and (ROOT / rel).stat().st_mtime > stamp]
+            except OSError:
+                continue
+            if drift:
+                problems.append(
+                    f"native/third_party/lanplayer/apple/{family}/lib/liblanplayer.a "
+                    f"is older than {len(drift)} core source(s) "
+                    f"({', '.join(drift[:3])}{' …' if len(drift) > 3 else ''}); "
+                    f"`flutter build macos` would link the stale archive and the app "
+                    f"would run the previous C core — rerun "
+                    f"SLICES={family} python scripts/build_apple_deps.py")
     # Pods.xcodeproj is generated, so the only way to guarantee every pod ends up
     # on the floor is the post_install hook. path_provider_foundation ships 10.14
     # and flutter_macos_podfile_setup only deletes the key below 10.14, so without
@@ -5841,6 +5884,7 @@ def check_texture_delivery() -> None:
             # 落后超过 LP_PACE_CATCHUP_US 时必须临时加快，否则落后量会被
             # 整周期摊平锁死，一路漂到 -500 ms 丢帧线才纠正（iPad 实测
             # av_diff 稳定停在 -0.4 ~ -0.5 s、30 秒丢 46 帧）。
+            # ↑ 上面这条 2026-11-05 被实测推翻了，见下面关于追赶的说明。
             # 提前一个刷新周期上屏。引擎只在 vsync 上合成，一帧从
             # 「交给纹理」到「真的画出来」还要跨一次线程；恰好在 vsync 之后
             # 几十微秒准备好的帧只能等下一个 vsync，24 fps 内容上就变成
@@ -5853,15 +5897,18 @@ def check_texture_delivery() -> None:
              "would wait a whole extra refresh and stutter on 24 fps content"),
             ("if (lead > 0 && diff > 0 && diff < lead) {",
              "the present lead is declared but never applied to the pacing decision"),
-            ("#define LP_PACE_CATCHUP_US 120000",
-             "the pacer lost its catch-up threshold; a steady lag would never be "
-             "paid back until frames start being dropped"),
-            ("if (catchup > 0 && diff < -catchup) {",
-             "the pacer never shortens its spacing; it stays a fixed period even "
-             "when the stream is running behind"),
-            ("const int64_t catchup = (int64_t)(LP_PACE_CATCHUP_US / sp);",
-             "the catch-up threshold no longer scales with playback speed; at 2x "
-             "it would only kick in after a full second of lag"),
+            # 「落后就加速追赶」这条被删掉了，不是漏了。它对本块覆盖的异步
+            # 解码器（VideoToolbox / MediaCodec）是物理上无效的：那些解码器
+            # 的 diff 是管线延迟，帧还在解码器里，内核没有东西可以出得更快。
+            # 压短周期只会透支手上那点缓冲，然后干等下一批 —— 平均帧率不变，
+            # 却造出一串长空档。2026-11-05 macOS 实测：av_diff 长期 -145 ~
+            # -310 ms（全部越过 120 ms 阈值），push_avg 稳在 41 ms 而
+            # push_max 周期性冲到 88–231 ms，pull_gap_max 与它相关 +0.98。
+            # 所以这里改钉「追赶不回来了」，而且反向钉住：异步硬解路径上
+            # 不得再出现按 catchup 缩短 spacing 的写法。
+            ("int64_t spacing = period;",
+             "the pacer lost its single spacing assignment; the steady-rate "
+             "flattening is what keeps asynchronous decoders from bunching frames"),
             # 异步解码器才需要节拍。这条被删掉会变成「所有硬解都补等待」，
             # Windows 的 d3d11va 是同步取帧，插等待直接掉帧（实测 12 秒丢 32）。
             ("lp_hw_decoder_is_async(p->video.hw)",
@@ -5895,6 +5942,21 @@ def check_texture_delivery() -> None:
                 "lp_video_start never resets last_present_at_us; the first "
                 "frame of the next file is paced against the previous file's "
                 "last present time")
+        # The 0.7x catch-up must not come back. Checking the raw text would be
+        # useless here: the reasons it was removed are written out in the same
+        # function, so the comment block itself contains "period * 0.7" and the
+        # check would fire on its own explanation. Strip comments first.
+        code_only = re.sub(r"/\*.*?\*/", "", vt, flags=re.S)
+        code_only = re.sub(r"//[^\n]*", "", code_only)
+        if "period * 0.7" in code_only or "catchup" in code_only:
+            problems.append(
+                "video.c: the 0.7x catch-up is back. On asynchronous hardware "
+                "decoders (VideoToolbox / MediaCodec) the lag is pipeline "
+                "latency — the frame is still inside the decoder, so there is "
+                "nothing to emit faster. Shortening the spacing only drains the "
+                "managed buffer and manufactures 88–231 ms stalls (macOS, "
+                "2026-11-05: push_avg held at 41 ms while push_max spiked, "
+                "correlating +0.98 with pull_gap_max)")
 
     if not demux.exists():
         problems.append("native/src/core/demux.c is gone")

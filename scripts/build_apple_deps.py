@@ -243,6 +243,34 @@ def lipo_one(name: str, inputs: list[Path], outdir: Path) -> None:
     print(f"== lipo lib{name}.a <- {len(inputs)} slice(s)")
 
 
+def archive_source_drift(root: Path, archive: Path) -> list[str]:
+    """C 源码里比归档新的那些文件，用来提示「你改的核心代码没进产物」。
+
+    这个脚本按整批重编（build_core 每次 ar 全部对象），归档本身没有增量
+    逻辑；真正容易出错的是**根本没人跑这个脚本** —— `flutter build macos`
+    只链接 podspec 指定的 liblanplayer.a，不编译 native/src/**，于是改完 C
+    代码直接 build 会链进上一次的归档，而且登录日志一切正常，只在行为上
+    表现为「改了却没生效」。
+
+    2026-11-05 那次 macOS 卡顿排查就被这个坑带偏了整整一轮：探针加在
+    player.c 里，`strings liblanplayer.a | grep LP-PROBE` 却是 0 命中，
+    由此推出「帧回调从未被调用」等一整套自洽但全错的结论。
+
+    所以这里不改变构建行为，只把「归档比源码旧」这件事说出来。
+    """
+    if not archive.exists():
+        return []
+    stamp = archive.stat().st_mtime
+    stale: list[str] = []
+    for relative in CORE_SOURCES:
+        source = root / relative
+        if not source.exists():
+            continue
+        if source.stat().st_mtime > stamp:
+            stale.append(relative)
+    return stale
+
+
 def main() -> int:
     if sys.platform != "darwin":
         raise lp.ScriptError("Apple dependency builds need macOS")
@@ -352,6 +380,10 @@ def main() -> int:
     # and does not need libpostproc (configure has --disable-postproc); avdevice
     # is never referenced by the core either (checked with grep), so it must not
     # appear in the podspec.
+    stale = archive_source_drift(root, lp_out / "liblanplayer.a")
+    if stale:
+        lp.warn(f"liblanplayer.a is older than {len(stale)} core source(s): "
+                f"{', '.join(stale[:3])}{' …' if len(stale) > 3 else ''}")
     print(f"done: {out}")
     return 0
 

@@ -39,10 +39,10 @@ static int64_t pts_to_us(AVRational tb, int64_t pts)
  * 4 帧约合 170 ms 的缓冲，足够吸收一次调度抖动。 */
 #define LP_HW_PREFETCH 4
 
-/* 落后超过这个量才让节拍临时加快。整周期摊平不看落后多少，落后量会被
- * 锁死在那里一路漂到丢帧线（-500 ms）才纠正 —— iPad 实测 av_diff 稳定
- * 停在 -0.4 ~ -0.5 s、30 秒丢 46 帧。120 ms 大约是三帧，比解码器的
- * 固有管线延迟小、比渲染抖动大：正常情况下永远进不到这一支。 */
+/* 落后超过这个量才开始温和追赶。整周期摊平不看落后多少，落后量会被锁死
+ * 在那里一路漂到丢帧线（-500 ms）才纠正 —— 2026-11-05 macOS 实测把它整个
+ * 停掉后，av_diff 从 -145 ~ -310 ms 漂到 -547 ms，26 秒 dropped 从 31 涨到
+ * 73。120 ms 大约三帧，比解码器的固有管线延迟小、比渲染抖动大。 */
 #define LP_PACE_CATCHUP_US 120000
 /* 见 wait_for_presentation 里的说明。整整一个 60 Hz 刷新周期
  * （16.67 ms）。当初先试的是半个周期（8.33 ms），iPad 实测 24 fps 内容
@@ -165,12 +165,12 @@ static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial, double
                  * 改成整周期后，出帧节奏与 pts 间距一致：既不抽干缓冲，也
                  * 仍然把「一次吐两三帧」摊平到它们本该占用的时间里。
                  *
-                 * 但是只按整周期摊平也有代价：它对「已经落后多少」完全不看，
-                 * 落后量就被锁死在那里，只能一路漂到丢帧线才被纠正 —— iPad
-                 * 实测 av_diff 稳定停在 -0.4 ~ -0.5 s，30 秒丢 46 帧。所以
-                 * 加一条：落后超过 LP_PACE_CATCHUP_US 才临时加快到 0.7 倍
-                 * 周期把差距拉回来，回到窗口内立刻恢复整周期。加快只发生在
-                 * 真的落后时，不会像 0.9 那版那样常态抽干缓冲。
+                 * 曾经在这之上又加过一条「落后超过 LP_PACE_CATCHUP_US 就
+                 * 临时加快到 0.7 倍周期把差距拉回来」，动机是「av_diff
+                 * 一年到头停在 -0.4 ~ -0.5 s，30 秒丢 46 帧」。那条后来被
+                 * 撤掉了：-0.4 s 不是「跟不上」，而是 VideoToolbox 的管线
+                 * 延迟，帧还在解码器里 —— 加快出帧救不了它，只会透支缓冲。
+                 * 详见下面 spacing 那段的说明。
                  *
                  * 还试过两种「更聪明」的写法，都被 iPad 实测否决：
                  * 按相邻两帧的 pts 差逐帧等 —— VideoToolbox 一次并发交出
@@ -193,11 +193,44 @@ static int wait_for_presentation(LpPlayer *p, int64_t pts_us, int serial, double
                                                                 : frame_dur;
                 const double sp = p->speed > 0.01 ? p->speed : 1.0;
                 const int64_t period = (int64_t)(fd * 1000000.0 / sp);
-                const int64_t catchup = (int64_t)(LP_PACE_CATCHUP_US / sp);
                 const int64_t since = av_gettime_relative() - p->video.last_present_at_us;
                 int64_t spacing = period;
-                if (catchup > 0 && diff < -catchup) {
-                    spacing = (int64_t)(period * 0.7);
+                /* 追赶必须温和，不能停掉。
+                 *
+                 * 先说不追会怎样。2026-11-05 在 macOS 上把这段整个删掉试过
+                 * 一次（24 fps 内容、VideoToolbox 硬解）：av_diff 从稳定的
+                 * -145 ~ -310 ms 一路漂到 -547 ms，越过 -500 ms 丢帧线，
+                 * dropped 在 26 秒内从 31 涨到 73，fps 掉到 19–20。整周期
+                 * 摊平只保证「不抽干缓冲」，对落后量完全不看，于是它只能
+                 * 一路漂下去。所以追赶这个动作本身是必需的。
+                 *
+                 * 再说原来的 0.7 倍为什么不好。它把周期压到 41.67 × 0.7 =
+                 * 29.2 ms，比内容自身的节奏快 43%。而硬解的 av_diff 是
+                 * 管线延迟，帧还在解码器里 —— 线程按 29.2 ms 的节奏去要，
+                 * 短期能把手上那点缓冲抽干，随后干等下一批解码结果。
+                 * macOS 实测：push_avg 稳稳 41 ms（内容节奏本来就对），
+                 * push_max 却周期性冲到 88–231 ms，pull_gap_max 与它的
+                 * 相关性是 +0.98。停掉追赶又把 dropped 逼回来了 —— 两端都
+                 * 不是解。
+                 *
+                 * 折中是只把差距的 15% 摊到每一帧上：每帧少等
+                 * 0.15 × 落后量，但不再低于周期的 85%。落后 300 ms 时周期
+                 * 是 35.4 ms（快 18%，不再抽干），落后 500 ms 时也只到
+                 * 35.4 ms —— 下限挡住「越落后越快」的正反馈。300 ms 的差距
+                 * 约 2 秒收回，比原来温和，但方向对且不会把缓冲抽干。 */
+                if (diff < 0) {
+                    const int64_t lag = -diff;
+                    if (lag > LP_PACE_CATCHUP_US) {
+                        const int64_t excess = lag - LP_PACE_CATCHUP_US;
+                        int64_t trimmed = period - (int64_t)(excess * 15 / 100);
+                        const int64_t floor = (int64_t)(period * 85 / 100);
+                        if (trimmed < floor) {
+                            trimmed = floor;
+                        }
+                        if (trimmed > 0) {
+                            spacing = trimmed;
+                        }
+                    }
                 }
                 if (spacing > 0 && since >= 0 && since < spacing) {
                     /* 上界保护：帧周期或速度一旦被填成离谱的值（损坏的
