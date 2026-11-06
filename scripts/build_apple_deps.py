@@ -262,7 +262,16 @@ def archive_source_drift(root: Path, archive: Path) -> list[str]:
         return []
     stamp = archive.stat().st_mtime
     stale: list[str] = []
-    for relative in CORE_SOURCES:
+    watched: list[str] = list(CORE_SOURCES)
+    # 头文件也算：ABI 改在 .h 里（结构体字段、导出声明），归档不重编就是
+    # 一份与源码不符的库，而且这种情况下编译器不会报错 —— 链进去的还是旧
+    # 布局。CORE_SOURCES 来自 sources.cmake，只有 .c。
+    for header_root in ("native/src", "native/include"):
+        base = root / header_root
+        if not base.is_dir():
+            continue
+        watched.extend(path.relative_to(root).as_posix() for path in base.rglob("*.h"))
+    for relative in watched:
         source = root / relative
         if not source.exists():
             continue

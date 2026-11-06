@@ -103,6 +103,13 @@ char *lp_str_take(LpStr *s);                          /* ownership moves out */
 char *lp_str_dup(const char *v);
 char *lp_str_printf(const char *fmt, ...);
 
+/* Copies `url` into `out` with the userinfo part replaced by three asterisks,
+ * so the result is safe to write to a log.  For example a URL whose authority
+ * is `user:pass@host` becomes one whose authority is `***@host`; a URL without
+ * an `@` in its authority is copied unchanged.  `out` is always NUL terminated
+ * when outlen > 0. */
+void lp_url_redact(const char *url, char *out, size_t outlen);
+
 /* Minimal flat JSON reader for option objects (no nesting except arrays of
  * strings).  Returns 0 on success, -1 when the key is absent. */
 int lp_json_get_str(const char *json, const char *key, char *out, size_t outlen);
@@ -447,6 +454,18 @@ typedef struct LpVideoOut {
     int64_t push_gap_sum_us;
     int64_t push_gap_count;
     int64_t last_push_at_us;
+    /* Software fallback scaler, owned by this player.
+     *
+     * 以前是 apple_texture.c 里的函数级 static：两个播放器实例会共用同一个
+     * 上下文，各自按自己的源尺寸重建，互相把对方的上下文换掉（单播放器时
+     * 看不出来，多实例或开第二个窗口就是花屏）。win32_platform.c 一直是按
+     * 实例存的，这里对齐。`sws_src_*` 记下当前上下文的源帧参数，源一变就
+     * 重建 —— 连播两个分辨率不同的文件、或切到像素格式不同的轨时，不重建
+     * 就会按错误的源尺寸取样。 */
+    struct SwsContext *sws;
+    int sws_src_w;
+    int sws_src_h;
+    int sws_src_fmt;
     pthread_mutex_t mutex;
 } LpVideoOut;
 
@@ -636,6 +655,7 @@ typedef struct LpSubCue {
     int nb_runs;
     LpSubBitmap *bitmaps; /* set instead of text for graphics subtitles */
     int nb_bitmaps;
+    int cap_bitmaps; /* capacity of `bitmaps`, grown geometrically */
     int align_override; /* ASS 1..9 from {\anN}, 0 = use the style */
     double pos_x;       /* from {\pos(x,y)}, normalised, < 0 = use the style */
     double pos_y;
@@ -658,6 +678,7 @@ typedef struct LpSubtitleTrack {
     int cap_cues;
     LpSubStyle *styles;
     int nb_styles;
+    int cap_styles;
     int current_cue; /* -1 when nothing on screen */
     int bitmap;      /* graphics subtitles: cues carry LpSubBitmap instead of text */
     int ref_w;       /* reference grid the decoder positions rectangles in */

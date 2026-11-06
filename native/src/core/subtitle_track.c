@@ -78,6 +78,7 @@ void lp_sub_cue_free(LpSubCue *c)
     free(c->bitmaps);
     c->bitmaps = NULL;
     c->nb_bitmaps = 0;
+    c->cap_bitmaps = 0;
 }
 
 /* Copies a cue's rectangles into the overlay so the renderer stays valid
@@ -332,14 +333,21 @@ static int bitmap_from_rect(const AVSubtitleRect *r, LpSubBitmap *out)
 
 static int cue_add_bitmap(LpSubCue *c, LpSubBitmap *b)
 {
-    int cap = c->nb_bitmaps;
-    LpSubBitmap *grown = realloc(c->bitmaps, (size_t)(cap + 1) * sizeof(LpSubBitmap));
-    if (!grown) {
-        return -1;
+    /* 容量按几何增长，不再每加一块 realloc 一次。
+     *
+     * 以前是 `cap = nb_bitmaps; realloc(cap + 1)` —— 一个 PGS 字幕段里
+     * 几十个矩形就是几十次 realloc，每次都可能在堆上搬家；而这些调用都
+     * 在播放线程里、每秒若干次。既然容量要记，就顺手记成翻倍。 */
+    if (c->nb_bitmaps >= c->cap_bitmaps) {
+        const int cap = c->cap_bitmaps > 0 ? c->cap_bitmaps * 2 : 4;
+        LpSubBitmap *grown = realloc(c->bitmaps, (size_t)cap * sizeof(LpSubBitmap));
+        if (!grown) {
+            return -1;
+        }
+        c->bitmaps = grown;
+        c->cap_bitmaps = cap;
     }
-    c->bitmaps = grown;
-    c->bitmaps[cap] = *b;
-    c->nb_bitmaps = cap + 1;
+    c->bitmaps[c->nb_bitmaps++] = *b;
     return 0;
 }
 
@@ -353,6 +361,7 @@ void lp_sub_track_reset(LpSubtitleTrack *t)
     free(t->styles);
     t->styles = NULL;
     t->nb_styles = 0;
+    t->cap_styles = 0;
 }
 
 int lp_sub_track_ensure_style(LpSubtitleTrack *t, int need)
@@ -360,14 +369,19 @@ int lp_sub_track_ensure_style(LpSubtitleTrack *t, int need)
     if (t->nb_styles >= need) {
         return 0;
     }
-    /* need 是「要放得下第 need 个样式」，所以容量至少要 need；+4 是余量，
-     * 但容量本身不再单独记，只靠 nb_styles 与 realloc 的实参推导。 */
-    const int cap = need + 4;
+    if (t->cap_styles >= need) {
+        return 0; /* 容量够，调用方自己往上填 */
+    }
+    /* 以前每次调用都 realloc `need + 4`，容量不记，于是「确保第 1 个样式」
+     * 与「确保第 5 个样式」各搬一次堆，而 nb_styles 只增不减 —— 容量永远
+     * 比实际需要大 4，还每隔几次就搬家。改成几何增长并记下容量。 */
+    const int cap = need > 4 ? need + 4 : 8;
     LpSubStyle *grown = realloc(t->styles, (size_t)cap * sizeof(LpSubStyle));
     if (!grown) {
         return -1;
     }
     t->styles = grown;
+    t->cap_styles = cap;
     return 0;
 }
 

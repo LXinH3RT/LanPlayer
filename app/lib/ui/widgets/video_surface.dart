@@ -7,6 +7,25 @@ const int scaleModeFit = 0;
 const int scaleModeFill = 1;
 const int scaleModeStretch = 2;
 
+/// 把画面宽高比夹到 [1:16, 16:1]。
+///
+/// 容器还没报出字节时比例可能是 0、NaN 或者上千，异常比例会让「按比例算出来
+/// 的盒子」变成十几万逻辑像素宽，布局与光栅化都要为它付代价。画面层与字幕层
+/// 用同一个函数，两层才不会算出两个不同的画面矩形 —— 以前这里夹了、字幕层
+/// 没夹，异常比例下字幕与画面会错位。
+double clampVideoRatio(double ratio) {
+  if (!ratio.isFinite || ratio <= 0) {
+    return 16 / 9;
+  }
+  if (ratio < 1 / 16) {
+    return 1 / 16;
+  }
+  if (ratio > 16) {
+    return 16;
+  }
+  return ratio;
+}
+
 /// 把一帧画面按 [scaleMode] 铺到给定的区域上。
 ///
 /// 为什么缩放要在 Flutter 这一层做：内核里的 `scale_mode` 只有 Android 的
@@ -88,17 +107,8 @@ class VideoSurface extends StatelessWidget {
     // 用一个「按原位图比例」的盒子承载纹理，再由 FittedBox 决定怎么贴合。
     // Texture / Image 自己总是撑满父约束，不先固定比例就没法区分 contain 与
     // cover —— 这正是原来只写 AspectRatio 却看不出三种模式差别的原因。
-    // 比例范围夹在 [1:16, 16:1]。异常宽高比（容器还没报字节、日志里出现过
-    // 1000:1）会让 `1000 * ratio` 生成一个十几万宽的 SizedBox，布局与
-    // 光栅化都要为这个空盒子付代价。
-    double ratio = videoAspectRatio.isFinite && videoAspectRatio > 0
-        ? videoAspectRatio
-        : 16 / 9;
-    if (ratio < 1 / 16) {
-      ratio = 1 / 16;
-    } else if (ratio > 16) {
-      ratio = 16;
-    }
+    // 比例范围夹在 [1:16, 16:1]，理由见 [clampVideoRatio]。
+    final ratio = clampVideoRatio(videoAspectRatio);
     if (nativeSurface) {
       return ColoredBox(
         color: backgroundColor,

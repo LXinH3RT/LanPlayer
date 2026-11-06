@@ -223,7 +223,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     // 切后台、锁屏、来电：系统随时可能直接杀掉进程，先把当前位置落一次盘，
     // 同时停掉解码 —— 没有画面还继续解码只是白耗电。
     if (_player.isPlaying) _player.pause();
-    _saveProgress();
+    _saveProgress(immediate: true);
   }
 
   /// 把尺寸检查排到下一帧末尾。
@@ -318,13 +318,19 @@ class _PlayerScreenState extends State<PlayerScreen>
     });
   }
 
-  void _saveProgress() {
+  void _saveProgress({bool immediate = false}) {
     if (!_settings.rememberProgress) return;
     final entry = widget.playlist.current;
     if (entry == null) return;
     final dur = _player.durationUs;
     if (dur <= 0 || _player.state == PlayerState.idle) return;
-    ProgressStore.instance.save(entry.path, _player.positionUs, dur);
+    final future =
+        ProgressStore.instance.save(entry.path, _player.positionUs, dur);
+    // 「立刻要可见」的两个场景：退出播放页、切后台/锁屏。系统随时可能直接
+    // 杀掉进程，而 save() 默认只排一个 250 ms 的合并写入 —— 那时进程已经没了。
+    if (immediate) {
+      unawaited(future.then((_) => ProgressStore.instance.flushNow()));
+    }
     if (_progressSaves++ % 4 == 0) {
       // ignore: avoid_print
       print('LanPlayer progress: ${entry.name} '
@@ -591,7 +597,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     _hideTimer?.cancel();
     _hudTimer?.cancel();
     _progressTimer?.cancel();
-    _saveProgress();
+    _saveProgress(immediate: true);
     WidgetsBinding.instance.removeObserver(this);
     _player.removeListener(_onPlayerChanged);
     // 纹理里存着内核播放器的裸指针，宿主还有一个取帧回调在 raster 线程上
@@ -903,13 +909,16 @@ class _PlayerScreenState extends State<PlayerScreen>
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheetState) => VolumeSheet(
+      // AnimatedBuilder 而不是 StatefulBuilder：面板自己持有 _value，只有
+      // 用户在本面板里拖滑杆时才更新。播放页别处改了音量（键盘、多媒体键、
+      // 记忆恢复）时面板不会重建，显示的仍是打开那一刻的旧值。
+      builder: (ctx) => AnimatedBuilder(
+        animation: _player,
+        builder: (ctx, _) => VolumeSheet(
           volume: _player.volume,
           muted: _player.muted,
           onVolumeChanged: (v) {
             _player.setVolume(v);
-            setSheetState(() {});
           },
           // 松手/点档位时也只在内存里收尾，不落盘：播放页的音量是临时的，
           // 设置里那一项是「音量增益」，两者不再是同一个值。
@@ -918,7 +927,6 @@ class _PlayerScreenState extends State<PlayerScreen>
           },
           onMutedChanged: (m) {
             if (m != _player.muted) _player.toggleMute();
-            setSheetState(() {});
           },
         ),
       ),

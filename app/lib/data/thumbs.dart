@@ -343,10 +343,19 @@ class ThumbnailCache {
       if (!await dir.exists()) return 0;
       final files = <({File file, int size, DateTime at})>[];
       var total = 0;
+      final now = DateTime.now();
       await for (final entity in dir.list()) {
         if (entity is! File) continue;
+        // 正在写的临时文件（[_writeCache] 先写 `.tmp` 再 rename）不能被
+        // 这次清理顺手删掉：删掉之后 rename 会失败，那张封面永远落不了盘，
+        // 用户每次滚到那一行都要重新解码。
+        if (entity.path.endsWith('.tmp')) continue;
         try {
           final stat = await entity.stat();
+          // 刚写进来的文件也别动：同一轮清理里它可能还在被读。
+          if (now.difference(stat.modified) < const Duration(minutes: 5)) {
+            continue;
+          }
           total += stat.size;
           files.add((file: entity, size: stat.size, at: stat.modified));
         } catch (_) {

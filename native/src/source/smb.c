@@ -141,7 +141,11 @@ static struct smb2_context *smb_connect(const LpUrl *u, const LpSourceOptions *o
     /* libsmb2 takes the port inside the server string ("host:port"), there is
      * no smb2_set_port() in 4.x. */
     char server[200];
-    if (u->port && u->port != 445) {
+    /* 默认端口从注册表取，别再写死 445：改了 .default_port 之后这里若还
+     * 是字面量，两者会不一致 —— 显式写默认端口反而被当成「非默认」拼进
+     * server 字符串，`host:445` 在某些服务端实现上会解析失败。 */
+    const int def_port = lp_transport_default_port(u->scheme);
+    if (u->port > 0 && u->port != def_port) {
         snprintf(server, sizeof(server), "%s:%d", u->host, u->port);
     } else {
         snprintf(server, sizeof(server), "%s", u->host);
@@ -284,7 +288,11 @@ static int64_t smb_transport_size(LpIo *io)
     if (smb2_fstat(ctx->smb2, ctx->fh, &st) < 0) {
         return -1;
     }
-    return (int64_t)st.smb2_size;
+    /* 顺手写回句柄：调用方（io.c 的三处）都先看 `io->size < 0` 才来问，
+     * 让它自己写回，缓存口径就只有一处，不会出现「问过一次、别人又忘了
+     * 赋值、下次再问一遍」的重复 fstat。 */
+    io->size = (int64_t)st.smb2_size;
+    return io->size;
 }
 
 static int smb_transport_list(const LpUrl *u, const LpSourceOptions *opts,

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -238,8 +239,10 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
     // parent's height minus the inset, cap it at 660 so it stays a dialog on a
     // tall screen, and let the list take whatever is left.
     final media = MediaQuery.of(context);
-    final maxWidth = media.size.width - 48;
-    final maxHeight = media.size.height - 64;
+    // 窗口比 48×64 还窄/矮时（分屏、窗口化缩到最小），直接相减会得到负数
+    // 再喂给 SizedBox，布局断言会炸。这里先夹到非负再取上限。
+    final maxWidth = math.max(0.0, media.size.width - 48);
+    final maxHeight = math.max(0.0, media.size.height - 64);
     // 键盘 Backspace 退一层：对话框里没有输入框（手输路径那是另一个
     // 独立的 AlertDialog），所以这里的按键可以直接当作「上一级」。
     return Focus(
@@ -253,8 +256,8 @@ class _LocalPickerDialogState extends State<_LocalPickerDialog> {
       child: Dialog(
         insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
         child: SizedBox(
-          width: maxWidth < 620 ? maxWidth : 620,
-          height: maxHeight < 660 ? maxHeight : 660,
+          width: math.min(620.0, maxWidth),
+          height: math.min(660.0, maxHeight),
           child: Column(
             children: [
               Padding(

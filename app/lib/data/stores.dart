@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -5,13 +6,15 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'models.dart';
+import 'secret_store.dart';
 
 /// Tiny JSON-file persistence layer.
 ///
 /// Writes are atomic (temp file + rename) so a kill during save cannot corrupt
-/// the profile list.  The share keys live in plain JSON under the app support
-/// directory: see docs/security.md for the threat model and the follow-up work
-/// (Keychain / Keystore backed storage).
+/// the profile list.  The profile JSON holds no credentials: SMB passwords live
+/// in the system vault (Keychain / Keystore / Credential Manager) via
+/// `SecretStore`, and only fall back to this file when the vault is
+/// unavailable.  See docs/security.md for the threat model.
 class AppStorage {
   static Directory? _dir;
 
@@ -19,64 +22,91 @@ class AppStorage {
   /// so the app can still persist somewhere writable.
   static Directory? directoryOverride;
 
+  /// 测试用：把记住的目录丢掉，好让下一次 [directory] 重新解析。
+  ///
+  /// 单独一个入口是因为 `_dir` 一旦缓存就一直用，测试之间换了
+  /// [directoryOverride] 也读不到新目录（删掉临时目录后写文件直接
+  /// `PathNotFoundException`）。
+  @visibleForTesting
+  static void debugResetDirectory() {
+    _dir = null;
+  }
+
+  /// 建目录 + 写一个探针文件，两件都成才算这个候选可用。
+  ///
+  /// 探针必须**无条件**执行：`exists()` / `create()` 成功只说明目录项存在，
+  /// 不说明往里写得进文件 —— 只读挂载、配额用完、被沙盒收回写权限都属于
+  /// 「目录在但写不进去」。以前探针写在 catch 分支里，正好把要防的那种情况
+  /// 漏掉，程序把不可写目录当成可用，之后每次保存都失败。
+  static Future<Directory?> _tryDir(Directory dir) async {
+    try {
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+      final probe = File('${dir.path}/.write-probe');
+      await probe.writeAsString('ok', flush: true);
+      await probe.delete();
+      return dir;
+    } catch (_) {
+      return null;
+    }
+  }
+
   static Future<Directory> directory() async {
     final cached = _dir;
     if (cached != null) return cached;
 
-    // Ordered candidates.  The first one that can actually be created wins, so
+    // Ordered candidates.  The first one that can actually be written wins, so
     // a read-only %APPDATA% (locked-down profile, AppContainer, container image)
     // never makes saved servers disappear.
-    final candidates = <Directory>[];
-
     final pinned = directoryOverride;
-    if (pinned != null) candidates.add(pinned);
-
     // LANPLAYER_STATE_DIR pins the profile folder: portable installs and test
     // environments need to keep servers next to the executable, not in %APPDATA%.
     final env = Platform.environment['LANPLAYER_STATE_DIR'];
-    if (env != null && env.isNotEmpty) candidates.add(Directory(env));
+    final useDefaults = pinned == null && (env == null || env.isEmpty);
 
-    if (pinned == null && (env == null || env.isEmpty)) {
-      try {
-        final support = await getApplicationSupportDirectory();
-        candidates.add(Directory('${support.path}/lanplayer'));
-      } catch (_) {
-        // path_provider missing or refused: keep going with the fallbacks.
-      }
+    final candidates = <FutureOr<Directory?> Function()>[];
+    if (pinned != null) candidates.add(() => pinned);
+    if (env != null && env.isNotEmpty) candidates.add(() => Directory(env));
+    if (useDefaults) {
+      // path_provider / resolvedExecutable 都可能抛，所以做成惰性闭包：
+      // 抛了只跳过这一项，不影响后面的候选。
+      candidates.add(() async {
+        try {
+          final support = await getApplicationSupportDirectory();
+          return Directory('${support.path}/lanplayer');
+        } catch (_) {
+          return null;
+        }
+      });
       // Next to the executable: works for portable copies and for sandboxes
       // that only grant write access to the install folder.
-      try {
-        final exe = File(Platform.resolvedExecutable).parent;
-        candidates.add(Directory('${exe.path}/state'));
-      } catch (_) {}
-      final local = Platform.environment['LOCALAPPDATA'];
-      if (local != null && local.isNotEmpty) {
-        candidates.add(Directory('$local\\lanplayer'));
-      }
-      candidates.add(Directory('${Directory.systemTemp.path}/lanplayer'));
+      candidates.add(() {
+        try {
+          final exe = File(Platform.resolvedExecutable).parent;
+          return Directory('${exe.path}/state');
+        } catch (_) {
+          return null;
+        }
+      });
+      candidates.add(() {
+        final local = Platform.environment['LOCALAPPDATA'];
+        if (local == null || local.isEmpty) return null;
+        return Directory('$local\\lanplayer');
+      });
+      candidates.add(() => Directory('${Directory.systemTemp.path}/lanplayer'));
     }
 
     Object? lastError;
-    for (final dir in candidates) {
-      try {
-        if (!await dir.exists()) {
-          await dir.create(recursive: true);
-        }
-        _dir = dir;
-        return dir;
-      } catch (e) {
-        lastError = e;
-        // Try a throwaway probe file: exists() can succeed while writes fail.
-        try {
-          final probe = File('${dir.path}/.write-probe');
-          await probe.writeAsString('ok', flush: true);
-          await probe.delete();
-          _dir = dir;
-          return dir;
-        } catch (e2) {
-          lastError = e2;
-        }
+    for (final candidate in candidates) {
+      final dir = await candidate();
+      if (dir == null) continue;
+      final ok = await _tryDir(dir);
+      if (ok != null) {
+        _dir = ok;
+        return ok;
       }
+      lastError = StateError('not writable: ${dir.path}');
     }
     throw StateError('no writable state directory: $lastError');
   }
@@ -157,6 +187,9 @@ class ServerStore extends ChangeNotifier {
   final List<ServerProfile> servers = <ServerProfile>[];
   bool _loaded = false;
 
+  /// [servers] 的 id → profile 索引，见 [_reindex]。
+  final Map<String, ServerProfile> _byId = <String, ServerProfile>{};
+
   /// 内容版本号，每次列表变化自增。
   ///
   /// [servers] 是固定的那个 List 实例，增删改都在原地做，所以外部无法用
@@ -181,6 +214,7 @@ class ServerStore extends ChangeNotifier {
       ..clear()
       ..addAll(items);
     _loaded = true;
+    _reindex();
     _revision++;
     notifyListeners();
   }
@@ -189,6 +223,7 @@ class ServerStore extends ChangeNotifier {
   @visibleForTesting
   void debugReset() {
     servers.clear();
+    _byId.clear();
     _loaded = false;
     _revision++;
   }
@@ -198,42 +233,72 @@ class ServerStore extends ChangeNotifier {
     final json = await AppStorage.readJson(_file);
     final list = (json['servers'] as List?) ?? const [];
     servers.clear();
+    var migrated = false;
     for (final raw in list) {
       if (raw is! Map<String, dynamic>) continue;
       try {
-        servers.add(ServerProfile.fromJson(raw));
+        final profile = ServerProfile.fromJson(raw);
+        if (profile.id.isEmpty) continue;
+        // 密码在凭据库里。老版本把明文写在同一条记录里，读到就搬过去，
+        // 搬完把文件重写一遍（下次启动这条记录里就没有 password 键了）。
+        if (profile.hasPasswordStored) {
+          await SecretStore.instance.write(profile.id, profile.password);
+          migrated = migrated || SecretStore.instance.available;
+        } else {
+          profile.password =
+              await SecretStore.instance.read(profile.id) ?? '';
+        }
+        servers.add(profile);
       } catch (_) {
         // One unreadable entry must not hide every other saved server.
       }
     }
     _loaded = true;
+    _reindex();
     _revision++;
     notifyListeners();
+    if (migrated) {
+      // 迁移失败（凭据库不可用）就不再重写，保留明文那份还能用。
+      await _writeFile();
+    }
   }
 
-  ServerProfile? byId(String id) {
-    for (final s in servers) {
-      if (s.id == id) return s;
-    }
-    return null;
+  /// id → profile 的索引。服务器列表通常只有几个，但 `byId` 在列表构建、
+  /// 播放页、封面取图这些热路径上会被反复调用，线性扫描会被放大成 N²。
+  void _reindex() {
+    _byId
+      ..clear()
+      ..addEntries(servers.map((s) => MapEntry(s.id, s)));
   }
+
+  ServerProfile? byId(String id) => _byId[id];
 
   Future<void> upsert(ServerProfile profile) async {
+    // 写之前必须先把磁盘上的读进来：否则「还没 load 完就保存」会把已有的
+    // 服务器整批覆盖掉（只留下这一条）。
+    if (!_loaded) await load();
     final idx = servers.indexWhere((s) => s.id == profile.id);
     if (idx >= 0) {
       servers[idx] = profile;
     } else {
       servers.add(profile);
     }
+    _reindex();
+    // 密码进凭据库，配置文件里只留 id。
+    await SecretStore.instance.write(profile.id, profile.password);
     await _save();
   }
 
   Future<void> remove(String id) async {
+    if (!_loaded) await load();
     servers.removeWhere((s) => s.id == id);
+    _reindex();
+    await SecretStore.instance.delete(id);
     await _save();
   }
 
   Future<void> touch(String id) async {
+    if (!_loaded) await load();
     final s = byId(id);
     if (s == null) return;
     s.lastUsedAt = DateTime.now();
@@ -241,12 +306,22 @@ class ServerStore extends ChangeNotifier {
   }
 
   Future<void> _save() async {
-    await AppStorage.writeJson(_file, {
-      'version': 1,
-      'servers': servers.map((s) => s.toJson()).toList(),
-    });
+    await _writeFile();
     _revision++;
     notifyListeners();
+  }
+
+  /// 只落盘，不通知。把「写文件」与「通知界面」拆开是因为迁移那一步
+  /// （[load] 里把明文密码搬进凭据库后重写文件）不该额外触发一次重建。
+  Future<void> _writeFile() async {
+    // 凭据库不可用时退回旧做法：密码跟着文件走。宁可留明文也要能用 ——
+    // 静默丢密码会让人以为是自己的账号有问题，比这更难查。
+    final keepPassword = !SecretStore.instance.available;
+    await AppStorage.writeJson(_file, {
+      'version': 1,
+      'servers':
+          servers.map((s) => s.toJson(includePassword: keepPassword)).toList(),
+    });
   }
 }
 
@@ -258,6 +333,14 @@ class SettingsStore {
   PlaybackSettings value = PlaybackSettings();
   bool _loaded = false;
 
+  /// 落盘动作，测试用注入点。
+  ///
+  /// 设置页现在会在写盘失败时弹提示（以前完全静默），而「写盘失败」在真机
+  /// 上几乎没有可复现的手段 —— 只能在这一层把它换成一个必然抛异常的实现，
+  /// 否则那条提示路径永远没有测试覆盖。
+  @visibleForTesting
+  static Future<void> Function(PlaybackSettings value)? writerOverride;
+
   Future<void> load() async {
     if (_loaded) return;
     final json = await AppStorage.readJson(_file);
@@ -266,6 +349,11 @@ class SettingsStore {
   }
 
   Future<void> save() async {
+    final override = writerOverride;
+    if (override != null) {
+      await override(value);
+      return;
+    }
     await AppStorage.writeJson(_file, value.toJson());
   }
 }

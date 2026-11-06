@@ -626,6 +626,15 @@ int lp_demux_open(LpPlayer *p)
     lp_pq_start(&p->audio.pq);
 
     if (pthread_create(&p->demux_thread, NULL, lp_demux_thread_fn, p) != 0) {
+        /* 上面已经把解码线程和队列都启动了。直接返回会留下一组没有 demux
+         * 喂数据的线程，它们要等到 lp_player_close 才退 —— 在此期间
+         * 播放器已经报错，用户再点一次播放就叠出第二组。按与 stop 相同的
+         * 顺序收回。 */
+        LP_ERROR("demux", "cannot start demux thread");
+        lp_video_stop(p);
+        lp_audio_stop(p);
+        lp_pq_abort(&p->video.pq);
+        lp_pq_abort(&p->audio.pq);
         return LP_ERR_NOMEM;
     }
     p->demux_started = 1;

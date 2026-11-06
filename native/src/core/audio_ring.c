@@ -133,20 +133,16 @@ int lp_ring_write(LpAudioRing *r, const float *interleaved, int frames, double c
     }
     int written = 0;
     pthread_mutex_lock(&r->mutex);
-    if (r->marker_count == LP_AUDIO_MARKERS) {
-        r->marker_head = (r->marker_head + 1) % LP_AUDIO_MARKERS;
-        r->marker_count--;
-    }
-    int slot = (r->marker_head + r->marker_count) % LP_AUDIO_MARKERS;
-    r->markers[slot].sample = r->sample_index + r->count;
-    r->markers[slot].pts_seconds = chunk_pts_seconds;
-    r->markers[slot].scale = scale > 0.0 ? scale : 1.0;
-    r->marker_count++;
+    /* marker 记的是「本段第一个样本落在环里的哪个位置」。必须在写之前算好
+     * —— 写过程中 sample_index / count 会被读线程推进。 */
+    const int64_t first_sample = r->sample_index + r->count;
 
     while (written < frames) {
         if (r->abort_request) {
             pthread_mutex_unlock(&r->mutex);
-            return LP_ERR_INTERRUPTED;
+            /* 一个样本都没写进去时不能注册 marker：读线程会照着它给这段
+             * 根本不存在的音频打时间戳，音画随即错位。 */
+            return written > 0 ? written : LP_ERR_INTERRUPTED;
         }
         if (r->count >= r->capacity_frames) {
             struct timespec ts;
@@ -180,6 +176,19 @@ int lp_ring_write(LpAudioRing *r, const float *interleaved, int frames, double c
         r->write_pos = (r->write_pos + chunk) % r->capacity_frames;
         r->count += chunk;
         written += chunk;
+    }
+    /* 真正写进去了才登记 marker：登记在写之前的话，abort 或「写了一半就
+     * 被读线程拿走」都会留下一个指向不存在音频的标记。 */
+    if (written > 0) {
+        if (r->marker_count == LP_AUDIO_MARKERS) {
+            r->marker_head = (r->marker_head + 1) % LP_AUDIO_MARKERS;
+            r->marker_count--;
+        }
+        int slot = (r->marker_head + r->marker_count) % LP_AUDIO_MARKERS;
+        r->markers[slot].sample = first_sample;
+        r->markers[slot].pts_seconds = chunk_pts_seconds;
+        r->markers[slot].scale = scale > 0.0 ? scale : 1.0;
+        r->marker_count++;
     }
     pthread_cond_broadcast(&r->cond);
     pthread_mutex_unlock(&r->mutex);

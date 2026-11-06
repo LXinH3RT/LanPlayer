@@ -87,9 +87,12 @@ class VolumeSheet extends StatefulWidget {
   /// 的 delta 是连续的小值，所以按 `dy / scrollPerNotch` 折算成「格」再乘
   /// [wheelStep]，不是简单地按符号加减一格。
   static double wheelVolume(double volume, double scrollDelta) {
-    final display =
-        displayOf(volume) + (-scrollDelta / scrollPerNotch) * wheelStep;
-    return volumeOf(display);
+    // 直接在增益域累加，不经过 displayOf 的整数换算。以前从取整后的显示值
+    // 起算，每滚一格都会把不足 1 个显示刻度的余量抹掉 —— 触控板的连续小
+    // delta 在这种取整下可能来回抵消，滚十下音量不动。
+    final notches = -scrollDelta / scrollPerNotch;
+    final next = volume + notches * wheelStep / displayMax * maxVolume;
+    return next.clamp(0.0, maxVolume);
   }
 
   @override

@@ -216,9 +216,17 @@ class _BrowserScreenState extends State<BrowserScreen> {
 
     // 把 URL 按路径段拆分后，AppBar 可以显示当前文件夹名，
     // 而不必展示完整的远程/本地路径。
-    final segments =
-        _listing.url.split('/').where((s) => s.isNotEmpty).toList();
-    final folderName = segments.isEmpty ? '' : segments.last;
+    //
+    // 用 Uri.pathSegments 而不是 split('/')：`file://D:/Media` 按字符串切会
+    // 得到 `D:`（把盘符当文件夹名），`file:///` 会得到 `file:`；pathSegments
+    // 会跳过 scheme 与空段，尾部的空段（目录以 / 结尾）也不会被误取。
+    final segments = Uri.tryParse(_listing.url)
+            ?.pathSegments
+            .where((s) => s.isNotEmpty)
+            .toList() ??
+        const <String>[];
+    final folderName =
+        segments.isEmpty ? widget.location.label : segments.last;
 
     return Focus(
       // 整页包一层 Focus 而不是给 ListView 加：列表本身不接受焦点，

@@ -1,6 +1,7 @@
-import 'dart:io' show Platform;
+import 'dart:io' show FileSystemException, Platform;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../data/lan_scan.dart';
 import '../data/models.dart';
@@ -36,7 +37,7 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
   late final MediaRepository _repo = MediaRepository();
 
   late final TextEditingController _host =
-      TextEditingController(text: widget.profile?.host ?? '192.168.1.');
+      TextEditingController(text: widget.profile?.host ?? '');
   late final TextEditingController _port =
       TextEditingController(text: '${widget.profile?.port ?? 445}');
   late final TextEditingController _share =
@@ -160,6 +161,53 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
     });
   }
 
+  /// 主机地址的合法性。
+  ///
+  /// 以前只判非空，于是「192.168.1.」这种半个地址也能存下来，下一次打开就是
+  /// 一个必然失败的连接。这里收严：要么是四段 0–255 的点分十进制，要么是
+  /// 一个合法主机名（点分段，每段不超过 63 字符，总长不超过 253）。
+  static final RegExp _ipv4Pattern = RegExp(
+      r'^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}'
+      r'(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$');
+  static final RegExp _hostnamePattern =
+      RegExp(r'^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+          r'(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$');
+
+  static String? _validateHost(String? value) {
+    final host = (value ?? '').trim();
+    if (host.isEmpty) {
+      return '请填写服务器地址';
+    }
+    if (host.length > 253) {
+      return '地址太长';
+    }
+    if (_ipv4Pattern.hasMatch(host) || _hostnamePattern.hasMatch(host)) {
+      return null;
+    }
+    return '填 IP 或主机名，不要带 smb://、斜杠或空格';
+  }
+
+  /// 共享名里出现这些字符时 SMB 路径无法拼接，也容易被当成多级路径。
+  static final RegExp _shareInvalid = RegExp(r'[\\/:*?"<>|]');
+
+  static String? _validateShare(String? value) {
+    final raw = value ?? '';
+    final share = raw.trim();
+    if (share.isEmpty) {
+      return '请填写共享名';
+    }
+    if (raw != raw.trimRight()) {
+      return '共享名结尾不要留空格';
+    }
+    if (share.length > 80) {
+      return '共享名太长';
+    }
+    if (_shareInvalid.hasMatch(share)) {
+      return '共享名不能包含 \\ / : * ? " < > |';
+    }
+    return null;
+  }
+
   /// 表单里任何一处改动都让上一条连接状态失效：它描述的是改动之前那次
   /// 测试，留着会让人以为新地址也验过了。
   void _clearStatus(String _) {
@@ -189,6 +237,9 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
       );
 
   Future<bool> _test() async {
+    // 函数内重入守卫：按钮已经按 _busy 置灰，但回车提交、双击、无障碍
+    // 触发都能在置灰生效前再进来一次，两次并发 probe 会互相覆盖 _status。
+    if (_busy) return false;
     if (!(_form.currentState?.validate() ?? false)) return false;
     setState(() {
       _busy = true;
@@ -222,6 +273,7 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
   /// 就落盘：配置写下来不会造成任何后果，下一次打开才会去连。用户想先验证
   /// 账号密码，旁边还有独立的「测试连接」。
   Future<void> _save() async {
+    if (_busy) return;
     if (!(_form.currentState?.validate() ?? false)) return;
     setState(() => _busy = true);
     try {
@@ -232,12 +284,27 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
       // 写盘失败以前被 finally 吞掉：转圈收了、页面留在原地，好像什么都没发生。
       if (!mounted) return;
       setState(() {
-        _status = '保存失败：$e';
+        _status = '保存失败：${_describeSaveError(e)}';
         _statusOk = false;
       });
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// 把保存失败的原因翻成人话。
+  ///
+  /// 以前直接把 `$e` 投到屏幕上，`FileSystemException` 的 `toString()` 带完整
+  /// 本机路径与 errno，既看不懂也不该出现在界面上。
+  static String _describeSaveError(Object e) {
+    if (e is FileSystemException) {
+      final why = e.osError?.message;
+      return '写不进配置文件（${why == null || why.isEmpty ? '磁盘不可写' : why}）';
+    }
+    if (e is MediaSourceException) {
+      return e.message;
+    }
+    return '写不进配置文件';
   }
 
   @override
@@ -263,8 +330,7 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
                     ),
                     autocorrect: false,
                     onChanged: _clearStatus,
-                    validator: (v) =>
-                        (v == null || v.trim().isEmpty) ? '请填写服务器地址' : null,
+                    validator: _validateHost,
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -276,6 +342,12 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
                       border: OutlineInputBorder(),
                     ),
                     keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                      LengthLimitingTextInputFormatter(5),
+                    ],
+                    // 改了端口就等于换了一台服务器，旧的「连接成功」不再成立。
+                    onChanged: _clearStatus,
                     validator: (v) {
                       final p = int.tryParse(v ?? '');
                       return (p == null || p <= 0 || p > 65535) ? '端口无效' : null;
@@ -326,8 +398,7 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
               ),
               autocorrect: false,
               onChanged: _clearStatus,
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? '请填写共享名' : null,
+              validator: _validateShare,
             ),
             const SizedBox(height: 14),
             TextFormField(
@@ -354,6 +425,8 @@ class _ServerEditScreenState extends State<ServerEditScreen> {
                 ),
               ),
               autofillHints: const [AutofillHints.password],
+              // 改了密码同样让旧的「连接成功」失效。
+              onChanged: _clearStatus,
             ),
             if (_status != null) ...[
               const SizedBox(height: 16),

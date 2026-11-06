@@ -539,17 +539,19 @@ static void *player_open_fn(void *arg)
     LP_INFO("trace", "open: state ready");
     char *info = lp_media_info_json(p);
     LP_INFO("trace", "open: media json built");
-    if (info) {
-        emit_owned_json(p, LP_EVENT_MEDIA_INFO, 0, info);
-    }
     /* LP_EVENT_TRACKS carries the same media JSON as MEDIA_INFO (the host parses
      * both with the same code). It used to be an empty "{}", which the host
      * faithfully parsed into "this file has no audio and no subtitles tracks" --
      * the track sheets then said "0 embedded subtitles" on a file that had one,
-     * because nothing re-sent the real list unless a track switch happened. */
-    char *tracks_info = lp_media_info_json(p);
-    if (tracks_info) {
-        emit_owned_json(p, LP_EVENT_TRACKS, 0, tracks_info);
+     * because nothing re-sent the real list unless a track switch happened.
+     *
+     * Both events get one copy each, made once: building the JSON walks every
+     * stream, and it used to be built twice on this path. `emit_owned_json`
+     * takes ownership of the pointer it is given, so nothing here is freed. */
+    if (info) {
+        emit_owned_json(p, LP_EVENT_MEDIA_INFO, 0, lp_str_dup(info));
+        emit_owned_json(p, LP_EVENT_TRACKS, 0, info);
+        info = NULL;
     }
     LP_INFO("trace", "open: tracks emitted");
 
@@ -1088,6 +1090,16 @@ int32_t lp_player_set_option(LpPlayer *p, const char *key, const char *value)
 {
     if (!p || !key) {
         return LP_ERR_ARGUMENT;
+    }
+    /* value 允许为 NULL，但只有真正把 NULL 当成「未指定」的分支才配得上这个
+     * 约定（deinterlace / subtitle_delay）。其余分支都要把 value 当字符串解，
+     * 所以统一在这里拦一次 —— ABI 是公开的，宿主传 NULL 不该是段错误。 */
+    if (!value) {
+        if (!strcmp(key, "deinterlace") || !strcmp(key, "subtitle_delay")) {
+            /* 下面各自处理 NULL */
+        } else {
+            return LP_ERR_ARGUMENT;
+        }
     }
     if (!strcmp(key, "volume")) {
         return lp_player_set_volume(p, (float)atof(value));

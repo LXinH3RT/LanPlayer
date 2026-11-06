@@ -278,6 +278,18 @@ class PlaybackSettings {
     return v;
   }
 
+  /// 画面缩放方式只有 0/1/2 三档（适应屏幕 / 铺满裁切 / 拉伸）。
+  ///
+  /// 这是唯一一个曾经不做夹取的持久化字段：老配置或手改过的 json 里存进 7
+  /// 之后，`switch` 落到 default 分支，界面上三个 RadioListTile 一个都不选中，
+  /// 「画面」页看起来像坏了。
+  static int clampScaleMode(Object? raw) {
+    final v = raw is num ? raw.toInt() : 0;
+    if (v < 0) return 0;
+    if (v > 2) return 2;
+    return v;
+  }
+
   PlaybackSettings({
     this.hardwareDecoding = true,
     this.deinterlace = false,
@@ -304,7 +316,8 @@ class PlaybackSettings {
         'speed': speed,
         // 键名沿用 `volume`：老配置里的值本来就是增益（1.0 = 不改），
         // 换键名只会多一条迁移路径，还得让老值有机会被读错。
-        'volume': volumeGain,        'auto_next': autoNext,
+        'volume': volumeGain,
+        'auto_next': autoNext,
         'subtitle_scale': subtitleScale,
         'subtitle_delay_ms': subtitleDelayMs,
         'remember_progress': rememberProgress,
@@ -323,7 +336,7 @@ class PlaybackSettings {
   factory PlaybackSettings.fromJson(Map<String, dynamic> j) => PlaybackSettings(
         hardwareDecoding: j['hardware_decoding'] as bool? ?? true,
         deinterlace: j['deinterlace'] as bool? ?? false,
-        scaleMode: (j['scale_mode'] as num?)?.toInt() ?? 0,
+        scaleMode: clampScaleMode(j['scale_mode']),
         // 吸附到最近的合法档位：老配置里存过 1.3 这类值，界面上的
         // RadioListTile 精确匹配，不吸附就一个档位都不选中。
         speed: clampSpeed(j['speed']),

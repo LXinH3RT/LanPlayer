@@ -102,4 +102,78 @@ void main() {
     expect(keys, contains('file:///a.mkv'));
     expect(keys, isNot(contains('file:///b.mkv')));
   });
+
+  test('sanitizeKey 剥掉 userinfo，但不动路径里的转义', () {
+    // 带凭据的 SMB 地址进进度表时，账号密码必须被抹掉 —— 这是唯一挡住
+    // 「密码被写进 progress.json」的地方。
+    expect(
+      ProgressStore.sanitizeKey('smb://user:pass@192.168.1.7/share/a.mkv'),
+      'smb://192.168.1.7/share/a.mkv',
+    );
+    // 路径里的 %2F 是文件名的一部分，不能被再解一次码。
+    expect(
+      ProgressStore.sanitizeKey('smb://192.168.1.7/share/a%2Fb.mkv'),
+      'smb://192.168.1.7/share/a%2Fb.mkv',
+    );
+    // 其它转义要还原，否则「列表给的原始 UTF-8」与「播放时的转义 URL」
+    // 会变成两条记录。
+    expect(
+      ProgressStore.sanitizeKey('smb://192.168.1.7/share/%E7%94%B5%E5%BD%B1.mkv'),
+      'smb://192.168.1.7/share/电影.mkv',
+    );
+    // 盘符的两种写法归一成同一个 key，否则同一个文件会有两条进度。
+    expect(
+      ProgressStore.sanitizeKey('file:///D:/video/a.mkv'),
+      ProgressStore.sanitizeKey('file://D:/video/a.mkv'),
+    );
+    // 没有凭据的地址除归一化外不动。
+    expect(
+      ProgressStore.sanitizeKey('smb://192.168.1.7/share/a.mkv'),
+      'smb://192.168.1.7/share/a.mkv',
+    );
+  });
+
+  test('超过 maxEntries 时按 updatedAt 截掉最旧的', () async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    seedDisk([
+      for (var i = 0; i < ProgressStore.maxEntries + 5; i++)
+        {
+          'key': 'file:///v$i.mkv',
+          'position_us': 60000000,
+          'duration_us': 3600000000,
+          // i 越大越新：截断应该优先丢掉 i 小的那些。
+          'updated_at': now - (ProgressStore.maxEntries + 5 - i) * 1000,
+        },
+    ]);
+
+    final store = ProgressStore.forTest();
+    await store.load();
+    await store.save('file:///newest.mkv', 60000000, 3600000000);
+    await store.flushNow();
+
+    final keys = entriesOnDisk().map((e) => e['key']).toList();
+    expect(keys.length, lessThanOrEqualTo(ProgressStore.maxEntries));
+    expect(keys, contains('file:///newest.mkv'));
+    // 最旧的那几条被丢掉了，较新的还在。
+    expect(keys, isNot(contains('file:///v0.mkv')));
+    expect(keys, contains('file:///v${ProgressStore.maxEntries + 4}.mkv'));
+  });
+
+  test('250 ms 内的连续 save 只落盘一次', () async {
+    final store = ProgressStore.forTest();
+    await store.load();
+
+    for (var i = 0; i < 5; i++) {
+      await store.save('file:///burst$i.mkv', 60000000, 3600000000);
+    }
+    // 合并窗口里还没落盘：磁盘上应该一条都没有。
+    final before = progressFile().existsSync()
+        ? entriesOnDisk().map((e) => e['key'] as String).toList()
+        : const <String>[];
+    expect(before.where((k) => k.startsWith('file:///burst')), isEmpty);
+
+    await store.flushNow();
+    final after = entriesOnDisk().map((e) => e['key'] as String).toList();
+    expect(after.where((k) => k.startsWith('file:///burst')), hasLength(5));
+  });
 }

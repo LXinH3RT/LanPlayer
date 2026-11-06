@@ -51,6 +51,15 @@ void lp_render_close(LpPlayer *p)
     p->vout.push_gap_max_us = 0;
     p->vout.push_gap_sum_us = 0;
     p->vout.push_gap_count = 0;
+    /* 软解回退用的缩放上下文也跟着播放器一起退：它是 p->vout 的成员，
+     * 不在这里释放就随 LpPlayer 一起漏掉。 */
+    if (p->vout.sws) {
+        sws_freeContext(p->vout.sws);
+        p->vout.sws = NULL;
+    }
+    p->vout.sws_src_w = 0;
+    p->vout.sws_src_h = 0;
+    p->vout.sws_src_fmt = -1;
     pthread_mutex_unlock(&p->vout.mutex);
 }
 
@@ -132,14 +141,6 @@ int lp_render_draw(LpPlayer *p, AVFrame *frame)
     if (!p || !frame) {
         return LP_ERR_ARGUMENT;
     }
-    /* 缩放上下文必须跟着源帧走。以前这里是函数级 static，只在第一次按
-     * frame->width/height/format 建一次，之后永远复用 —— 连播两个分辨率不同
-     * 的文件、或者同片切到像素格式不同的轨时，sws_scale 会按错误的源尺寸
-     * 取样，画面被拉花或者直接读越界。win32_platform.c 一直是按尺寸重建的。 */
-    static struct SwsContext *sws = NULL;
-    static int sws_src_w = 0;
-    static int sws_src_h = 0;
-    static int sws_src_fmt = -1;
     CVPixelBufferRef image = NULL;
     CFDictionaryRef empty = CFDictionaryCreate(kCFAllocatorDefault, NULL, NULL, 0,
                                                &kCFTypeDictionaryKeyCallBacks,
@@ -164,24 +165,40 @@ int lp_render_draw(LpPlayer *p, AVFrame *frame)
     uint8_t *dst[4] = {(uint8_t *)CVPixelBufferGetBaseAddress(image), NULL, NULL, NULL};
     int dst_linesize[4] = {(int)CVPixelBufferGetBytesPerRow(image), 0, 0, 0};
     int src_fmt = (int)frame->format;
-    if (sws && (sws_src_w != frame->width || sws_src_h != frame->height ||
-                sws_src_fmt != src_fmt)) {
-        sws_freeContext(sws);
-        sws = NULL;
+    /* 缩放上下文挂在 vout 上（以前是这里的一个函数级 static）。
+     *
+     * 函数级 static 的问题不是「不按尺寸重建」—— 原来是重建的 —— 而是它属于
+     * 整个进程：两个 LpPlayer 实例共用一个 SwsContext，各自按自己的源尺寸
+     * 重建时会互相顶掉，同时解码就变成花屏或越界读。挂在 p->vout 上之后
+     * 每个实例各自一份，和 win32_platform.c 的 g_video.sws 对齐。
+     *
+     * 上下文归 vout 锁管：lp_render_close 在另一条线程上释放它。 */
+    int scaled = 0;
+    pthread_mutex_lock(&p->vout.mutex);
+    if (p->vout.sws && (p->vout.sws_src_w != frame->width ||
+                        p->vout.sws_src_h != frame->height ||
+                        p->vout.sws_src_fmt != src_fmt)) {
+        sws_freeContext(p->vout.sws);
+        p->vout.sws = NULL;
     }
-    if (!sws) {
-        sws = sws_getContext(frame->width, frame->height, (enum AVPixelFormat)frame->format,
-                             frame->width, frame->height, AV_PIX_FMT_BGRA, SWS_BILINEAR, NULL,
-                             NULL, NULL);
-        if (sws) {
-            sws_src_w = frame->width;
-            sws_src_h = frame->height;
-            sws_src_fmt = src_fmt;
+    if (!p->vout.sws) {
+        p->vout.sws = sws_getContext(frame->width, frame->height,
+                                     (enum AVPixelFormat)frame->format, frame->width,
+                                     frame->height, AV_PIX_FMT_BGRA, SWS_BILINEAR, NULL, NULL,
+                                     NULL);
+        if (p->vout.sws) {
+            p->vout.sws_src_w = frame->width;
+            p->vout.sws_src_h = frame->height;
+            p->vout.sws_src_fmt = src_fmt;
         }
     }
-    if (sws) {
-        sws_scale(sws, (const uint8_t *const *)frame->data, frame->linesize, 0, frame->height, dst,
-                  dst_linesize);
+    if (p->vout.sws) {
+        sws_scale(p->vout.sws, (const uint8_t *const *)frame->data, frame->linesize, 0,
+                  frame->height, dst, dst_linesize);
+        scaled = 1;
+    }
+    pthread_mutex_unlock(&p->vout.mutex);
+    if (scaled) {
         /* Graphics subtitles are bitmaps: blend them onto the BGRA picture so
          * the texture already carries them. */
         lp_sub_overlay_blend(p, dst[0], frame->width, frame->height, dst_linesize[0]);

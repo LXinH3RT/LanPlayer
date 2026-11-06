@@ -213,7 +213,11 @@ static int open_audio_decoder(LpPlayer *p)
     av_channel_layout_uninit(&out_layout);
     if (r < 0 || !p->audio.swr || swr_init(p->audio.swr) < 0) {
         LP_ERROR("audio", "swr init failed");
-        avcodec_free_context(&p->audio.avctx);
+        /* 只退 swr；avctx 由调用方（lp_audio_start 失败时的
+         * audio_decoder_cleanup）统一退，两边都退就是 double free。 */
+        if (p->audio.swr) {
+            swr_free(&p->audio.swr);
+        }
         return LP_ERR_CODEC;
     }
 
@@ -392,12 +396,41 @@ void lp_audio_rebuild_graph(LpPlayer *p)
     atomic_store(&p->audio.graph_dirty, 1);
 }
 
+/// 解码器打开失败时的清理：把这条链路上已经建好的东西按与 [lp_audio_stop]
+/// 相同的顺序退掉。
+///
+/// 以前 `open_audio_decoder` 的三个失败分支各写各的：swr 分支只退 avctx、
+/// 环形缓冲分支什么都不退、sink 分支把建了一半的环和 swr 留在原地。失败之后
+/// 播放器会被释放，这些就全漏了；更要紧的是 `pcm_cap` 没有跟着 `pcm` 复位 ——
+/// 下一次写入看到 `pcm_cap` 还够大就跳过 realloc，直接往已经 free 掉的指针上写。
+static void audio_decoder_cleanup(LpPlayer *p)
+{
+    if (p->sink) {
+        lp_audio_sink_stop(p->sink);
+        lp_audio_sink_destroy(p->sink);
+        p->sink = NULL;
+    }
+    if (p->audio.swr) {
+        swr_free(&p->audio.swr);
+    }
+    if (p->audio.avctx) {
+        avcodec_free_context(&p->audio.avctx);
+    }
+    free(p->audio.pcm);
+    p->audio.pcm = NULL;
+    p->audio.pcm_cap = 0;
+    if (p->audio.ring.buf) {
+        lp_ring_destroy(&p->audio.ring);
+    }
+}
+
 int lp_audio_start(LpPlayer *p)
 {
     if (p->audio.stream_index < 0) {
         return LP_OK;
     }
     if (open_audio_decoder(p) != LP_OK) {
+        audio_decoder_cleanup(p);
         return LP_ERR_CODEC;
     }
     /* 切轨 = 先 lp_audio_stop 再 lp_audio_start。上一个线程可能是「播到结尾

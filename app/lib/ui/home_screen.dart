@@ -497,14 +497,20 @@ class _HomeScreenState extends State<HomeScreen> {
     } else if (s.folder != null) {
       await LocalFolderStore.instance.remove(s.folder!.id);
     }
-    _loads.remove(s.id);
-    _loadGen.remove(s.id);
+    // 这三处都是本页状态，必须在 setState 里改：外面先改再 setState 会让
+    // 「改完到重建之间」的那一帧读到半新半旧的数据，而移除来源正好会触发
+    // 列表 key 变化，那一帧的错位会被 Flutter 当成懒加载列表换了内容。
+    if (mounted) {
+      setState(() {
+        _loads.remove(s.id);
+        _loadGen.remove(s.id);
+        // 正被过滤的那一块被移除后要回到「全部」，否则页面会空白。
+        if (_only == s.id) _only = null;
+      });
+    }
     // 这块来源没了，它的离线标记也一起清掉：同 id 万一被新来源复用，
     // 别让它一上来就带着上一个的「连不上」。
     SourceHealth.instance.forget(s.id);
-    // 正被过滤的那一块被移除后要回到「全部」，否则页面会空白。
-    if (_only == s.id) _only = null;
-    if (mounted) setState(() {});
   }
 
   Future<void> _editSource(HomeSource s) async {

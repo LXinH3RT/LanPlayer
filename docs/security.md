@@ -32,12 +32,28 @@
 
 | 数据 | 位置 | 内容 |
 |------|------|------|
-| 服务器列表 | `<AppSupport>/lanplayer/servers.json` | 明文账号密码 |
+| 服务器列表 | `<AppSupport>/lanplayer/servers.json` | 地址、共享名、用户名（**不含密码**） |
+| SMB 密码 | 系统凭据库 | 按服务器 id 一条记录 |
 | 设置 | `settings.json` | 无敏感信息 |
 | 播放进度 | `progress.json` | 不含凭据的路径 + 位置 |
 
-为什么存明文：SMB 认证需要一个可还原的密码，而不同平台的“保存密码”机制
-（Keychain / Keystore）会让首次接入变复杂。这是**可改进项**，见 §6。
+密码的去向由 `app/lib/data/secret_store.dart` 决定，键名是
+`smb.password.<服务器 id>`，底层是 `flutter_secure_storage`：
+
+* iOS / macOS —— Keychain。用 `first_unlock` 而不是默认的 `unlocked`：
+  桌面端锁屏后仍在跑（音量、定时任务），此时读 `unlocked` 保护的条目会失败。
+  macOS 另外关掉 `usesDataProtectionKeychain` —— 那是 iOS 形态的钥匙串，
+  要求 App 带 `keychain-access-groups` 权限，只有配了描述文件的签名才有，
+  本地 ad-hoc 签名的构建会直接 `errSecMissingEntitlement`。
+* Android —— KeyStore 包着的加密偏好（`storageNamespace: 'lanplayer'`，
+  与其它使用同一插件的应用隔离）。
+* Windows —— 凭据管理器。
+
+**兜底**：凭据库不可用时（Linux 缺 libsecret、测试环境插件未注册等）
+`SecretStore.available` 变 false，`ServerStore` 退回把密码写进
+`servers.json`。这是刻意的取舍 —— 悄悄丢密码比留一个明文文件更糟，
+用户会以为自己账号填错了。兜底发生时日志里有一条
+`LanPlayer: secure storage unavailable`。
 
 缓解措施：
 
@@ -46,6 +62,9 @@
 * 写入时先用探针验证目录可写，失败则换下一个候选目录，不会静默丢凭据；
 * 应用没有导出/备份这些文件的入口；Android 的 `allowBackup` 默认受系统策略约束，
   若要严格可在清单里设 `android:allowBackup="false"`。
+
+旧版本留下的 `servers.json` 里如果还有 `password` 字段，首次启动会把它搬进
+凭据库并重写文件（`ServerStore.load()` 的迁移分支），之后就一直是干净的。
 
 ## 4. 传输
 
@@ -67,8 +86,7 @@
 
 ## 6. 后续加固（roadmap）
 
-1. 用 `flutter_secure_storage`（iOS Keychain / Android Keystore）替换明文文件。
-2. 可选 SMB3 加密：服务端开启 `EncryptData` 后客户端自动协商。
-3. 首次连接时做 TOFU 式指纹提示（显示服务端 SMB 签名证书/主机指纹），
+1. 可选 SMB3 加密：服务端开启 `EncryptData` 后客户端自动协商。
+2. 首次连接时做 TOFU 式指纹提示（显示服务端 SMB 签名证书/主机指纹），
    防止同网段 DNS 欺骗把客户端引到假服务器。
-4. Android `allowBackup=false` + 文件级加密（EncryptedFile）。
+3. Android `allowBackup=false` + 文件级加密（EncryptedFile）。

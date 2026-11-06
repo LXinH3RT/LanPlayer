@@ -53,6 +53,37 @@ static void copy_raw(char *dst, size_t dstlen, const char *src, size_t srclen)
     dst[n] = '\0';
 }
 
+/* Percent-encodes everything outside the RFC 3986 unreserved set.
+ *
+ * 凭据是直接拼进 URL 的（`scheme://user:password@host/...`），不转义的话
+ * 密码里的 `@` 会把自己切成 host（`smb://u:p@ss@host/share` 解析出
+ * host=`ss@host`），`:` 会搅乱 user/password 的切分，`/` 会把路径提前截断。
+ * 解析侧配套按「最后一个 `@`」找 userinfo，见 [lp_url_parse]。 */
+static void percent_encode(char *dst, size_t dstlen, const char *src)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    if (!dst || dstlen == 0) {
+        return;
+    }
+    size_t o = 0;
+    for (const char *p = src ? src : ""; *p; p++) {
+        const unsigned char c = (unsigned char)*p;
+        const int plain = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' ||
+                          c == '~';
+        if (plain) {
+            if (o + 1 >= dstlen) break;
+            dst[o++] = (char)c;
+        } else {
+            if (o + 3 >= dstlen) break;
+            dst[o++] = '%';
+            dst[o++] = hex[c >> 4];
+            dst[o++] = hex[c & 0x0f];
+        }
+    }
+    dst[o] = '\0';
+}
+
 int lp_url_parse(const char *url, LpUrl *out)
 {
     if (!url || !out) {
@@ -109,25 +140,51 @@ int lp_url_parse(const char *url, LpUrl *out)
     const char *slash = strchr(rest, '/');
     const char *authority_end = slash ? slash : rest + strlen(rest);
 
-    const char *at = memchr(authority, '@', (size_t)(authority_end - authority));
+    /* userinfo 认**最后一个** `@`。密码里允许出现未转义的 `@`（用户手打、
+     * 或从别处复制），从前往后找第一个会把密码劈成两半，剩下的半截被当成
+     * host 的一部分。 */
+    const char *at = NULL;
+    for (const char *p = authority_end; p > authority; p--) {
+        if (*(p - 1) == '@') {
+            at = p - 1;
+            break;
+        }
+    }
     const char *host_start = authority;
     if (at) {
         const char *colon = memchr(authority, ':', (size_t)(at - authority));
         if (colon) {
             url_decode(out->user, sizeof(out->user), authority, (size_t)(colon - authority));
-            url_decode(out->password, sizeof(out->password), colon + 1, (size_t)(at - colon - 1));
+            url_decode(out->password, sizeof(out->password), colon + 1,
+                       (size_t)(at - colon - 1));
         } else {
             url_decode(out->user, sizeof(out->user), authority, (size_t)(at - authority));
         }
         host_start = at + 1;
     }
 
-    /* Optional :port after the host. */
+    /* 端口只在 host 之后解析。IPv6 字面量写成 `[fe80::1]` / `[::1]:445`，
+     * 里面的冒号不是端口分隔符 —— 以前一视同仁地「反向找最后一个冒号」，
+     * `smb://[fe80::1]/share` 会被切成 host=`[fe80:` 加一个假端口。 */
     const char *port_sep = NULL;
-    for (const char *p = authority_end; p > host_start; p--) {
-        if (*(p - 1) == ':') {
-            port_sep = p - 1;
-            break;
+    const char *host_end = authority_end;
+    if (host_start < authority_end && *host_start == '[') {
+        const char *close = memchr(host_start, ']', (size_t)(authority_end - host_start));
+        if (close) {
+            host_end = close + 1;
+            if (host_end < authority_end && *host_end == ':') {
+                port_sep = host_end;
+            }
+        }
+    } else {
+        for (const char *p = authority_end; p > host_start; p--) {
+            if (*(p - 1) == ':') {
+                port_sep = p - 1;
+                break;
+            }
+        }
+        if (port_sep) {
+            host_end = port_sep;
         }
     }
     if (port_sep) {
@@ -138,10 +195,8 @@ int lp_url_parse(const char *url, LpUrl *out)
         if (end && *end == '\0' && v > 0 && v < 65536) {
             out->port = (int)v;
         }
-        copy_raw(out->host, sizeof(out->host), host_start, (size_t)(port_sep - host_start));
-    } else {
-        copy_raw(out->host, sizeof(out->host), host_start, (size_t)(authority_end - host_start));
     }
+    copy_raw(out->host, sizeof(out->host), host_start, (size_t)(host_end - host_start));
 
     if (slash) {
         url_decode(out->path, sizeof(out->path), slash, strlen(slash));
@@ -216,7 +271,12 @@ void lp_url_insert_credentials(const LpUrl *u, const char *url, char *out, size_
         snprintf(out, outlen, "%s", src);
         return;
     }
-    snprintf(out, outlen, "%s%s:%s@%s", prefix, u->user, u->password, src + plen);
+    /* 凭据必须先转义再拼：`p@ss:w/rd` 原样拼进去会被解析成 host=`ss:w/rd@host`。 */
+    char user[256];
+    char password[256];
+    percent_encode(user, sizeof(user), u->user);
+    percent_encode(password, sizeof(password), u->password);
+    snprintf(out, outlen, "%s%s:%s@%s", prefix, user, password, src + plen);
 }
 
 const char *lp_kind_for_name(const char *name)

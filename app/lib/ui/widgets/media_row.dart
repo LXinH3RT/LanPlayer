@@ -69,18 +69,17 @@ class MediaRow extends StatelessWidget {
     final subs =
         entry.isVideo ? listing.subtitlesFor(entry) : const <MediaEntry>[];
 
-    // 下面两件事查的是同一张表。entry() 与 resumablePosition() 各自
-    // 还要再 sanitizeKey 一遍键（一张 4096 项的缓存表），而列表滚动的
-    // 每一行都要走这条路。
-    final progress = playable ? ProgressStore.instance.entry(entry.path) : null;
-    final watched = progress == null
-        ? null
-        : ProgressStore.instance
-            .resumablePosition(entry.path, progress.durationUs);
+    // 这三样查的是同一张表，一次取齐。以前分开调 entry() 与
+    // resumablePosition()，同一行同一帧要查两次 4096 项的映射，各自还要
+    // 再 sanitizeKey 一遍 —— 列表滚动时被放大成每帧几百次。
+    final info = playable
+        ? ProgressStore.instance.resumeInfo(entry.path)
+        : (position: null, duration: null, resume: null);
+    final watched = info.resume;
     final watchedPct =
-        (progress == null || progress.durationUs <= 0 || watched == null)
+        (info.duration == null || info.duration! <= 0 || watched == null)
             ? null
-            : (watched * 100 / progress.durationUs).clamp(0, 100);
+            : (watched * 100 / info.duration!).clamp(0, 100);
 
     return ListTile(
       enabled: playable,

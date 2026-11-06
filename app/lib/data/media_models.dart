@@ -44,14 +44,21 @@ class ServerProfile {
         password: password,
       );
 
-  Map<String, dynamic> toJson() => {
+  /// 序列化成 `servers.json` 里的一条。
+  ///
+  /// 密码**不写在这里** —— 它走 [SecretStore]（系统凭据库）。[password] 字段
+  /// 只活在内存里，[ServerStore.load] 会把凭据库里的那份填回来。这里留一个
+  /// 只在凭据库不可用时才写的兜底分支，见 [includePassword]：Linux 缺
+  /// libsecret、或者测试环境里插件没注册时，凭据库是拿不到的，这时候如果
+  /// 也不写文件，用户刚填的密码就会静默消失。
+  Map<String, dynamic> toJson({bool includePassword = false}) => {
         'id': id,
         'name': name,
         'host': host,
         'port': port,
         'share': share,
         'user': user,
-        'password': password,
+        if (includePassword) 'password': password,
         'createdAt': createdAt.millisecondsSinceEpoch,
         'lastUsedAt': lastUsedAt?.millisecondsSinceEpoch,
       };
@@ -63,6 +70,8 @@ class ServerProfile {
         port: _intValue(j['port']) ?? 445,
         share: j['share'] as String? ?? '',
         user: j['user'] as String? ?? '',
+        // 老版本把密码写在同一条记录里。读的时候照收，好让首次启动能把它
+        // 迁移进凭据库；写回去时默认不再带这个键。
         password: j['password'] as String? ?? '',
         createdAt:
             DateTime.fromMillisecondsSinceEpoch(_intValue(j['createdAt']) ?? 0),
@@ -71,6 +80,11 @@ class ServerProfile {
             : DateTime.fromMillisecondsSinceEpoch(
                 _intValue(j['lastUsedAt']) ?? 0),
       );
+
+  /// 老版本把密码写在记录里，现在改由 [SecretStore] 保管；这个方法只判断
+  /// 手上这条有没有密码，供迁移逻辑用。
+  bool get hasPasswordStored => password.isNotEmpty;
+
 
   /// Tolerates numbers, numeric strings and ISO-8601 timestamps: a profile
   /// written by an older build must never make the whole server list load fail

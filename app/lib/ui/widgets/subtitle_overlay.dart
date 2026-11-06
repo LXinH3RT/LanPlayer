@@ -91,8 +91,8 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
 
   /// 视频画面在给定区域里实际占据的矩形（与 [VideoSurface] 的贴合规则一致）。
   static Rect videoRect(Size area, double aspectRatio, int mode) {
-    final ratio =
-        aspectRatio.isFinite && aspectRatio > 0 ? aspectRatio : 16 / 9;
+    // 与画面层共用同一个夹取函数，两层才算得出同一个矩形。
+    final ratio = clampVideoRatio(aspectRatio);
     if (!area.width.isFinite || !area.height.isFinite) {
       return Offset.zero & area;
     }
@@ -264,6 +264,7 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
     required bool outline,
     SubtitleStyle? styleOverride,
     ResolvedSpan? resolved,
+    int? colorOverride,
   }) {
     final style = styleOverride ?? cue.style;
     final res = resolved ?? _resolve(r);
@@ -290,7 +291,9 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
     ];
     final bold = style.bold || r.bold;
     final italic = style.italic || r.italic;
-    var color = res.color != 0 ? Color(res.color) : Color(style.color);
+    var color = colorOverride != null
+        ? Color(colorOverride)
+        : (res.color != 0 ? Color(res.color) : Color(style.color));
     if (r.karaokeKind != 0) {
       color = _karaokeColor(color, style, res.karaoke, r.karaokeKind);
     }
@@ -555,8 +558,23 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
 
     // \fscx / \fscy 与 \frz：整块文字一起变换（ASS 是逐字形缩放，这里按整块
     // 近似，差异只在多行混合缩放的极端情况下可见）。
-    final sx = style.scaleX > 0 ? style.scaleX / 100 : 1.0;
-    final sy = style.scaleY > 0 ? style.scaleY / 100 : 1.0;
+    //
+    // 动画（`\t(\fscx..)` / `\t(\fscy..)` / `\t(\frz..)`）解算出来的值落在
+    // run 上而不是 style 上。以前这里只读 style，凡是「静态没有、动画给」的
+    // 缩放和旋转都白算了 —— 文件里写了却没效果。取首个能解出动画的 run 当
+    // 整块的取值：一块文字只有一个 Transform，多 run 各有各的缩放时按第一
+    // 个非空 run 近似（与逐字形缩放的差异同上面一样）。
+    ResolvedSpan? lead;
+    for (final run in line.runs) {
+      if (run.text.isEmpty) continue;
+      lead = _resolve(run);
+      break;
+    }
+    final sxPercent = lead != null && lead.scaleX > 0 ? lead.scaleX : style.scaleX;
+    final syPercent = lead != null && lead.scaleY > 0 ? lead.scaleY : style.scaleY;
+    final angleDeg = lead != null && lead.angle != 0 ? lead.angle : style.angle;
+    final sx = sxPercent > 0 ? sxPercent / 100 : 1.0;
+    final sy = syPercent > 0 ? syPercent / 100 : 1.0;
     if (sx != 1.0 || sy != 1.0) {
       text = Transform(
         alignment: Alignment.center,
@@ -564,8 +582,8 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
         child: text,
       );
     }
-    if (style.angle != 0) {
-      text = Transform.rotate(angle: style.angle * math.pi / 180, child: text);
+    if (angleDeg != 0) {
+      text = Transform.rotate(angle: angleDeg * math.pi / 180, child: text);
     }
     return text;
   }
@@ -603,7 +621,12 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
           TextSpan(
             text: run.text,
             style: _runStyle(context, videoHeight, run,
-                outline: stroke, styleOverride: style),
+                outline: stroke,
+                styleOverride: style,
+                // 阴影/描边层用整条字幕的 BackColour 统一上色；以前只给
+                // 单行无样式的那一支传了 colorOverride，带内联样式的行在
+                // 阴影层里仍按正文字色画，重叠处会出现两套颜色。
+                colorOverride: colorOverride),
           ),
         );
       }
@@ -614,7 +637,8 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
   /// 每一行带上自己的对齐/边距/`\pos`（内核按行输出）。按对齐编号分组：
   /// 同一角上的多行竖直排开（libass 里也是这么叠的，先出现的贴锚点，
   /// 后面的依次向外让位 —— 底部对齐时就是先出现的在下）。
-  List<Widget> _placed(BuildContext context, double videoHeight, Rect video) {
+  List<Widget> _placed(
+      BuildContext context, double videoHeight, Rect video, double windowToVideo) {
     final style = cue.style;
     // 摆位相同的行才叠成一摞；边距/坐标不同的行各占各的。libass 里每条
     // Dialogue 都按自己的 MarginV 单独定位，共用一组边距会把它们摞到一起。
@@ -682,14 +706,21 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
         continue;
       }
 
-      final marginL = (p.marginL + 8).clamp(0.0, 8000.0);
-      final marginR = (p.marginR + 8).clamp(0.0, 8000.0);
+      // 左右边距与 MarginV 一样是脚本单位（相对 PlayResY），必须乘同一个 u。
+      // 以前只有 MarginV 乘了，竖画幅或宽画幅时左右边距会按 1080 的尺度硬贴，
+      // 表现为字幕贴边、与画面比例无关。
+      final marginL = (p.marginL * u + 8).clamp(0.0, 8000.0);
+      final marginR = (p.marginR * u + 8).clamp(0.0, 8000.0);
       final marginV = p.marginV * u;
       final isTop = align >= 7;
       final isBottom = align <= 3;
+      // safeArea 是宿主给的控制条高度，单位是窗口逻辑像素；marginV 是画面
+      // 像素。画面有黑边时两者差一个系数，不换算就会在宽画面上把字幕顶得
+      // 过高。
+      final safePx = safeArea * windowToVideo;
       final vertical = isBottom
-          ? math.max(marginV, safeArea)
-          : (isTop ? math.max(marginV, safeArea) : marginV);
+          ? math.max(marginV, safePx)
+          : (isTop ? math.max(marginV, safePx) : marginV);
       final padded = Padding(
         padding: EdgeInsets.only(
           left: marginL,
@@ -727,6 +758,9 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
           if (videoHeight <= 0) {
             return const SizedBox.shrink();
           }
+          // 窗口逻辑像素 → 画面像素。safeArea 是窗口单位，字幕的边距是画面
+          // 单位，两者必须先在同一个坐标系里。
+          final windowToVideo = area.height > 0 ? videoHeight / area.height : 1.0;
           // 一帧只算一次：这个函数会把 cue 里所有 run 遍历一遍并 resolve
           // 每个动画，带 `\t` 的字幕每 20 ms 重建一次，算两遍等于白烧一半。
           final drawings = _drawingsWithPlacement();
@@ -738,7 +772,7 @@ class _SubtitleOverlayState extends State<SubtitleOverlay> {
                 width: video.width,
                 height: video.height,
                 child: Stack(children: [
-                  ..._placed(context, videoHeight, video),
+                  ..._placed(context, videoHeight, video, windowToVideo),
                   if (drawings.isNotEmpty)
                     Positioned.fill(
                       child: CustomPaint(
@@ -908,8 +942,11 @@ class _DrawingsPainter extends CustomPainter {
       // `\p<n>` 的坐标单位是 `2^(n-1)` 个脚本像素：`\p1` 原样，每加一档
       // 坐标值减半（libass 实测 `\p2` 画出的宽度正好是 `\p1` 的一半）。
       final k = math.pow(2, 1 - run.drawingScale).toDouble();
-      final sx = size.width / prx * k;
-      final sy = size.height / pry * k;
+      // 像素换算只跟画面与脚本分辨率的比例有关；`k` 是「一个绘图坐标等于几个
+      // 脚本像素」，属于坐标本身的单位，不能混进整体缩放里 —— 否则原点与
+      // 图形各拿一半的缩放，`\p2` 会画成两倍大且离锚点更远。
+      final sx = size.width / prx;
+      final sy = size.height / pry;
 
       // 先在脚本坐标里把图形摆到它该在的位置，再一次性换算成像素。
       final origin = _origin(item.line, style, prx, pry);
@@ -917,8 +954,8 @@ class _DrawingsPainter extends CustomPainter {
       var started = false;
       var sub = -1;
       for (final pt in run.path) {
-        final x = (origin.dx + pt.x / k) * sx;
-        final y = (origin.dy + pt.y / k) * sy;
+        final x = (origin.dx + pt.x * k) * sx;
+        final y = (origin.dy + pt.y * k) * sy;
         if (pt.sub != sub) {
           if (started) path.close();
           sub = pt.sub;

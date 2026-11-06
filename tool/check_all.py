@@ -2135,6 +2135,17 @@ def check_transport_behaviour() -> None:
         problems.append("native/tests/lp_transport_test.c no longer calls test_authority_shape; "
                         "the default port could leak a stray character into the host again")
         return
+    # 凭据与 IPv6 两条同理：函数留在文件里但不调用，等于没测。
+    text = source.read_text(encoding="utf-8")
+    for name, why in (
+        ("test_credentials_roundtrip", "a password containing '@' or ':' would be spliced into "
+                                       "the URL unescaped and the host would absorb part of it"),
+        ("test_ipv6_literal", "an IPv6 literal would be cut at its first ':' and the port taken "
+                              "from the address"),
+    ):
+        if f"{name}();" not in text:
+            problems.append(f"native/tests/lp_transport_test.c no longer calls {name}; {why}")
+            return
     # lp_smoke_test 链接共享库，看不到内部符号；断言必须留在这个可执行文件里。
     smoke = ROOT / "native" / "tests" / "lp_smoke_test.c"
     if smoke.exists() and "source_internal.h" in smoke.read_text(encoding="utf-8"):
@@ -3787,7 +3798,17 @@ def check_track_selection() -> None:
             problems.append("player.c emits an empty TRACKS payload on open; the "
                             "host parses it as 'this file has no tracks' and the "
                             "track sheets blank out")
-        if "tracks_info" not in ptxt:
+        # 两个事件带的是同一份 JSON：序列化一次，副本交给前一个事件。
+        # 以前调用点自己又拼了第二份（tracks_info），同样的整棵 format
+        # context 被走两遍。
+        if "tracks_info" in ptxt:
+            problems.append("player.c builds a second copy of the media JSON for "
+                            "LP_EVENT_TRACKS; both events carry the same string, "
+                            "so the second lp_media_info_json() pass is wasted work")
+        if "lp_media_info_json(p)" not in ptxt:
+            problems.append("player.c stopped calling lp_media_info_json(); the "
+                            "MEDIA_INFO/TRACKS events would carry nothing")
+        elif "lp_str_dup(info)" not in ptxt or "LP_EVENT_TRACKS, 0, info" not in ptxt:
             problems.append("player.c no longer emits the media JSON with "
                             "LP_EVENT_TRACKS; the sheets would show stale tracks")
 
@@ -4792,6 +4813,17 @@ def check_apple_wiring() -> None:
             core_sources = [f"native/{rel}" for rel in load_sources().all_sources()]
         except (ImportError, OSError, ValueError):
             core_sources = []
+        # Sources alone are not enough: the core's ABI lives in the headers, and
+        # a header change that never reaches the archive is exactly as bad as a
+        # .c change that does not. Both trees are small, so walk them whole.
+        for header_root in ("native/src", "native/include"):
+            base = ROOT / header_root
+            if not base.is_dir():
+                continue
+            core_sources.extend(
+                path.relative_to(ROOT).as_posix()
+                for path in base.rglob("*.h")
+            )
         for family in ("macosx", "iphoneos", "iphonesimulator"):
             archive = stale_archive_report / family / "lib" / "liblanplayer.a"
             if not archive.exists() or not core_sources:
@@ -6661,7 +6693,12 @@ def check_browser_error_surface() -> None:
 
     edit = (ROOT / "app/lib/ui/server_edit_screen.dart").read_text(
         encoding="utf-8", errors="replace")
-    if "_status = '保存失败：$e';" not in edit:
+    if "_status = '保存失败：$e';" in edit:
+        problems.append(
+            "app/lib/ui/server_edit_screen.dart: a failed save puts the raw "
+            "exception on screen; a FileSystemException carries the absolute "
+            "path of the config file")
+    if "_status = '保存失败：${_describeSaveError(e)}';" not in edit:
         problems.append(
             "app/lib/ui/server_edit_screen.dart: a failed save is swallowed; the "
             "dialog would close over an unsaved profile")
@@ -6846,11 +6883,16 @@ def check_list_row_work() -> None:
     """
     row = (ROOT / "app/lib/ui/widgets/media_row.dart").read_text(
         encoding="utf-8", errors="replace")
-    if ".resumablePosition(entry.path, progress.durationUs)" not in row:
+    if ".resumablePosition(entry.path, progress.durationUs)" in row:
         problems.append(
             "app/lib/ui/widgets/media_row.dart: the row looks the resume "
             "position up from the key again instead of reusing the entry it "
             "just read; every visible line pays for a second key sanitising")
+    if ".resumeInfo(entry.path)" not in row:
+        problems.append(
+            "app/lib/ui/widgets/media_row.dart: the row no longer reads进度 and "
+            "续播位置 in one lookup; splitting them costs a second sanitizeKey "
+            "per visible line")
 
     browser = (ROOT / "app/lib/ui/browser_screen.dart").read_text(
         encoding="utf-8", errors="replace")

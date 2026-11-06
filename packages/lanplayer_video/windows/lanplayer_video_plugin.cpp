@@ -39,6 +39,7 @@
 #include <shobjidl.h>
 
 #include <atomic>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -244,18 +245,36 @@ class VideoTexture {
     if (!handle || w <= 0 || h <= 0) {
       return nullptr;
     }
-    descriptor_.struct_size = sizeof(FlutterDesktopGpuSurfaceDescriptor);
-    descriptor_.handle = handle;
-    descriptor_.width = static_cast<size_t>(w);
-    descriptor_.height = static_cast<size_t>(h);
-    descriptor_.visible_width = static_cast<size_t>(w);
-    descriptor_.visible_height = static_cast<size_t>(h);
-    descriptor_.format = kFlutterDesktopPixelFormatBGRA8888;
-    descriptor_.release_callback = &VideoTexture::ReleaseSurface;
-    descriptor_.release_context = this;
-    surface_slot_ = slot;
+    /* 内核的 GPU 槽位号只在这里用一次，用来选自己的 descriptor 与 token。
+     * 槽号越界说明内核与插件对 LP_GPU_SLOTS 的理解已经不一致，此时必须
+     * 把槽还回去（否则内核那个 busy 位永远清不掉），并且不给引擎任何东西。 */
+    if (slot < 0 || static_cast<size_t>(slot) >= kGpuSlots) {
+      if (core_->gpu_release) {
+        core_->gpu_release(slot);
+      }
+      return nullptr;
+    }
+    /* 每个槽一份 descriptor 与 token。以前两者都是单份，连续两次
+     * ObtainDescriptor 会互相覆盖：前一个槽号被顶掉，它那份 descriptor 上
+     * 挂着的 release 回调再也没机会执行，内核侧那个槽的 busy 就永远为真。
+     * 丢三次之后 slot_acquire 只能拿「serial 最小的忙槽」兜底，也就是往 GPU
+     * 正在采样的表面里写新帧 —— 表现为撕裂与局部花屏。 */
+    auto& token = surface_tokens_[slot];
+    token.owner = this;
+    token.slot = slot;
+
+    auto& d = surface_descriptors_[slot];
+    d.struct_size = sizeof(FlutterDesktopGpuSurfaceDescriptor);
+    d.handle = handle;
+    d.width = static_cast<size_t>(w);
+    d.height = static_cast<size_t>(h);
+    d.visible_width = static_cast<size_t>(w);
+    d.visible_height = static_cast<size_t>(h);
+    d.format = kFlutterDesktopPixelFormatBGRA8888;
+    d.release_callback = &VideoTexture::ReleaseSurface;
+    d.release_context = &token;
     ++frames_taken_;
-    return &descriptor_;
+    return &d;
   }
 
   // 诊断计数：内核交来多少帧、真正上屏多少帧、因为两个缓冲都被引擎占着而
@@ -267,9 +286,21 @@ class VideoTexture {
  private:
   static constexpr size_t kSlots = 2;
 
+  /* GPU 槽位数与内核的 LP_GPU_SLOTS 必须一致（native/src/platform/win32/
+   * d3d11_output.c）。它和上面软件路径的 kSlots 是两回事：软件路径是我们
+   * 自己管理的两块像素缓冲，GPU 路径的槽归内核管。 */
+  static constexpr size_t kGpuSlots = 3;
+
   struct Slot {
     std::vector<uint8_t> data;
     std::atomic<bool> busy{false};
+  };
+
+  /* 每槽一份：帧交出去时把 token 作为 release_context，回调里凭它取回
+   * 「哪个对象」和「哪个槽」，两个信息都比 single-field 版本少一次竞态。 */
+  struct SurfaceToken {
+    VideoTexture* owner = nullptr;
+    int slot = -1;
   };
 
   static void Release(void* context) {
@@ -277,10 +308,13 @@ class VideoTexture {
   }
 
   static void ReleaseSurface(void* context) {
-    auto* self = static_cast<VideoTexture*>(context);
-    int slot = self->surface_slot_.exchange(-1);
-    if (slot >= 0 && self->core_ && self->core_->gpu_release) {
-      self->core_->gpu_release(slot);
+    auto* token = static_cast<SurfaceToken*>(context);
+    if (!token || !token->owner) {
+      return;
+    }
+    VideoTexture* self = token->owner;
+    if (self->core_ && self->core_->gpu_release) {
+      self->core_->gpu_release(token->slot);
     }
   }
 
@@ -294,8 +328,8 @@ class VideoTexture {
   CoreApi* core_ = nullptr;
   Slot slots_[kSlots];
   FlutterDesktopPixelBuffer buffers_[kSlots] = {};
-  FlutterDesktopGpuSurfaceDescriptor descriptor_ = {};
-  std::atomic<int> surface_slot_{-1};
+  std::array<SurfaceToken, kGpuSlots> surface_tokens_{};
+  std::array<FlutterDesktopGpuSurfaceDescriptor, kGpuSlots> surface_descriptors_{};
   int drops_ = 0;
   unsigned long long frames_taken_ = 0;
   unsigned long long frames_dropped_ = 0;

@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:io' show FileSystemException;
+
 import 'package:flutter/material.dart';
 
 import '../core/bindings.dart';
@@ -61,8 +64,19 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  late final _settings = SettingsStore.instance.value;
+  /// 每次都从 store 现取，不能在 initState 里抓成一个 final。
+  ///
+  /// `SettingsStore.load()` 是整体替换 `value = PlaybackSettings.fromJson(...)`，
+  /// 抓成 `late final` 之后这一页会一直读写那个旧实例：界面上拨开关看起来有
+  /// 反应，落盘保存的却是新实例，重启后又变回去。桌面端启动页不等这个 load，
+  /// 首帧就能进设置页，所以是真实可达的。
+  PlaybackSettings get _settings => SettingsStore.instance.value;
   final _scroll = ScrollController();
+
+  /// 写盘去抖。以前每拨一次开关就整份重写 settings.json，快捷键页连点几下
+  /// 能连着写十几次。
+  Timer? _saveTimer;
+  bool _saveErrorShown = false;
 
   /// 当前选中的目录。默认落在第一项，和「打开设置先看到解码」的老习惯一致。
   late SettingsTab _tab = widget.initialTab ?? SettingsTab.decode;
@@ -105,6 +119,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   void dispose() {
+    // 去抖还没落地就离开这一页：把最后一次改动补写出去，否则用户刚拨的
+    // 开关会丢。`dispose()` 里不能 await，只能交给 zone 自己跑完。
+    final pending = _saveTimer?.isActive ?? false;
+    _saveTimer?.cancel();
+    if (pending) unawaited(_writeNow());
     _scroll.dispose();
     super.dispose();
   }
@@ -119,9 +138,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  /// 记一次改动，200 ms 内的连续改动合并成一次落盘。
   Future<void> _persist() async {
-    await SettingsStore.instance.save();
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(milliseconds: 200), () {
+      unawaited(_writeNow());
+    });
     if (mounted) setState(() {});
+  }
+
+  /// 真正写盘的那一步。
+  ///
+  /// 以前 `_persist()` 里裸 `await save()`，磁盘满、目录只读、配置被别的进程
+  /// 锁住时异常直接冒到 zone 里——界面上什么都不显示，用户以为设置存下了，
+  /// 下次启动又变回去。
+  Future<void> _writeNow() async {
+    try {
+      await SettingsStore.instance.save();
+      _saveErrorShown = false;
+    } catch (e) {
+      if (!mounted || _saveErrorShown) return;
+      _saveErrorShown = true;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('设置没能保存到磁盘：${_describeSaveError(e)}')),
+      );
+    }
+  }
+
+  static String _describeSaveError(Object e) {
+    if (e is FileSystemException) {
+      final why = e.osError?.message;
+      return why == null || why.isEmpty ? '磁盘不可写' : why;
+    }
+    return '写入配置文件失败';
   }
 
   @override
@@ -534,7 +583,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _abiLoaded = true;
     try {
       _abiCache = NativeCore.instance.version;
-    } catch (_) {
+    } catch (e) {
+      // 只吞「内核库缺失」这一种，但把原因写进日志。原来的 `catch (_) {}`
+      // 会把 ABI 不匹配之类的真实故障一起藏掉。
+      debugPrint('LanPlayer: native ABI unavailable: $e');
       _abiCache = null;
     }
     return _abiCache;
@@ -569,6 +621,10 @@ class _ClearThumbCacheTileState extends State<_ClearThumbCacheTile> {
   int? _bytes;
   bool _busy = false;
 
+  /// 统计失败与「还在算」必须分开：`_bytes == null` 同时代表两者，统计一旦
+  /// 抛异常就会永远停在「正在统计…」。
+  bool _statFailed = false;
+
   @override
   void initState() {
     super.initState();
@@ -576,9 +632,17 @@ class _ClearThumbCacheTileState extends State<_ClearThumbCacheTile> {
   }
 
   Future<void> _refresh() async {
-    final bytes = await ThumbnailCache.instance.diskUsage();
-    if (!mounted) return;
-    setState(() => _bytes = bytes);
+    try {
+      final bytes = await ThumbnailCache.instance.diskUsage();
+      if (!mounted) return;
+      setState(() {
+        _bytes = bytes;
+        _statFailed = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _statFailed = true);
+    }
   }
 
   /// 小于 1 MB 时按 KB 显示：封面多半只有几百 KB，一律写成 0.0 MB
@@ -589,22 +653,41 @@ class _ClearThumbCacheTileState extends State<_ClearThumbCacheTile> {
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
+  static String _reason(Object e) {
+    if (e is FileSystemException) {
+      final why = e.osError?.message;
+      return why == null || why.isEmpty ? '未知原因' : why;
+    }
+    return '未知原因';
+  }
+
   Future<void> _clear() async {
     if (_busy) return;
     setState(() => _busy = true);
-    await ThumbnailCache.instance.clear();
-    if (!mounted) return;
-    setState(() => _busy = false);
-    await _refresh();
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('封面缓存已清空，下次进目录会重新生成。')),
-    );
+    // 以前这里没有 try/finally：clear() 一抛异常，`_busy` 就永远停在 true，
+    // 按钮从此显示「清理中…」再也不会响应。
+    try {
+      await ThumbnailCache.instance.clear();
+      await _refresh();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('封面缓存已清空，下次进目录会重新生成。')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('清空封面缓存失败：${_reason(e)}')),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final usage = _bytes == null ? '正在统计…' : _size(_bytes!);
+    final usage = _statFailed
+        ? '统计失败'
+        : (_bytes == null ? '正在统计…' : _size(_bytes!));
     return ListTile(
       key: const ValueKey('settings-clear-thumb-cache'),
       title: const Text('清空封面缓存'),

@@ -206,6 +206,39 @@ char *lp_str_printf(const char *fmt, ...)
     return p;
 }
 
+void lp_url_redact(const char *url, char *out, size_t outlen)
+{
+    if (!out || outlen == 0) {
+        return;
+    }
+    if (!url) {
+        out[0] = '\0';
+        return;
+    }
+    /* userinfo 只可能出现在 scheme:// 之后的 authority 段里。从 authority
+     * 末尾往前找**最后一个** `@`：密码里允许出现未转义的 `@`，从前往后找会
+     * 把它自己（或 host）切进密码里，删不干净。 */
+    const char *scheme_end = strstr(url, "://");
+    if (!scheme_end) {
+        snprintf(out, outlen, "%s", url);
+        return;
+    }
+    const char *authority = scheme_end + 3;
+    const char *authority_end = authority + strcspn(authority, "/?#");
+    const char *at = NULL;
+    for (const char *p = authority_end; p > authority; p--) {
+        if (p[-1] == '@') {
+            at = p - 1;
+            break;
+        }
+    }
+    if (!at) {
+        snprintf(out, outlen, "%s", url);
+        return;
+    }
+    snprintf(out, outlen, "%.*s***@%s", (int)(at - url), url, at + 1);
+}
+
 /* --------------------------------------------------------------- JSON --- */
 
 static const char *skip_ws(const char *p)

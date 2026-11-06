@@ -197,8 +197,25 @@ class ProgressStore {
   }
 
   /// Position to seek to, or `null` when the file should start from zero.
-  int? resumablePosition(String key, int durationUs) {
+  int? resumablePosition(String key, int durationUs) =>
+      _resumeOf(_entries[sanitizeKey(key)], durationUs);
+
+  /// 一次查表同时给出「有没有进度 / 多长 / 续播点」。
+  ///
+  /// 列表里每一行都要这三样。分开调 `entry()` 与 `resumablePosition()` 会让
+  /// 同一行在同一帧里查两次 4096 项的映射（各自还要再 `sanitizeKey` 一遍），
+  /// 滚动时被放大成每帧几百次。
+  ({int? position, int? duration, int? resume}) resumeInfo(String key) {
     final e = _entries[sanitizeKey(key)];
+    if (e == null) return (position: null, duration: null, resume: null);
+    return (
+      position: e.positionUs,
+      duration: e.durationUs,
+      resume: _resumeOf(e, e.durationUs),
+    );
+  }
+
+  int? _resumeOf(ProgressEntry? e, int durationUs) {
     if (e == null) return null;
     final dur = durationUs > 0 ? durationUs : e.durationUs;
     if (dur <= 0) return null;

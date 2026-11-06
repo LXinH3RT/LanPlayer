@@ -64,9 +64,17 @@ class _ThumbnailTileState extends State<ThumbnailTile> {
     // 也要重取 —— 否则刷新完还是旧封面。
     if (oldWidget.url != widget.url || oldWidget.version != widget.version) {
       // 换文件时马上把上一张还回去，不然列表一直滚就一直攒着。
-      _image?.dispose();
+      //
+      // 但释放要推后一帧：`setState` 只是排队重建，本帧里上一张图层仍然
+      // 指向这张图，立刻 dispose 会偶发 "Cannot draw a disposed image"，
+      // 和下面 [_fetch] 落地时的处理保持一致。
+      final previous = _image;
       _image = null;
       _loading = true;
+      if (previous != null) {
+        SchedulerBinding.instance
+            .addPostFrameCallback((_) => previous.dispose());
+      }
       _fetch();
     }
   }
@@ -81,10 +89,9 @@ class _ThumbnailTileState extends State<ThumbnailTile> {
       image?.dispose();
       return;
     }
-    if (_image == image && !_loading) {
-      image?.dispose();
-      return;
-    }
+    // `ThumbnailCache.load()` 每次都返回母本的克隆，所以这里不会拿到与
+    // `_image` 相同的实例；以前那条 `_image == image && !_loading` 的判断因此
+    // 恒为假，已删掉（旧实例统一走下面的 previous 延迟释放）。
     final previous = _image;
     setState(() {
       _image = image;

@@ -208,6 +208,73 @@ static void test_authority_shape(void)
           "an explicit default port must collapse back to the implicit form");
 }
 
+/* 凭据里有 `@` `:` `/` 时，拼进去再解析回来必须还是原文。
+ *
+ * 以前 lp_url_insert_credentials 直接 `%s:%s@` 拼，lp_url_parse 又从前往后找
+ * 第一个 `@` —— 密码 `p@ss:w/rd` 拼出 `smb://u:p@ss:w/rd@host/share`，解析回来
+ * host 变成 `ss:w`（或 `ss`），认证必然失败，而界面上只报「连不上」。前半段钉
+ * 拼接要转义、后半段钉解析认最后一个 `@`。 */
+static void test_credentials_roundtrip(void)
+{
+    LpUrl u;
+    memset(&u, 0, sizeof(u));
+    check(lp_url_parse("smb://nas/share/dir", &u) == LP_OK, "a bare share URL must parse");
+    snprintf(u.user, sizeof(u.user), "user");
+    snprintf(u.password, sizeof(u.password), "p@ss:w/rd");
+
+    char with_creds[512];
+    memset(with_creds, 0, sizeof(with_creds));
+    lp_url_insert_credentials(&u, "smb://nas/share/dir", with_creds, sizeof(with_creds));
+    check(strstr(with_creds, "p@ss") == NULL,
+          "the password's '@' must be percent-encoded, not spliced in raw");
+    check(strstr(with_creds, "@nas") != NULL, "the host must still follow the credential marker");
+
+    LpUrl back;
+    memset(&back, 0, sizeof(back));
+    check(lp_url_parse(with_creds, &back) == LP_OK, "a URL carrying credentials must parse back");
+    check(strcmp(back.user, "user") == 0, "the user must survive the round trip");
+    check(strcmp(back.password, "p@ss:w/rd") == 0, "the password must survive the round trip");
+    check(strcmp(back.host, "nas") == 0, "the host must not absorb part of the password");
+    check(strcmp(back.share, "share") == 0, "the share must survive the round trip");
+
+    /* 手写、未转义的那种也要能认：用户从别处复制来的 URL 不会替我们转义。
+     * 这里只钉 `@`（报告里的原例）—— 未转义的 `/` 与路径分隔符在语法上无法
+     * 区分（`a/p@ss/b` 到底是「密码里有斜杠」还是「路径里有 at 号」没有答案），
+     * 带 `/` `:` 的密码由上面那段百分号转义的往返用例负责。 */
+    memset(&back, 0, sizeof(back));
+    check(lp_url_parse("smb://user:p@ssword@nas/share", &back) == LP_OK,
+          "an unescaped password containing '@' must still parse");
+    check(strcmp(back.password, "p@ssword") == 0,
+          "an unescaped password must be taken whole, up to the last '@'");
+    check(strcmp(back.host, "nas") == 0, "an unescaped password must not swallow the host");
+}
+
+/* IPv6 字面量里的冒号不是端口分隔符。
+ *
+ * 以前 `smb://[fe80::1]/share` 被「反向找最后一个冒号」切成 host=`[fe80:` 加一个
+ * 假端口，地址栏里看着没问题，连的时候报主机不存在。 */
+static void test_ipv6_literal(void)
+{
+    LpUrl u;
+    memset(&u, 0, sizeof(u));
+    check(lp_url_parse("smb://[fe80::1]/share/dir", &u) == LP_OK, "an IPv6 literal must parse");
+    check(strcmp(u.host, "[fe80::1]") == 0, "the bracketed IPv6 host must be taken whole");
+    check(u.port == 445, "an IPv6 literal without a port must take the scheme default");
+    check(strcmp(u.share, "share") == 0, "the share must survive an IPv6 authority");
+
+    /* 带显式端口时端口要解析出来，且不能把 `]` 吞进端口文本。 */
+    memset(&u, 0, sizeof(u));
+    check(lp_url_parse("smb://[fe80::1]:1445/share", &u) == LP_OK,
+          "an IPv6 literal with a port must parse");
+    check(strcmp(u.host, "[fe80::1]") == 0, "a port must not be glued onto an IPv6 host");
+    check(u.port == 1445, "an explicit port after an IPv6 literal must be honoured");
+
+    /* 环回地址是最常见的一种，单独钉一次。 */
+    memset(&u, 0, sizeof(u));
+    check(lp_url_parse("smb://[::1]/share", &u) == LP_OK, "the IPv6 loopback must parse");
+    check(strcmp(u.host, "[::1]") == 0, "the IPv6 loopback host must be taken whole");
+}
+
 int main(void)
 {
     printf("transport registry: %d entries\n", lp_transport_count());
@@ -216,6 +283,8 @@ int main(void)
     test_entries();
     test_url_shape();
     test_authority_shape();
+    test_credentials_roundtrip();
+    test_ipv6_literal();
     if (failures) {
         fprintf(stderr, "\n%d failure(s)\n", failures);
         return 1;

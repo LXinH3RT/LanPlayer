@@ -165,6 +165,9 @@ class LocalFolderStore extends ChangeNotifier {
     required String path,
     bool isFile = false,
   }) async {
+    // 写之前先把磁盘上的读进来，否则「还没 load 完就添加」会把已有目录整批
+    // 覆盖掉。首页在 `load()` 完成前就可能响应点击（桌面端没有启动遮罩）。
+    if (!_loaded) await load();
     final existing = byPath(path);
     if (existing != null) {
       existing.label = label;
@@ -184,11 +187,13 @@ class LocalFolderStore extends ChangeNotifier {
   }
 
   Future<void> remove(String id) async {
+    if (!_loaded) await load();
     folders.removeWhere((f) => f.id == id);
     await _save();
   }
 
   Future<void> rename(String id, String label) async {
+    if (!_loaded) await load();
     final f = byId(id);
     if (f == null) return;
     f.label = label;
@@ -196,6 +201,7 @@ class LocalFolderStore extends ChangeNotifier {
   }
 
   Future<void> touch(String id) async {
+    if (!_loaded) await load();
     final f = byId(id);
     if (f == null) return;
     f.lastUsedAt = DateTime.now();

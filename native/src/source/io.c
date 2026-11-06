@@ -5,6 +5,32 @@
 
 #include "source_internal.h"
 
+/* 日志里带 URL 时一律走这里：URL 的 userinfo 段是明文密码，落进日志等于
+ * 把凭据抄到磁盘上（`docs/security.md` 的威胁模型就是这么被打穿的）。
+ * 返回值指向线程局部缓冲，调用方必须在同一次 log/格式化调用里用掉。 */
+static const char *redact_url(const char *url)
+{
+    static _Thread_local char safe[1024];
+    lp_url_redact(url, safe, sizeof(safe));
+    return safe;
+}
+
+/* 「这一线程上一次失败的分类」。文本（g_last_error）只够人看，程序要靠
+ * 这个码决定说哪句话：密码错、共享名不存在、连不上、超时，四种情况用户
+ * 要做的操作完全不同，给同一句「连接超时或服务器不可达」等于没报错。
+ *
+ * 两个都是线程局部的「上一次结果」，所以**每次成功的入口都要清一遍**：
+ * 一次失败之后又成功打开一个文件，若不清，调用方读到的仍是上一次的失败
+ * 分类，界面会把已经好用的源报成连不上。 */
+static _Thread_local char g_last_error[256];
+static _Thread_local int32_t g_last_result = LP_OK;
+
+static void clear_last_result(void)
+{
+    g_last_error[0] = '\0';
+    g_last_result = LP_OK;
+}
+
 /* ------------------------------------------------------------- options --- */
 
 void lp_source_options_default(LpSourceOptions *opts)
@@ -52,7 +78,8 @@ LpIo *lp_io_open(const char *url, const LpSourceOptions *opts, char *err, size_t
     }
     LpUrl parsed;
     if (lp_url_parse(url, &parsed) != LP_OK) {
-        if (err && errlen) snprintf(err, errlen, "invalid url: %s", url);
+        /* err 会一路冒泡到界面上，同样不能带凭据。 */
+        if (err && errlen) snprintf(err, errlen, "invalid url: %s", redact_url(url));
         return NULL;
     }
     const LpTransport *tp = lp_transport_find(parsed.scheme);
@@ -101,6 +128,9 @@ LpIo *lp_io_open(const char *url, const LpSourceOptions *opts, char *err, size_t
     if (io->size < 0 && tp->size) {
         io->size = tp->size(io);
     }
+    /* 上一次失败就翻篇：成功打开之后，调用方不该再从 lp_io_last_result()
+     * 读到旧的失败分类，界面会据此把好用的源报成连不上。 */
+    clear_last_result();
     return io;
 }
 
@@ -391,9 +421,11 @@ int lp_io_attach_avio(LpIo *io, AVFormatContext **out, char *err, size_t errlen)
 
     AVFormatContext *fmt = avformat_alloc_context();
     if (!fmt) {
-        /* 回滚：这里已经建好了 io（含 avio_buf 与 avio），只 return 会
-         * 把这两块内存连同 io 一起漏掉 —— 打开一个坏文件就漏一次。 */
-        lp_io_close(io);
+        /* 所有权仍然在调用方：id 与 avio/avio_buf 由调用方的 lp_io_close
+         * 统一释放。这里如果先 close，调用方随后再 close 就是 double free
+         * （demux.c 与 thumb.c 两个调用点都各自持着 io）。
+         * 只把 avio 从 io 上摘掉也不对 —— av_alloc_context 失败时调用方
+         * 的清理路径本来就会释放整份 io，多摘一次反而漏掉 avio_buf。 */
         return LP_ERR_NOMEM;
     }
     fmt->pb = io->avio;
@@ -502,13 +534,6 @@ const LpTransport *lp_transport_at(int index)
 
 /* ------------------------------------------------------------- public --- */
 
-static _Thread_local char g_last_error[256];
-
-/* 「这一线程上一次失败的分类」。文本（g_last_error）只够人看，程序要靠
- * 这个码决定说哪句话：密码错、共享名不存在、连不上、超时，四种情况用户
- * 要做的操作完全不同，给同一句「连接超时或服务器不可达」等于没报错。 */
-static _Thread_local int32_t g_last_result = LP_OK;
-
 void lp_source_set_last_error(const char *msg)
 {
     snprintf(g_last_error, sizeof(g_last_error), "%s", msg ? msg : "");
@@ -552,6 +577,25 @@ int32_t lp_source_last_error(char **out_json)
     return LP_OK;
 }
 
+/* 把凭据并进 options：URL 里的 userinfo 优先，缺的那一半从 options_json 补。
+ *
+ * list 与 probe 以前各写一份，list 那份还多一遍「再从 options_json 取一次」
+ * 的冗余分支（`lp_source_options_parse` 已经读过同样的两个键），两处口径
+ * 一旦走岔，同一个账号会「列表能进、探测说密码错」。 */
+static void apply_credentials(LpUrl *u, LpSourceOptions *opts, const char *options_json)
+{
+    if (!u || !opts) {
+        return;
+    }
+    if (u->user[0]) {
+        snprintf(opts->user, sizeof(opts->user), "%s", u->user);
+    }
+    if (u->password[0]) {
+        snprintf(opts->password, sizeof(opts->password), "%s", u->password);
+    }
+    (void)options_json; /* 已在 lp_source_options_parse 里读过 */
+}
+
 int32_t lp_source_list(const char *url, const char *options_json, char **out_json)
 {
     if (!url || !out_json) {
@@ -569,22 +613,7 @@ int32_t lp_source_list(const char *url, const char *options_json, char **out_jso
     LpSourceOptions opts;
     lp_source_options_parse(options_json, &opts);
     /* Credentials embedded in the URL win over the option object. */
-    if (parsed.user[0]) {
-        snprintf(opts.user, sizeof(opts.user), "%s", parsed.user);
-    }
-    if (parsed.password[0]) {
-        snprintf(opts.password, sizeof(opts.password), "%s", parsed.password);
-    }
-    /* Also accept top level "url" style credentials in options_json. */
-    if (options_json && (!opts.user[0] || !opts.password[0])) {
-        char u[128], p[256];
-        if (!opts.user[0] && lp_json_get_str(options_json, "user", u, sizeof(u)) == 0) {
-            snprintf(opts.user, sizeof(opts.user), "%s", u);
-        }
-        if (!opts.password[0] && lp_json_get_str(options_json, "password", p, sizeof(p)) == 0) {
-            snprintf(opts.password, sizeof(opts.password), "%s", p);
-        }
-    }
+    apply_credentials(&parsed, &opts, options_json);
 
     LpStr out;
     lp_str_init(&out);
@@ -592,7 +621,7 @@ int32_t lp_source_list(const char *url, const char *options_json, char **out_jso
     int r = tp->list(&parsed, &opts, &out, err, sizeof(err));
     if (r != LP_OK) {
         lp_str_free(&out);
-        LP_WARN("source", "list %s failed: %s", url, err[0] ? err : "unknown");
+        LP_WARN("source", "list %s failed: %s", redact_url(url), err[0] ? err : "unknown");
         snprintf(g_last_error, sizeof(g_last_error), "%s", err[0] ? err : "unknown transport error");
         g_last_result = r;
         return r;
@@ -618,8 +647,7 @@ int32_t lp_source_probe(const char *url, const char *options_json, char **out_js
     }
     LpSourceOptions opts;
     lp_source_options_parse(options_json, &opts);
-    if (parsed.user[0]) snprintf(opts.user, sizeof(opts.user), "%s", parsed.user);
-    if (parsed.password[0]) snprintf(opts.password, sizeof(opts.password), "%s", parsed.password);
+    apply_credentials(&parsed, &opts, options_json);
 
     LpStr out;
     lp_str_init(&out);

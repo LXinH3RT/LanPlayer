@@ -16,9 +16,21 @@ typedef _EventCbNative = Void Function(
 /// through NativeCallable.listener (isolate event loop) with an owned JSON
 /// string that must be released with lp_string_free.
 class PlayerController extends ChangeNotifier {
-  PlayerController({NativeCore? core}) : _core = core ?? NativeCore.instance;
+  PlayerController({NativeCore? core}) : _injectedCore = core;
 
-  final NativeCore _core;
+  /// 注入的内核句柄（测试用），或者 null 表示走全局实例。
+  final NativeCore? _injectedCore;
+  NativeCore? _lazyCore;
+
+  /// 内核句柄按需取。
+  ///
+  /// 以前是构造函数的初值表达式，`NativeCore.instance` 会在**构造那一刻**就
+  /// `DynamicLibrary.open` —— 于是任何只想验证状态机的测试（事件分发、位置
+  /// 夹取）都必须在旁边放一个真的 `lanplayer.dll`，否则测试进程直接报
+  /// 「Failed to load dynamic library」。第一次真的要用时再打开没有任何代价：
+  /// `_player == null` 时所有入口本来就已经早退。
+  NativeCore get _core => _lazyCore ??= (_injectedCore ?? NativeCore.instance);
+
   Pointer<Void>? _player;
   late final NativeCallable<_EventCbNative> _eventCb =
       NativeCallable<_EventCbNative>.listener(_handleEvent);

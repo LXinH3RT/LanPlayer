@@ -60,7 +60,13 @@ class AddSheetRoute extends ModalBottomSheetRoute<String> {
     return AnimatedBuilder(
       animation: color,
       builder: (context, _) => Semantics(
+        // 框架的 ModalBarrier 会把这层标成「按钮」，读屏用户能靠它知道
+        // 「外面这一圈是可以点掉菜单的」。以前这里只有一个 onTap，读屏
+        // 报出来的是「未标记」的一段区域，VoiceOver / TalkBack 走不到。
         label: barrierLabel,
+        button: true,
+        enabled: barrierDismissible,
+        onTapHint: MaterialLocalizations.of(context).modalBarrierDismissLabel,
         onTap: dismiss,
         child: GestureDetector(
           // 半透明的一层必须自己吃掉点击，否则会穿透到底下的列表。
