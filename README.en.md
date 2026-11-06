@@ -28,6 +28,7 @@ address, a share name, a user and a password.
 | **Sources** | SMB shares (read-only), any drive file or folder on the local machine |
 | **Containers / codecs** | Whatever FFmpeg supports: MKV / MP4 / AVI / MOV / TS / FLV / WebM, H.264 / HEVC / VP9 / AV1, and more |
 | **Hardware decoding** | D3D11VA on Windows, VideoToolbox on macOS / iOS, MediaCodec on Android, falling back to software automatically |
+| **Picture path** | Desktop hands the frames to a Flutter external texture (shared D3D11 on Windows, IOSurface on macOS); mobile hands the rectangle to a native platform view (SurfaceView on Android, AVSampleBufferDisplayLayer on iOS). See "Platform status" |
 | **Audio** | WASAPI on Windows, AudioQueue on Apple, AAudio on Android; AAC / MP3 / FLAC / Vorbis / Opus and more |
 | **Subtitles** | Embedded tracks plus external SRT / ASS / SSA / VTT; ASS styling (colour, outline, size, font, positioning, animation, clipping, vector drawing, karaoke); PGS / VobSub / DVB bitmap subtitles |
 | **Track selection** | Separate audio and subtitle panels listing every track in the file, with default pick by preferred / fallback language |
@@ -67,7 +68,7 @@ Settings → About shows the running version:
 
 ![About](docs/images/desktop-about.png)
 
-On mobile the same UI is used (texture plus subtitle bubbles):
+On mobile the same UI is used (a native platform view plus subtitle bubbles):
 
 <img src="docs/images/ipad-player.png" width="420" alt="Playing on a tablet">
 
@@ -120,10 +121,13 @@ Tap a video and it plays. A subtitle file next to it with the same stem
 (`S01E01.zh-CN.srt` and so on) is loaded automatically. In the player you can switch
 audio tracks and subtitles, shift subtitle timing and change speed.
 
-Desktop shortcuts: `Space` / `K` play-pause, `←` / `→` ±10 s (hold for 5 s),
-`↑` / `↓` volume, `M` mute, `F` full screen, `[` / `]` subtitle delay, `S` media
-info overlay, `Esc` leave full screen or go back. The volume button in the bottom
-bar shows the current level; tap it to mute, long-press for the volume panel.
+Desktop shortcuts: `Space` play-pause, `←` / `→` ±10 s, `↑` / `↓` volume, `M` mute,
+`Enter` full screen, `C` / `Z` speed up and down, `X` back to 1.0x, `,` / `/` subtitle
+earlier and later, `.` clear the subtitle offset, `Tab` decode stats, `Esc` leave full
+screen (otherwise go back), `Backspace` go up one level in the browser. Every binding
+can be changed under `Settings → Shortcuts`, which also lists all mouse gestures. The
+volume button in the bottom bar shows the current level; tap it to mute, long-press for
+the volume panel.
 
 ## Building
 
@@ -167,6 +171,15 @@ TEAM_ID=<your 10-character team id> python3 scripts/ios_device_install.py
 python3 scripts/build_macos_dmg.py
 ```
 
+**Rerun `build_apple_deps.py` after touching `native/src/**`.** `flutter build macos` and
+`flutter build ios` do not compile the C core; they only link
+`native/third_party/lanplayer/apple/<family>/lib/liblanplayer.a` into the host. Skip the
+rebuild and the app builds fine but runs the previous core, which looks exactly like
+"my change did nothing". `scripts/build_apple_deps.py` compares source and archive
+mtimes on its way out, `tool/check_all.py` asserts the same thing, and the quickest way
+to confirm the archive really changed is `strings <liblanplayer.a> | grep <a string you
+just added>`.
+
 ### Android
 
 ```bash
@@ -180,6 +193,14 @@ python3 scripts/build_android_apk.py
 # Static checks, dart compile, dart tests, installer and release assertions
 .\.tools\python\python.exe tool\check_all.py
 ```
+
+`tool/check_all.py` includes a group of assertions that pin the picture path down: four
+hosts must answer the same `lanplayer/video` method names, the platform view's `viewType`
+must be byte-identical on the Dart and native sides, and mobile must answer
+`createTexture` with `platformView: true`. The iOS platform view must also install and
+remove the core's frame callback under its own lock — the core has exactly one callback
+slot, so a remove and a pointer change outside the same critical section shows up as
+"the picture freezes for good after switching screens while audio keeps playing".
 
 On Windows `flutter analyze` / `flutter test` fail because `%APPDATA%\.flutter_tool_state`
 is not writable. Use the wrapper, which redirects `TMP` / `TEMP` / `APPDATA` /
@@ -200,7 +221,21 @@ Per-platform pitfalls and the error lookup table are in [docs/build.md](docs/bui
 | SMB browsing | ✅ | ✅ | ✅ | ✅ |
 | Hardware decoding | ✅ D3D11VA | ✅ VideoToolbox | ✅ MediaCodec | ✅ VideoToolbox |
 | Audio output | ✅ WASAPI | ✅ AudioQueue | ✅ AAudio | ✅ AudioQueue |
+| Picture path | External texture (shared D3D11) | External texture (IOSurface) | Platform view (SurfaceView) | Platform view (AVSampleBufferDisplayLayer) |
 | Installer | ✅ exe | ✅ dmg | ✅ apk | Sign it yourself |
+
+Why two picture paths: the Flutter engine has one limitation worth knowing — as long as
+an external texture is active it repaints the whole layer tree on every vsync, no matter
+how many frames the video itself has. Desktop is not exposed to that (the engine pulls
+frames on the core's notification, thirty times a second for 30 fps content, and the
+texture is zero-copy), so mobile hands the rectangle to a native view instead: decoded
+frames go straight into `SurfaceView` / `AVSampleBufferDisplayLayer` and reach the screen
+through the system compositor, never through Flutter's rasteriser. The trade-off is that
+the mobile picture no longer takes part in Flutter's transforms and clips — the scale and
+letterbox rectangle is computed on the Dart side (`fittedSize` in
+`app/lib/ui/widgets/video_surface.dart`) and handed to the native view, which lays itself
+out in real pixels. That layout directly drives memory: laying the native view out inside
+a virtual box makes the system allocate a graphics buffer larger than the screen.
 
 The Windows desktop build decodes and presents on the GPU: D3D11VA frames are
 converted by the video processor and published as a D3D11 shared texture that
@@ -223,18 +258,22 @@ on WASAPI shared mode and falls back to waveOut when the device cannot be opened
 | Default audio / subtitle track | ✅ Picked by preferred / fallback language, audio and subtitle panels separate |
 | Volume | ✅ 0–200 % slider applied in the core through `lp_ring_set_gain` on the ring buffer |
 | Upgrade in place | ✅ Installing a new version over a running one works; the installer asks the old copy to quit first |
-| Dart tests | ✅ 124 cases pass, `flutter analyze` reports no issues |
+| Mobile platform views | ✅ Android SurfaceView and iOS AVSampleBufferDisplayLayer both played a 20 s clip to the end on devices, timecode and frame numbers advancing; the Android graphics buffer is now 2133×1200 (was 5777×3250) |
+| Frame pacing | ✅ A 24 fps source drops 0 frames on both macOS and iPad, worst frame gap 46–75 ms (macOS) / 43–49 ms (iPad) against a 41.67 ms frame period |
+| Dart tests | ✅ 361 cases pass, `flutter analyze` reports no issues |
 | Installers on three platforms | ✅ Windows, macOS and Android all install and play on real hardware |
 | iPad on device | ✅ Signed and installed; SMB browsing, VideoToolbox decoding and playback position all verified |
 
 ## Known limitations
 
 * ASS `\t` animation is interpolated linearly or with the `accel` curve; `\fade` inside `\t` and shape animations beyond `\clip` are not supported, and `\move` is still a static `\pos`.
-  (every other inline tag is).
 * The server's share list is not enumerated; the share name has to be typed.
 * No AC3 / DTS passthrough to a receiver; HDR is decoded and shown as-is, without tone
-  mapping.
+  mapping, and the mobile platform views do not tag the frame with colour-space metadata.
 * One video at a time (the player screen is a singleton).
+* The mobile picture is a native view: rotation works (the parent scene transform carries
+  the whole subtree), but arbitrary Flutter effects such as opacity or a non-rectangular
+  clip will not reach it.
 
 The full list and the plan are in [docs/roadmap.md](docs/roadmap.md).
 
@@ -247,12 +286,12 @@ LanPlayer/
 │  ├─ lib/data/             Models, stores, media repository, LAN scan, thumbnail cache, track preferences
 │  ├─ lib/player/           Playlist and episode ordering
 │  ├─ lib/ui/               Screens, subtitle overlay, thumbnail tile, volume and track sheets
-│  └─ test/                 124 cases
+│  └─ test/                 361 cases
 ├─ packages/
-│  ├─ lanplayer_video/      Windows texture plugin (C++: hands the core's BGRA frames to Flutter)
+│  ├─ lanplayer_video/      Picture path: the channel contract shared by four hosts (Dart), plus the Windows texture plugin (C++)
 │  └─ lanplayer_core/       iOS / macOS FFI plugin (links the static library into Runner)
 ├─ native/                  C11 playback core
-│  ├─ include/lanplayer/    Public ABI (the only contract dart:ffi sees)
+│  ├─ include/lanplayer/    Public ABI (the only contract dart:ffi sees, 41 exported functions)
 │  ├─ src/core/             Demux, decode, sync, subtitles, thumbnails, control
 │  ├─ src/source/           LpSource: SMB / local / custom AVIO
 │  ├─ src/platform/         android / apple / win32 / stub

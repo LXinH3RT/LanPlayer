@@ -242,8 +242,19 @@ flutter build macos --release     # 或 flutter build ios --release --no-codesig
 
 `library not found for -llanplayer` = 4.2 没跑或没成功；`building for iOS 14.0, but linking in object file built for iOS 15.0` = 依赖用了更高的 `MIN_IOS`，把工程目标同步调高或重跑 4.2。
 
-### 4.4 桌面纹理与音频
-纹理桥的契约（通道名、方法名、参数键）定义在 `packages/lanplayer_video/lib/src/channel.dart`，Dart 侧封装在同包的 `lib/src/bridge.dart`；`app/lib/ui/video_texture.dart` 只是一行 `export`，`player_screen.dart` 经它拿到 `VideoTextureBridge`。四份宿主实现这套契约：Windows 是 `packages/lanplayer_video/windows/lanplayer_video_plugin.cpp`（D3D11 共享纹理），macOS 是 `app/macos/Runner/MainFlutterWindow.swift`、iOS 是 `app/ios/Runner/AppDelegate.swift`（两者的 `PlayerTexture` 从内核拉 `CVPixelBuffer` 交给引擎，BGRA，带图形字幕叠加），Android 是 `app/android/app/src/main/kotlin/dev/lanplayer/app/MainActivity.kt`（`SurfaceProducer` 交给 `egl_renderer.c`）。音频走 `native/src/platform/apple/coreaudio_sink.c`（AudioQueue，3×20 ms），视频解码走 `native/src/platform/apple/videotoolbox_decoder.c`。
+### 4.4 画面通道与音频
+画面通道的契约（通道名、方法名、参数键）定义在 `packages/lanplayer_video/lib/src/channel.dart`，Dart 侧封装在同包的 `lib/src/bridge.dart`；`app/lib/ui/video_texture.dart` 只是一行 `export`，`player_screen.dart` 经它拿到 `VideoTextureBridge`。四份宿主实现这套契约，但**桌面与移动端返回的不是同一种东西**：
+
+| 平台 | 宿主实现 | `createTexture` 回复 | 画面 |
+|-|-|-|-|
+| Windows | `packages/lanplayer_video/windows/lanplayer_video_plugin.cpp` | `{textureId: <id>, window: 0}` | 外部纹理，D3D11 共享表面，`GpuSurfaceTexture` |
+| macOS | `app/macos/Runner/MainFlutterWindow.swift` | `{textureId: <id>, window: 0}` | 外部纹理，`FlutterTexture` + IOSurface |
+| iOS / iPadOS | `app/ios/Runner/VideoPlatformView.swift` + `AppDelegate.swift` | `{textureId: -1, window: 0, platformView: true}` | `AVSampleBufferDisplayLayer` 平台视图 |
+| Android | `app/android/app/src/main/kotlin/dev/lanplayer/app/VideoSurfaceView.kt` + `MainActivity.kt` | `{textureId: -1, window: 0, platformView: true}` | `SurfaceView` 平台视图 |
+
+移动端回 `platformView: true` 之后，Dart 侧 `texture.platformView` 为真，`player_screen.dart` 会渲染 `VideoSurfaceView`（而不是 `Texture`），`_syncSurfaceSize()` 也不再下发尺寸——原生视图的布局尺寸就是缓冲尺寸。**四份宿主的方法名必须一致**，`tool/check_all.py` 的 `check_video_bridge_contract()` 逐字比对平台视图的 `viewType`。
+
+音频走 `native/src/platform/apple/coreaudio_sink.c`（AudioQueue，3×20 ms），视频解码走 `native/src/platform/apple/videotoolbox_decoder.c`。
 
 ### 4.5 权限
 `app/ios/Runner/Info.plist` 已含 `NSLocalNetworkUsageDescription`、`NSBonjourServices`(`_smb._tcp`)、`UIBackgroundModes=audio`、`UIFileSharingEnabled`、四个方向。`app/macos/Runner/{DebugProfile,Release}.entitlements` 已含 `com.apple.security.network.client`（**没有它会拦掉 SMB 端口出站**）与 `com.apple.security.files.user-selected.read-only`。
@@ -255,7 +266,7 @@ flutter run -d <device-id>            # 调试
 flutter build ipa --release           # 打包（需要签名）
 ```
 
-iPad 与 iPhone 同一个包（`TARGETED_DEVICE_FAMILY = "1,2"`）。模拟器测不了 SMB 真实吞吐，但能测 UI、字幕与交互。已跑通：VideoToolbox 硬解、AudioQueue 48 kHz 立体声、外挂 SRT 字幕、纹理上屏。
+iPad 与 iPhone 同一个包（`TARGETED_DEVICE_FAMILY = "1,2"`）。模拟器测不了 SMB 真实吞吐，但能测 UI、字幕与交互。已跑通：VideoToolbox 硬解、AudioQueue 48 kHz 立体声、外挂 SRT 字幕、`AVSampleBufferDisplayLayer` 平台视图上屏（真机播完 20 秒短片，时间码连续；24 fps 片源 `dropped` 为 0）。
 
 #### 4.6.1 真机：Xcode 27 里找不到「Devices and Simulators」
 Xcode 27 把它拆成独立 app `Device Hub`，所以 `Window` 菜单里没有这一项：

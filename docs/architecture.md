@@ -107,10 +107,35 @@ Dart UI ──► PlayerController ──► dart:ffi ──► lp_player_*   �
 
 ```
 diff = frame_pts - master_clock
-diff > 0         → 睡 min(diff, 20ms) 后重试（上限 20ms 保证暂停/seek 响应）
+diff > 0         → 睡 min(diff, 10ms) 后重试（上限 10ms 保证暂停/seek 响应）
 diff <= 0        → 立即显示
 diff < -250ms    → 判定迟到，丢帧（仍然 present，保证硬解缓冲区回收）
 ```
+
+上面三条是软解的原则。硬解路径在这之上还有两条修正，都是实测逼出来的：
+
+**丢帧阈值放宽到 500 ms**。硬解有固有的管线延迟——帧要等解码器吐出来才能上屏，
+VideoToolbox 在 1080p H.264 上稳定落后主时钟 200–300 ms（`av_diff` 长期停在
+-196 ~ -336 ms）。这是延迟，不是「跟不上」，按 250 ms 丢会把正常出帧当落后丢掉，
+实测 30 秒丢 127 帧。放宽到 500 ms 仍拦得住真正跟不上的情况（软解来不及、机器太慢）。
+
+**落后时的「追赶」是温和的，不是 0.7 倍**。VideoToolbox 一次吐一批帧，一批在几毫秒
+内接连上屏、然后线程干等下一批——平均帧率看着是 24，观感却「一顿一冲」。所以落后时
+要把出帧间距摊平。这里踩过一个坑：早先的实现是「落后超过 120 ms 就把间距压到周期的
+0.7 倍」，而硬解的 `av_diff` 常年就在 -145 ~ -310 ms，几乎每秒都越过阈值，内核于是以
+约 1.43 倍速度去要还没解出来的帧，把缓冲抽干后只能干等——反而制造了 88–231 ms 的
+单帧最长间隔。现在的规则是只把超出阈值的部分摊 15% 到每帧，且间距有周期 85% 的下限：
+
+```
+diff < 0 且 -diff > LP_PACE_CATCHUP_US(120ms)
+  → spacing = period - (lag - 120ms) * 15%
+  → 下限 max(spacing, period * 85%)
+```
+
+下限同时挡住「越落后越快」的正反馈。改完 24 fps 片源在 macOS 与 iPad 上 `dropped`
+均为 0，单帧最长间隔 46–75 ms / 43–49 ms，贴近 41.67 ms 的帧周期本身。**往这个函数里
+加阈值之前，先确认 `av_diff` 的负值到底是「内容超速」还是「管线延迟」——两者看起来
+一模一样，处置却相反。**
 
 暂停时时钟冻结（`lp_clock_pause` + 音频环暂停），视频线程原地等待而不是丢帧。
 
@@ -150,25 +175,68 @@ typedef void (*LpEventCallback)(void *user, int32_t event, const char *json, int
 
 ## 7. 视频输出
 
-**Android**：Kotlin 用 `TextureRegistry.createSurfaceTexture()` 拿 `SurfaceTexture`，
-包成 `Surface`，通过 JNI `ANativeWindow_fromSurface` 得到 `ANativeWindow*`，把指针经
-MethodChannel 交给 Dart，再 `lp_player_set_surface(ptr)`。
+画面怎么到屏幕，**桌面与移动端是两条路**。原因在引擎侧：只要存在活跃的外部纹理，
+Flutter 就会在每个 vsync 上重绘整棵图层树，与视频帧率无关
+（`flutter/flutter#188616`、`#192181`，维护者不打算暴露
+`CADisplayLink.preferredFrameRateRange` 之类的节拍控制）。桌面端不走那条被动的采样
+路径，所以留在纹理上；移动端把这块矩形交给原生视图，退出引擎的合成循环。
+
+### 移动端：平台视图
+
+**Android**：`app/android/app/src/main/kotlin/dev/lanplayer/app/VideoSurfaceView.kt`
+是一个 `PlatformView`，内含一块 `SurfaceView`。`attach()` 先
+`nativeCreateWindow(surface)`（JNI 里就是 `ANativeWindow_fromSurface`）拿到
+`ANativeWindow*`，再 `lp_player_set_surface`；`detach()` 顺序相反 —— 先
+`lp_player_set_surface(0)` 再释放窗口，反了就是 use-after-free。
+`createTexture` 回 `{textureId: -1, window: 0, platformView: true}`。
 
 * 硬解：MediaCodec `configure(surface=…)`，输出缓冲索引按 pts 排队，
   到点后 `AMediaCodec_releaseOutputBuffer(index, render=true)` —— 零拷贝，GPU 直接上屏。
 * 软解：EGL + GLES2，Y/U/V 三平面上传，片元着色器做 BT.601 有限范围 → RGB 转换，
   顶点坐标按 `scale_mode` 计算（适应/铺满/拉伸）。
 
-**Apple**：Swift 持有 `FlutterTexture`，`copyPixelBuffer()` 调
-`lp_player_copy_pixel_buffer()` 取一个 +1 的 `CVPixelBufferRef`（IOSurface 支撑，
-Flutter 直接消费，无拷贝）。内核解出帧后 `lp_render_publish_pixel_buffer` 保存并回调，
-Swift 切到主线程 `textureFrameAvailable`。
+**iOS / iPadOS**：`app/ios/Runner/VideoPlatformView.swift` 是一个
+`layerClass = AVSampleBufferDisplayLayer.self` 的 `UIView`。`VideoFrameBridge`
+自己装 `lp_player_install_frame_callback`，回调里把内核发布的 `CVPixelBuffer`
+（IOSurface 支撑）用 `CMSampleBufferCreateReadyWithImageBuffer` 包成 `CMSampleBuffer`
+再 enqueue。两个必须知道的约束：
 
-**桌面**：Windows 走我方插件 `packages/lanplayer_video/`，`VideoTexture::Copy()` 把内核的
-解码得到的 D3D11 纹理经视频处理器转成 BGRA，写进共享纹理后交给引擎 `GpuSurfaceTexture(kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle)` 直接采样；没有 GPU 直出能力的主机（原生预览器）才走 `lp_win32_gpu_readback` 回读。
-画面怎么贴合窗口由 Flutter 这一层的 `app/lib/ui/widgets/video_surface.dart` 决定（视频区
-包一层 `FittedBox`，按 origin 尺寸的盒子做 contain / cover / fill），内核的 `scale_mode`
-在桌面是不被消费的。
+* 内核的帧回调**只有一个槽**（`p->vout.frame_cb` 单字段赋值，后装覆盖先装），
+  所以 iOS 删掉了 `PlayerTexture`，纹理与平台视图不能并存。
+* 内核不暴露 PTS。宿主用 `kCMSampleAttachmentKey_DisplayImmediately` 加自增的
+  `frameIndex` 伪造时间戳；不设这个附件，layer 会按假 PTS 排队而卡住。
+* API 分叉：iOS 17+ 走 `layer.sampleBufferRenderer.enqueue`，15/16 走
+  `layer.enqueue`（layer 上那批方法 iOS 18 起全部弃用，且非主线程不安全）。
+
+### 桌面端：外部纹理
+
+**Windows**：走我方插件 `packages/lanplayer_video/`，`VideoTexture::Copy()` 把内核
+解码得到的 D3D11 纹理经视频处理器转成 BGRA，写进共享纹理后交给引擎
+`GpuSurfaceTexture(kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle)` 直接采样；没有 GPU
+直出能力的主机（原生预览器）才走 `lp_win32_gpu_readback` 回读。
+
+**macOS**：`app/macos/Runner/MainFlutterWindow.swift` 的 `PlayerTexture` 实现
+`FlutterTexture`，`copyPixelBuffer()` 调 `lp_player_copy_pixel_buffer()` 取一个 +1 的
+`CVPixelBufferRef`（IOSurface 支撑，引擎直接消费，无拷贝）。内核解出帧后
+`lp_render_publish_pixel_buffer` 保存并回调，Swift 在**内核解码线程上直接**调
+`textureFrameAvailable`。
+
+最后这一点是本项目修过的一个卡顿根因：以前这一步绕了
+`DispatchQueue.main.async`，等于给每一帧加了整整一个主线程 runloop 的延迟，主线程一忙
+内核就已经把单槽缓冲换成下一帧，于是画面跳帧而音频正常。**不能用主线程转发了事。**
+
+### 两条路共用的部分
+
+* 画面怎么贴合窗口由 `app/lib/ui/widgets/video_surface.dart` 决定。纹理路径把帧排进
+  一个虚拟盒子（`1000` 逻辑像素高）再 `FittedBox`，这对纹理无害 —— 纹理只是把位图画进
+  目标矩形。平台视图不行：原生视图的**布局尺寸就是系统分配图形缓冲的尺寸**，所以它
+  走 `fittedSize()` 手算目标矩形（stretch 取满、fill 取较大边、默认取较小边），
+  再用 `OverflowBox` 放开四个边界。按虚拟盒子布局会让系统分配一块比屏幕还大的缓冲：
+  实测过 5777×3250 / 约 72.5 MiB 一块，三缓冲约 218 MiB，而修好后是 2133×1200。
+* 旋转不需要原生侧额外处理。平台视图那一层确实不带变换矩阵
+  （`PlatformViewLayer.addToScene` 只交 `offset` 和宽高），但旋转发生在 `SceneBuilder`
+  的父层，整棵子树（含原生视图的宿主层）一起被变换 —— 竖拍片源实测过。
+* 移动端渲染路径不再参与 Flutter 的透明度、非矩形裁剪等效果。
 
 **无窗口（自动检查用）**：`platform/stub` 提供空渲染 + 空音频设备，但音频设备线程真实按 10 ms 拉取，
 所以主时钟、同步、字幕时序都能在没有设备的机器上跑通（`native/tests/lp_smoke_test.c`）。

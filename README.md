@@ -25,6 +25,7 @@ LanPlayer 只做一件事：**把共享里的文件当成本地文件播**——
 | **来源** | SMB 共享（只读）、本机任意盘符下的文件或文件夹 |
 | **容器 / 编码** | 由 FFmpeg 决定：MKV / MP4 / AVI / MOV / TS / FLV / WebM 等，H.264 / HEVC / VP9 / AV1 等 |
 | **硬解** | Windows D3D11VA、macOS / iOS VideoToolbox、Android MediaCodec，失败自动回退软件解码 |
+| **画面通道** | 桌面端交 Flutter 外部纹理（Windows 共享 D3D11、macOS IOSurface），移动端交原生平台视图（Android SurfaceView、iOS AVSampleBufferDisplayLayer），详见「平台状态」 |
 | **音频** | Windows WASAPI、Apple AudioQueue、Android AAudio；AAC / MP3 / FLAC / Vorbis / Opus 等 |
 | **字幕** | 内嵌轨 + 外挂 SRT / ASS / SSA / VTT；ASS 富文本（颜色、描边、字号、字体、定位、动画、裁剪、矢量绘图、卡拉 OK）；PGS / VobSub / DVB 图形字幕 |
 | **选轨** | 音轨与字幕各自成面板，可列出文件内全部轨道并切换；按首选 / 次选语言自动挑默认轨 |
@@ -62,7 +63,7 @@ ASS 字幕里的 `Fontname` 与行内 `\fn` 都会真正生效，同一条字幕
 
 ![关于](docs/images/desktop-about.png)
 
-移动端是同一套界面（纹理 + 字幕气泡）：
+移动端是同一套界面（原生平台视图 + 字幕气泡）：
 
 <img src="docs/images/ipad-player.png" width="420" alt="移动端播放">
 
@@ -108,9 +109,10 @@ New-SmbShare -Name Movies -Path D:\Movies -ReadAccess lanplay
 点视频即播。默认自动加载同目录同名的字幕文件（`S01E01.zh-CN.srt` 之类），
 播放页可切音轨、切字幕、调字幕延迟、切倍速。
 
-桌面端快捷键：`空格` / `K` 播放暂停，`←` / `→` 前后 10 秒（长按 5 秒），
+桌面端快捷键：`空格` 播放暂停，`←` / `→` 前后 10 秒，
 `↑` / `↓` 音量，`M` 静音，`Enter` 全屏，`C` / `Z` 加速与减速，`X` 回到 1.0 倍速，
-`，` / `/` 字幕提前与延后，`。` 清空字幕偏移，`Tab` 显示解码统计，`Esc` 退出。
+`，` / `/` 字幕提前与延后，`。` 清空字幕偏移，`Tab` 显示解码统计，`Esc` 退出全屏（否则返回），
+`Backspace` 返回上一级（浏览页）。
 画面上单击是播放 / 暂停（桌面端）；手机上单击是把控制栏叫出来或收起来，
 双击都是全屏切换。
 键位都可以在 `设置 → 快捷键` 里改，那里同时列出全部鼠标手势。
@@ -165,6 +167,12 @@ TEAM_ID=<你的 10 位 Team ID> python3 scripts/ios_device_install.py
 python3 scripts/build_macos_dmg.py
 ```
 
+**改过 `native/src/**` 之后必须重跑 `build_apple_deps.py`**。`flutter build macos` /
+`flutter build ios` 不会编 C 内核，它们只把 `native/third_party/lanplayer/apple/<family>/lib/liblanplayer.a`
+链接进宿主。忘了重编的话，构建成功、运行的是旧内核，症状是「代码明明改了却没生效」。
+`scripts/build_apple_deps.py` 会在收尾时对比源码与归档的 mtime 并告警，`tool/check_all.py`
+也有一条同义断言；确认归档真的换了，最快的办法是 `strings <liblanplayer.a> | grep <你刚加的字符串>`。
+
 ### Android
 
 ```bash
@@ -178,6 +186,12 @@ python3 scripts/build_android_apk.py
 # 静态检查 + dart 编译 + dart 用例 + 安装器与发布断言
 .\.tools\python\python.exe tool\check_all.py
 ```
+
+`tool/check_all.py` 里有一条把「画面通道」钉住的断言组：四份宿主必须认同一套
+`lanplayer/video` 方法名，平台视图的 `viewType` 必须在 Dart 与原生两侧逐字相同，
+移动端必须以 `platformView: true` 回复 `createTexture`。iOS 的平台视图还必须
+在锁内装卸内核帧回调——内核只留一个回调槽位，装卸与指针变更不在同一临界区就会
+出现「切换页面后画面永久停住但音频照常」。
 
 `flutter analyze` / `flutter test` 在 Windows 上会因 `%APPDATA%\.flutter_tool_state`
 不可写而失败，用包装脚本（把 `TMP` / `TEMP` / `APPDATA` / `LOCALAPPDATA` / `PUB_CACHE`
@@ -198,7 +212,17 @@ python scripts/run_flutter_tests.py analyze    # = flutter analyze
 | SMB 浏览 | ✅ | ✅ | ✅ | ✅ |
 | 硬解 | ✅ D3D11VA | ✅ VideoToolbox | ✅ MediaCodec | ✅ VideoToolbox |
 | 音频输出 | ✅ WASAPI | ✅ AudioQueue | ✅ AAudio | ✅ AudioQueue |
+| 画面通道 | 外部纹理（D3D11 共享） | 外部纹理（IOSurface） | 平台视图（SurfaceView） | 平台视图（AVSampleBufferDisplayLayer） |
 | 安装包 | ✅ exe | ✅ dmg | ✅ apk | 需自行签名 |
+
+画面通道为什么分两条：Flutter 引擎有一条限制——只要存在活跃的外部纹理，它就会在每个
+vsync 上重绘整棵图层树，与视频本身是多少帧无关。桌面端不受这条约束（引擎按内核的通知
+推帧，30 fps 的内容每秒只推 30 次，且纹理是零拷贝的），移动端则改由原生视图接管这块
+矩形：解码出的帧直接进 `SurfaceView` / `AVSampleBufferDisplayLayer`，由系统合成器上屏，
+不经过 Flutter 的光栅化管线。代价是移动端的画面不再参与 Flutter 的变换与裁剪，缩放与
+黑边的矩形由 Dart 侧先算好（`app/lib/ui/widgets/video_surface.dart` 的 `fittedSize`），
+再交给原生视图按真实像素尺寸布局——这一点直接影响显存占用：按虚拟尺寸布局会让系统分配
+一块比屏幕还大的图形缓冲。
 
 Windows 桌面端解码与出画都在 GPU 上：D3D11VA 解出的帧经视频处理器转成 BGRA，
 写进 D3D11 共享纹理直接交给 Flutter 采样，不再回读系统内存；音频走 WASAPI
@@ -220,7 +244,9 @@ Windows 桌面端解码与出画都在 GPU 上：D3D11VA 解出的帧经视频�
 | 多音轨 / 多字幕默认轨 | ✅ 按首选 / 次选语言挑，音轨与字幕面板拆开 |
 | 音量 | ✅ 设置里的「音量增益」按 0.1x–2.0x 起步（1.0x = 跟随系统音量），播放页滑杆 0–100 对应增益 0–2.0 且只影响本次播放；内核 `lp_ring_set_gain` 直接作用在环形缓冲上 |
 | 覆盖升级 | ✅ 旧版在跑也能直接装新版，安装器会先请退旧进程 |
-| Dart 用例 | ✅ 124 个用例全过，`flutter analyze` 无 issue |
+| 移动端平台视图 | ✅ Android SurfaceView 与 iOS AVSampleBufferDisplayLayer 均真机播完一段 20 秒短片，时间码与帧号连续推进；Android 图形缓冲 2133×1200（修前 5777×3250） |
+| 送帧节拍 | ✅ 24 fps 片源在 macOS 与 iPad 上 `dropped` 均为 0，单帧最长间隔 46–75 ms（macOS）/ 43–49 ms（iPad），贴近 41.67 ms 的帧周期 |
+| Dart 用例 | ✅ 361 个用例全过，`flutter analyze` 无 issue |
 | 三端安装包 | ✅ Windows / macOS / Android 装到真机后均能播 |
 | iPad 真机 | ✅ 签名装机、SMB 浏览、VideoToolbox 硬解出画、播放位置推进均实测 |
 
@@ -228,8 +254,9 @@ Windows 桌面端解码与出画都在 GPU 上：D3D11VA 解出的帧经视频�
 
 * ASS 的 `\t` 动画按线性或 `accel` 曲线插值；`\t` 里的 `\fade` 与 `\clip` 之外的形状动画还不支持，`\move` 仍按 `\pos` 静态定位。
 * 不枚举服务器共享名，共享名需手填。
-* 不支持 AC3 / DTS 直通到功放；HDR 只解码直出，不做 tone mapping。
+* 不支持 AC3 / DTS 直通到功放；HDR 只解码直出，不做 tone mapping，移动端的平台视图也没有给帧打色彩空间元数据。
 * 同时只播一个视频（播放页单例）。
+* 移动端画面是原生视图：旋转能跟随（父级场景变换会带着整棵子树一起转），但透明度、非矩形裁剪这类 Flutter 效果作用不到它上面。
 
 完整列表与版本计划见 [docs/roadmap.md](docs/roadmap.md)。
 
@@ -242,12 +269,12 @@ LanPlayer/
 │  ├─ lib/data/             模型、存储、媒体源仓库、局域网扫描、封面缓存、选轨偏好
 │  ├─ lib/player/           播放列表与集数识别
 │  ├─ lib/ui/               界面、字幕气泡、封面格、音量/音轨面板
-│  └─ test/                 124 个用例
+│  └─ test/                 361 个用例
 ├─ packages/
-│  ├─ lanplayer_video/      Windows 纹理插件（C++，把内核的 BGRA 帧交给 Flutter）
+│  ├─ lanplayer_video/      画面通道：四宿主共用的通道契约（Dart）+ Windows 纹理插件（C++）
 │  └─ lanplayer_core/       iOS / macOS 的 FFI 插件（把静态库链进 Runner）
 ├─ native/                  C11 播放内核
-│  ├─ include/lanplayer/    公共 ABI（dart:ffi 的唯一契约）
+│  ├─ include/lanplayer/    公共 ABI（dart:ffi 的唯一契约，41 个导出函数）
 │  ├─ src/core/             解封装、解码、同步、字幕、封面、控制
 │  ├─ src/source/           LpSource：SMB / 本地 / 自定义 AVIO
 │  ├─ src/platform/         android / apple / win32 / stub
